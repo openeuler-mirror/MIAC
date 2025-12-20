@@ -196,6 +196,9 @@ class ThunkEmitter {
   absl::StatusOr<ThunkSequence> EmitSliceToDynamicThunk(
       const HloInstruction* instruction);
 
+  absl::StatusOr<ThunkSequence> EmitGetOuterBatchValueThunk(
+      const HloInstruction* instruction);
+
   absl::StatusOr<ThunkSequence> EmitTopKThunk(
       const HloCustomCallInstruction* custom_call);
 
