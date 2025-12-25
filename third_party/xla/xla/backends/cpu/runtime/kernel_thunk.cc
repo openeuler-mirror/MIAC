@@ -232,11 +232,11 @@ KernelThunk<num_arguments, num_results>::ExecuteInternal(
   // by scheduling tasks into it. HostKernel launch completion will
   // automatically signal KernelThunk execute completion.
   if (ABSL_PREDICT_TRUE(params.intra_op_threadpool)) {
-    return kernel->Launch(num_workgroups_, kernel_args,
+    return kernel->Launch(num_workgroups_, params.batch_size, kernel_args,
                           params.intra_op_threadpool);
   }
 
-  TF_RETURN_IF_ERROR(kernel->Launch(num_workgroups_, kernel_args));
+  TF_RETURN_IF_ERROR(kernel->Launch(num_workgroups_, params.batch_size, kernel_args));
   return OkExecuteEvent();
 }
 
