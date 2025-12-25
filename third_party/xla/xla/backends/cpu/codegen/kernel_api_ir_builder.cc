@@ -343,7 +343,6 @@ auto KernelApiIrBuilder::EmitKernelPrototype(
       BuildModuleMemoryRegionName(generating_emitter_name, instr));
 }
 
-#define PRINT_BATCHSIZE
 llvm::Value* KernelApiIrBuilder::EmitGetBatchDim(llvm::IRBuilderBase& builder,
                                                  llvm::Value* call_frame) {
   llvm::LLVMContext& ctx = builder.getContext();

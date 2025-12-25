@@ -966,7 +966,7 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
   }
 
   pipeline.AddPass<OuterDimensionPropagationPass>();
-  pipeline.AddPass<OuterDimensionPropagationExamplePass>();
+  // pipeline.AddPass<OuterDimensionPropagationExamplePass>();
   pipeline.AddPass<HloDCE>();
   return pipeline.Run(module).status();
 }
