@@ -801,6 +801,11 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
     return;
   }
   PrintHumanString(printer, shape);
+  if (shape.outer_multiplier() > 0) {
+    printer->Append("(bm=");
+    printer->Append(shape.outer_multiplier());
+    printer->Append(")");
+  }
   if (!shape.IsArray()) return;
   if (!shape.has_layout()) return;
   if (IsScalar(shape)) {
