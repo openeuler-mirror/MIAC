@@ -1014,13 +1014,20 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
     BatchSizeResource* bsr = nullptr;
     ScopedStepContainer* step_container = ctx->step_container();
 
-    OP_REQUIRES_OK(ctx, step_container->Lookup<BatchSizeResource>(
-                            ctx->resource_manager(), BatchSizeResourceName, &bsr));
+    absl::Status st = step_container->Lookup<BatchSizeResource>(
+        ctx->resource_manager(), BatchSizeResourceName, &bsr);
 
-    run_options.set_batch_size(bsr->GetBatchSize());
-    VLOG(1) << "run_options.batch_size is set to: "
+    if (st.ok()) {
+      run_options.set_batch_size(bsr->GetBatchSize());
+      VLOG(1) << "run_options.batch_size is set to: "
               << run_options.batch_size() << ". step_id: " << ctx->step_id();
-    bsr->Unref();
+      bsr->Unref();
+
+    } else if (IsNotFound(st)) {
+      VLOG(1) << "Warning: Not found BatchSizeResource in step_container.";
+    } else {
+      OP_REQUIRES_OK(ctx, st);
+    }
   }
 
   // Host callbacks used for HLO send/recv.
