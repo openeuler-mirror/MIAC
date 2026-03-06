@@ -22,6 +22,10 @@ message TensorShapeProto {
 
     // Optional name of the tensor dimension.
     string name = 2;
+    //Only keep one symbolic expr.
+    //Symbolic expression for this dimension when size == -1.
+    //Allows tracking relationships between unknown dimensions.
+    ExpressionProto expr = 3;
   };
 
   // Dimensions of the tensor, such as {"input", 30}, {"output", 40}
