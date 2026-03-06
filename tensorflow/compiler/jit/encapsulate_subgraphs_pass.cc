@@ -58,7 +58,6 @@ limitations under the License.
 namespace tensorflow {
 
 static const absl::flat_hash_set<absl::string_view> kFailingOps = {
-    "Pad",
     "Where",
     // add more here
 };

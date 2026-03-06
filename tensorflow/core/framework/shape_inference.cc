@@ -293,7 +293,7 @@ string InferenceContext::DebugString(ShapeHandle s) {
 }
 
 string InferenceContext::DebugString(DimensionHandle d) {
-  return ValueKnown(d) ? strings::StrCat(Value(d)) : "?";
+  return ValueKnown(d) ? strings::StrCat(Value(d), strings::StrCat("~",DynamicRatio(d))) : "?";
 }
 
 string InferenceContext::DebugString() const {
@@ -895,7 +895,12 @@ absl::Status InferenceContext::MakeShapeFromPartialTensorShape(
   for (int i = 0; i < num_dims; ++i) {
     // -1 is unknown in PartialTensorShape and in InferenceContext, so this size
     // can be passed directly to MakeDim.
-    dims[i] = MakeDim(partial_shape.dim_size(i));
+    if(i == 0){
+      dims[i] = MakeDim(partial_shape.dim_size(i), 1);
+    }
+    else {
+      dims[i] = MakeDim(partial_shape.dim_size(i));
+    }
   }
   return ReturnCreatedShape(dims, out);
 }
@@ -1031,6 +1036,7 @@ absl::Status InferenceContext::Divide(DimensionHandle dividend,
                                       bool evenly_divisible,
                                       DimensionHandle* out) {
   const int64_t divisor_value = Value(divisor);
+  const int64_t dyn_ratio = DynamicRatio(dividend) / divisor_value;
   if (divisor_value == 1) {
     *out = dividend;
   } else if (!ValueKnown(dividend) ||
@@ -1047,7 +1053,7 @@ absl::Status InferenceContext::Divide(DimensionHandle dividend,
           "Dimension size must be evenly divisible by ", divisor_value,
           " but is ", v);
     }
-    *out = MakeDim(v / divisor_value);
+    *out = MakeDim(v / divisor_value, dyn_ratio);
   }
   return absl::OkStatus();
 }
@@ -1057,9 +1063,15 @@ absl::Status InferenceContext::Add(DimensionHandle first,
                                    DimensionHandle* out) {
   const int64_t first_value = Value(first);
   const int64_t second_value = Value(second);
+
+  const int64_t first_dynamic = DynamicRatio(first);
+  const int64_t second_dynamic = DynamicRatio(second);
+
+  int64_t dyn_ratio = first_dynamic + second_dynamic;
+
   // Special cases.
   if (first_value == 0) {
-    *out = MakeDim(second);
+    *out = MakeDim(second, dyn_ratio);
   } else if (second_value == 0) {
     *out = first;
   } else if (first_value == kUnknownDim || second_value == kUnknownDim) {
@@ -1074,7 +1086,7 @@ absl::Status InferenceContext::Add(DimensionHandle first,
       return errors::InvalidArgument("Dimension size overflow from adding ",
                                      first_value, " and ", second_value);
     }
-    *out = MakeDim(sum);
+    *out = MakeDim(sum, dyn_ratio);
   }
   return absl::OkStatus();
 }

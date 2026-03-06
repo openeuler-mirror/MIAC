@@ -436,19 +436,19 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
       VLOG(2) << "PopulateOutputs: subshape[" << i << "]: "<< subshape;
       TensorShape shape;
       TF_RETURN_IF_ERROR(XLAShapeToTensorShape(subshape, &shape));
-      if (subshape.outer_multiplier() > 0) {
-        BatchSizeResource* bsr = nullptr;
-        ScopedStepContainer* step_container = ctx->step_container();
-        TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
-                       ctx->resource_manager(), BatchSizeResourceName, &bsr));
-        auto bsm = bsr->GetBatchSize() * subshape.outer_multiplier() ;
-        shape.set_dim(0, bsm);
-        output_tensor_shapes.push_back(shape);
-        bsr->Unref();
-      }
-      else {
+      // if (subshape.outer_multiplier() > 0) {
+      //   BatchSizeResource* bsr = nullptr;
+      //   ScopedStepContainer* step_container = ctx->step_container();
+      //   TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
+      //                  ctx->resource_manager(), BatchSizeResourceName, &bsr));
+      //   auto bsm = bsr->GetBatchSize() * subshape.outer_multiplier() ;
+      //   shape.set_dim(0, bsm);
+      //   output_tensor_shapes.push_back(shape);
+      //   bsr->Unref();
+      // }
+      // else {
         output_tensor_shapes.push_back(compilation_result->outputs[i].shape);
-      }
+      // }
     }
   }
 

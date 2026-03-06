@@ -436,6 +436,7 @@ absl::Status CompileToLocalExecutable(
     // argument.
     std::vector<XlaCompiler::Argument> norm_args(args.begin(), args.end());
     int64_t filled_batch = 0;
+    int64_t old_batch = 0;
     XlaBatchMatcher* xla_batch_matcher = xla_device_compiler->xla_batch_matcher();
     if (options.flib_def != nullptr) {
       const FunctionDef* fdef = options.flib_def->Find(function.name());
@@ -447,12 +448,21 @@ absl::Status CompileToLocalExecutable(
 
           const AttrValue& v = it->second;
           if (it == attr_map.end()) continue;
-          norm_args[arg_index].dynamic_dim = 0;
 
           if (!filled_batch && xla_batch_matcher) {
-            TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
-            filled_batch = xla_batch_matcher->get_xla_compile_batch(shp.dim_size(0));
+            TensorShape& shp =
+                std::get<TensorShape>(norm_args[arg_index].shape);
+            old_batch = shp.dim_size(0);
+            filled_batch =
+                xla_batch_matcher->get_xla_compile_batch(shp.dim_size(0));
           }
+          TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
+          std::vector<xla::DynExpr*> dyn_exprs;
+          for (int d : shp.dim_sizes()) {
+            dyn_exprs.push_back(xla::DynExpr::_(d));
+          }
+          dyn_exprs[0] = xla::DynExpr::V(1);
+          shp.set_expressions(dyn_exprs);
         }
       }
     }
@@ -460,18 +470,23 @@ absl::Status CompileToLocalExecutable(
     if (filled_batch) {
       for (int i = 0; i < norm_args.size(); ++i) {
         auto& arg = norm_args[i];
+        TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
         // argument rewrite.
-        if (arg.dynamic_dim == 0) {
-          TensorShape& shp = std::get<TensorShape>(arg.shape);
-          int64_t old = shp.dim_size(0);
-          shp.set_dim(0, filled_batch);
+        for (int j = 0; j < shp.get_expressions().size(); ++j) {
+          auto e = shp.get_expression(j);
+          if (e->is_dynamic()) {
+            shp.set_dim(j, filled_batch);
+            // Necessary because set_dim removes the expression:
+            shp.set_expression(j, e);
+          }
         }
         // constant argument rewrite otherwise it still store the incoming batch
         // request.
         if (arg.kind == XlaCompiler::Argument::kConstant) {
           auto flat = arg.constant_value.flat<int32>();
-          int32 old_batch = flat(0);
-          flat(0) = static_cast<int32>(filled_batch);
+          if (old_batch == flat(0)) {
+            flat(0) = static_cast<int32>(filled_batch);
+          }
         }
       }
     }
