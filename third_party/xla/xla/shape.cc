@@ -738,7 +738,7 @@ void Shape::CheckStateIsEmpty() const {
     const auto& state = array_state_maybe_underneath_buffer();
     CHECK(state.dimensions.empty()) << ToString();
     CHECK(state.dynamic_dimensions.empty()) << ToString();
-    CHECK(state->expressions.empty()) << ToString();
+    CHECK(state.expressions.empty()) << ToString();
     CHECK(!state.layout.has_value()) << ToString();
   } else if (const auto* const state = if_tuple_state()) {
     CHECK(state->tuple_shapes.empty()) << ToString();
