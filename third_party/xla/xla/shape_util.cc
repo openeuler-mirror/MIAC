@@ -421,7 +421,7 @@ ShapeUtil::MakeValidatedShapeWithSparseLayout(
 
 /* static */ absl::StatusOr<Shape>
 ShapeUtil::MakeValidatedShapeWithDescendingLayout(
-    PrimitiveType element_type, absl::Span<const int64_t> dimensions, absl::Span<DynExpr* const> expressions) {
+    PrimitiveType element_type, absl::Span<const int64_t> dimensions, absl::Span<DynExpr* const> expressions = {}) {
   std::vector<int64_t> layout(dimensions.size());
   std::iota(layout.rbegin(), layout.rend(), static_cast<int64_t>(0));
   TF_ASSIGN_OR_RETURN(Shape shape,
