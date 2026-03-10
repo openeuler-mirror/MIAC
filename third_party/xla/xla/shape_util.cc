@@ -424,7 +424,8 @@ ShapeUtil::MakeValidatedShapeWithDescendingLayout(
     PrimitiveType element_type, absl::Span<const int64_t> dimensions, absl::Span<DynExpr* const> expressions) {
   std::vector<int64_t> layout(dimensions.size());
   std::iota(layout.rbegin(), layout.rend(), static_cast<int64_t>(0));
-  auto shape = MakeValidatedShapeWithDenseLayout(element_type, dimensions, layout);
+  TF_ASSIGN_OR_RETURN(Shape shape,
+                      MakeValidatedShapeWithDenseLayout(element_type, dimensions, layout));
   std::vector<DynExpr*> exprs(expressions.begin(), expressions.end());
   shape.set_expressions(exprs);
   return shape;
