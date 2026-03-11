@@ -480,11 +480,15 @@ absl::Status CompileToLocalExecutable(
         auto& arg = norm_args[i];
         TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
         // argument rewrite.
-        if (arg.dynamic_dim == 0) {
-          TensorShape& shp = std::get<TensorShape>(arg.shape);
-          int64_t old = shp.dim_size(0);
-          old_vars.push_back({i, arg.dynamic_dim, old});
-          shp.set_dim(0, filled_batch);
+        for (int j = 0; j < shp.get_expressions().size(); ++j) {
+          auto e = shp.get_expression(j);
+          if (e->is_dynamic()) {
+            int old = shp.dim_size(j);
+            old_vars.push_back({i, j, old});
+          shp.set_dim(j, filled_batch);
+            // Necessary because set_dim removes the expression:
+            shp.set_expression(j, e);
+          }
         }
         // constant argument rewrite otherwise it still store the incoming batch
         // request.
