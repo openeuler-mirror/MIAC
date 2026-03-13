@@ -160,11 +160,11 @@ class Add : public DynExpr {
     if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
     if (lhs->get_all_ids().size() == 1) {
       // (A + c) = x <=> A = x - c => solve A = y with y = x - c
-      return rhs->solve(x - rhs->get_val());
+      return lhs->solve(x - rhs->get_val());
     }
     if (rhs->get_all_ids().size() == 1) {
       // (c + A) = x <=> A = x - c => solve A = y with y = x - c
-      return lhs->solve(x - lhs->get_val());
+      return rhs->solve(x - lhs->get_val());
     }
     // No solution
     return -1;
@@ -223,11 +223,11 @@ class Sub : public DynExpr {
     if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
     if (lhs->get_all_ids().size() == 1) {
       // (A - c) = x <=> A = x + c => solve A = y with y = x + c
-      return rhs->solve(x + rhs->get_val());
+      return lhs->solve(x + rhs->get_val());
     }
     if (rhs->get_all_ids().size() == 1) {
       // (c + A) = x <=> A = x - c => solve A = y with y = x + c
-      return lhs->solve(x + lhs->get_val());
+      return rhs->solve(x + lhs->get_val());
     }
     // No solution
     return -1;
@@ -288,13 +288,13 @@ class Mul : public DynExpr {
       // (A * c) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = rhs->get_val();
       if (x % c != 0) return -1;
-      return rhs->solve(x / c);
+      return lhs->solve(x / c);
     }
     if (rhs->get_all_ids().size() == 1) {
       // (c * A) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = lhs->get_val();
       if (x % c != 0) return -1;
-      return lhs->solve(x / c);
+      return rhs->solve(x / c);
     }
     // No solution
     return -1;
@@ -349,13 +349,13 @@ class Div : public DynExpr {
     if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
     if (lhs->get_all_ids().size() == 1) {
       // (A / c) = x <=> A = x * c => solve A = y with y = x * c
-      return rhs->solve(x * rhs->get_val());
+      return lhs->solve(x * rhs->get_val());
     }
     if (rhs->get_all_ids().size() == 1) {
       // (c / A) = x <=> A = c / x => solve A = y with y = c / x
       int64_t c = lhs->get_val();
       if (c % x != 0) return -1;
-      return lhs->solve(c / x);
+      return rhs->solve(c / x);
     }
     // No solution
     return -1;
