@@ -265,8 +265,8 @@ void LogExpressionsViaGraphProperties(const tensorflow::Graph& graph) {
         if (expr.node_type_case() == ExpressionProto::NODE_TYPE_NOT_SET)
           continue;
 
-        VLOG(1) << "Node " << n.name() << " has expression "
-                << ExprProtoToString(expr);
+        VLOG(1) << "Node " << n.name() << " is inferred to have expression "
+                << ExprProtoToString(expr) << " on dimension #" << d;
 
         auto ex = ExprFromProto(expr);
         exprs.push_back(std::move(ex));
@@ -680,14 +680,16 @@ absl::Status Encapsulator::Subgraph::RecordArg(
         ExpressionProto* eproto = tsp->add_expressions();
         ExprToProto(ee, eproto);
       }
-        builder.Attr("_output_shapes", {*tsp});
+      VLOG(1) << "Adding following output shapes for node " << src_node->name()
+              << " : " << tsp->DebugString();
+      builder.Attr("_output_shapes", {*tsp});
     } else {
       // if cluster argument is the real argument.
-      auto build_attr = attrs.FindByString("_is_batch");
+      auto build_attr = attrs.FindByString("_dynamic_dim");
       if (build_attr) {
         VLOG(1) << "Found Dynamic dimension in " << src_node->name() << ":"
                 << src_slot;
-          builder.Attr("_dynamic_dim", 0);
+        builder.Attr("_dynamic_dim", *build_attr);
       }
     }
     absl::Status s = builder.Finalize(&arg_def);

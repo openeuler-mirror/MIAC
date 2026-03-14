@@ -497,9 +497,9 @@ absl::Status CompileToLocalExecutable(
 
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_enable_dynamic_sizes) {
-    // Rewriting the argument with the magic number if they have dynamic
-    // dimension, detecting dynamic dimension via _is_batch attr in the
-    // argument.
+    // Rewriting the argument with expressions if they have dynamic
+    // dimension, detecting dynamic dimension via either _dynamic_dim or
+    // _output_shapes attr in the argument.
     std::vector<XlaCompiler::Argument> norm_args(args.begin(), args.end());
     int64_t filled_batch = 0;
     int64_t old_batch = 0;
