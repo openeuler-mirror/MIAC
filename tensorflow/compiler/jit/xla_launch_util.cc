@@ -440,9 +440,9 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
       TF_RETURN_IF_ERROR(XLAShapeToTensorShape(subshape, &shape));
       bool has_dynamic = false;
 
-      for(int dim = 0 ; dim < subshape.expressions().size(); ++dim){
+      for (int dim = 0; dim < subshape.expressions().size(); ++dim) {
         auto expr = subshape.expressions(dim);
-        if (expr->is_dynamic()) {
+        if (expr != nullptr && expr->is_dynamic()) {
           has_dynamic = true;
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {

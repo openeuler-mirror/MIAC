@@ -225,7 +225,9 @@ class Shape {
   bool has_dynamic_expr() const {
     if (auto* const state = if_array_state()) {
       return absl::c_any_of(state->expressions,
-                            [](DynExpr* e) { return e->is_dynamic(); });
+                            [](DynExpr* e) {
+                              return e != nullptr && e->is_dynamic();
+                            });
     }
     if (auto* const state = if_tuple_state()) {
       return absl::c_any_of(state->tuple_shapes, [](Shape subshape) {
@@ -236,7 +238,11 @@ class Shape {
   }
 
   DynExpr* expressions(int dimension) const {
-    return array_state().expressions[dimension];
+    if (dimension < 0) return DynExpr::_(-999);
+    const auto& exprs = array_state().expressions;
+    const size_t dim = static_cast<size_t>(dimension);
+    if (dim >= exprs.size()) return DynExpr::_(-999);
+    return exprs[dim] != nullptr ? exprs[dim] : DynExpr::_(-999);
   }
 
   // Returns true if the given dimension is statically-sized.
