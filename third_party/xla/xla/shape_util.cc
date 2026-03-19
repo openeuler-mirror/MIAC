@@ -809,7 +809,11 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
                       expr->get_val() != shape.dimensions(i);
       printer->Append(shape.dimensions(i));
       if (is_wrong) {
-        LOG(ERROR) << "THIS SHOULD NEVER HAPPEN! " << shape.ToString();
+        xla::StringPrinter expr_printer;
+        expr->print(&expr_printer);
+        LOG(ERROR) << "Mismatched static shape expression at dim " << i
+                   << ": dim=" << shape.dimensions(i)
+                   << ", expr=" << std::move(expr_printer).ToString();
         printer->Append("<!");
         expr->print(printer);
         printer->Append("!>");
