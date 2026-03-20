@@ -42,6 +42,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/device_compilation_profiler.h"
 #include "tensorflow/compiler/jit/device_compiler.h"
 #include "tensorflow/compiler/jit/encapsulate_subgraphs_pass.h"
+#include "tensorflow/compiler/jit/encapsulate_util.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/pjrt_compile_util.h"
 #include "tensorflow/compiler/jit/variable_info.h"
@@ -498,8 +499,8 @@ absl::Status CompileToLocalExecutable(
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_enable_dynamic_sizes) {
     // Rewriting the argument with expressions if they have dynamic
-    // dimension, detecting dynamic dimension via either _dynamic_dim or
-    // _output_shapes attr in the argument.
+    // dimension, detecting dynamic dimension via either _dynamic_dim or the
+    // inferred-output-shapes attr attached during encapsulation.
     std::vector<XlaCompiler::Argument> norm_args(args.begin(), args.end());
     int64_t filled_batch = 0;
     bool saw_dynamic_dim_value = false;
@@ -548,7 +549,7 @@ absl::Status CompileToLocalExecutable(
             shp.set_expressions(dyn_exprs);
             continue;
           }
-          auto it = attr_map.find("_output_shapes");
+          auto it = attr_map.find(kXlaInferredOutputShapesAttrName);
           if (it == attr_map.end()) continue;
 
           const TensorShapeProto& proto = it->second.list().shape(0);
