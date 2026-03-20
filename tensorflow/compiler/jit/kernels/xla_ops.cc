@@ -562,9 +562,21 @@ absl::Status CompileToLocalExecutable(
               // value and exit loop.
               auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
               if (e->is_dynamic()) {
-                record_dynamic_dim_value(shp.dim_size(idx));
+                int64_t var_value = e->solve(shp.dim_size(idx));
+                if (var_value <= 0) {
+                  LOG(WARNING)
+                      << "Failed to solve dynamic dimension for argument "
+                      << arg_index << " dim " << idx << " with size "
+                      << shp.dim_size(idx)
+                      << "; falling back to original dimension size.";
+                  var_value = shp.dim_size(idx);
+                } else {
+                  VLOG(1) << "Solved dynamic dimension from "
+                          << shp.dim_size(idx) << " to " << var_value;
+                }
+                record_dynamic_dim_value(var_value);
                 filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
+                    xla_batch_matcher->get_xla_compile_batch(var_value);
                 break;
               }
             }
@@ -648,9 +660,14 @@ absl::Status CompileToLocalExecutable(
           if (e->is_dynamic()) {
             int old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
-            shp.set_dim(j, filled_batch);
-            // Necessary because set_dim removes the expression:
-            shp.set_expression(j, e);
+            xla::DynExpr* padded_expr = xla::DynExpr::_(filled_batch);
+            xla::DynExpr* subst_expr = e->substitute(1, padded_expr)->s();
+            int64_t new_dim = subst_expr->get_val();
+            if (new_dim >= 0) {
+              shp.set_dim(j, new_dim);
+              // Necessary because set_dim removes the expression:
+              shp.set_expression(j, e);
+            }
           }
         }
         maybe_rewrite_scalar_constant(i);
