@@ -554,6 +554,10 @@ absl::Status Encapsulator::Subgraph::RecordArg(
         builder.Attr("_dynamic_dim", *build_attr);
       }
     }
+    auto shape_derived_attr = attrs.FindByString(kXlaShapeDerivedAttrName);
+    if (shape_derived_attr) {
+      builder.Attr(kXlaShapeDerivedAttrName, *shape_derived_attr);
+    }
     absl::Status s = builder.Finalize(&arg_def);
     if (!s.ok()) return s;
 

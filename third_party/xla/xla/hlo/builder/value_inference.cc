@@ -795,6 +795,26 @@ absl::StatusOr<PostorderDFSNode> PostorderDFSVisitor::AnalyzeUpperBound(
             return Literal::CreateFromProto(root->literal());
           }
         });
+      } else if (root->custom_call_target() == "GetExpressionValue") {
+        return PostorderDFSNode()
+            .AddDependency(root->operand_ids(0),
+                           PostorderDFSNodeType::kConstantUpperBound,
+                           InferenceContext({}, {}))
+            .AddVisit([](Literal carrier) -> absl::StatusOr<Literal> {
+              if (carrier.shape().dimensions_size() != 1 ||
+                  carrier.element_count() != 1) {
+                return InvalidArgument(
+                    "GetExpressionValue carrier must be rank-1 with one "
+                    "element, got %s",
+                    carrier.shape().ToString());
+              }
+              if (carrier.shape().element_type() != S32) {
+                return InvalidArgument(
+                    "GetExpressionValue carrier must be s32, got %s",
+                    carrier.shape().ToString());
+              }
+              return LiteralUtil::CreateR0<int32_t>(carrier.Get<int32_t>({0}));
+            });
       } else if (root->custom_call_target() == "Sharding") {
         return PostorderDFSNode()
             .AddDependency(root->operand_ids(0),
@@ -975,6 +995,14 @@ absl::StatusOr<PostorderDFSNode> PostorderDFSVisitor::AnalyzeConstant(
             return Literal::CreateFromProto(root->literal());
           }
         });
+      } else if (root->custom_call_target() == "GetExpressionValue") {
+        return PostorderDFSNode().AddVisit(
+            [root, context](absl::Span<Literal>) -> absl::StatusOr<Literal> {
+              TF_ASSIGN_OR_RETURN(Shape root_shape,
+                                  Shape::FromProto(root->shape()));
+              return CreateGarbageLiteral(
+                  ShapeUtil::GetSubshape(root_shape, context.shape_index));
+            });
       } else if (root->custom_call_target() == "Sharding") {
         return PostorderDFSNode()
             .AddDependency(root->operand_ids(0),
@@ -1508,6 +1536,16 @@ absl::StatusOr<PostorderDFSNode> PostorderDFSVisitor::AnalyzeIsDynamic(
             }
           }
         });
+      } else if (root->custom_call_target() == "GetExpressionValue") {
+        return PostorderDFSNode().AddVisit(
+            [type, root]() -> absl::StatusOr<Literal> {
+              TF_ASSIGN_OR_RETURN(Shape root_shape,
+                                  Shape::FromProto(root->shape()));
+              if (type == PostorderDFSNodeType::kValueIsDynamic) {
+                return CreatePredLiteral(true, root_shape);
+              }
+              return CreatePredLiteral(false, root_shape);
+            });
       } else if (root->custom_call_target() == "Sharding") {
         return result.AddVisit([](Literal operand) { return operand; });
       } else {

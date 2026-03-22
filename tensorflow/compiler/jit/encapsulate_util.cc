@@ -307,6 +307,7 @@ const char kXlaInferredOutputTensorShapesAttrName[] =
     "_xla_inferred_output_tensor_shapes";
 const char kXlaInferredOutputShapesAttrName[] =
     "_xla_inferred_output_shapes";
+const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
 
 const char kXlaConnectedToXlaComputationAttrName[] =
     "_xla_connected_to_xla_computation";

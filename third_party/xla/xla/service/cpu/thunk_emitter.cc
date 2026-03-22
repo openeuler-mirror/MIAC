@@ -1269,8 +1269,8 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitCustomCallThunk(
     return EmitTopKThunk(custom_call);
   } else if (custom_call_target == "SliceToDynamic") {
     return EmitSliceToDynamicThunk(instruction);
-  } else if (custom_call_target == "GetOuterBatchValue") {
-    return EmitGetOuterBatchValueThunk(instruction);
+  } else if (custom_call_target == "GetExpressionValue") {
+    return EmitGetExpressionValueThunk(instruction);
   }
 
   // Check the API version.
@@ -1313,14 +1313,14 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitSliceToDynamicThunk(
       /*min_alignment=*/cpu_function_runtime::MinAlign());
 }
 
-absl::StatusOr<ThunkSequence> ThunkEmitter::EmitGetOuterBatchValueThunk(
+absl::StatusOr<ThunkSequence> ThunkEmitter::EmitGetExpressionValueThunk(
     const HloInstruction* instruction) {
-  VLOG(2) << "Handling GetOuterBatchValue for instruction: "
-            << instruction->ToString();
+  VLOG(2) << "Handling GetExpressionValue for instruction: "
+          << instruction->ToString();
   const HloCustomCallInstruction* custom_call =
       Cast<HloCustomCallInstruction>(instruction);
   TF_ASSIGN_OR_RETURN(
-      auto kernel, ir_emitter_.EmitGetOuterBatchValueHostKernel(custom_call));
+      auto kernel, ir_emitter_.EmitGetExpressionValueHostKernel(custom_call));
   TF_ASSIGN_OR_RETURN(auto result_buffer,
                       GetHostKernelAllocationSlices(instruction));
   return MakeKernelThunkSequence(

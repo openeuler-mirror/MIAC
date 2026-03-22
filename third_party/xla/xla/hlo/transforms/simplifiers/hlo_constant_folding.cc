@@ -29,6 +29,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "xla/hlo/evaluator/hlo_evaluator.h"
@@ -308,6 +309,101 @@ absl::StatusOr<bool> HloConstantFolding::Run(
       if (!IsFoldable(instruction, level_, is_foldable_computation)) {
         continue;
       }
+
+      // Don't fold across async execution thread if it's not supposed to be
+      // changed by this pass.
+      if (instruction->IsAsynchronous() &&
+          instruction->async_execution_thread() !=
+              instruction->parent()->execution_thread()) {
+        continue;
+      }
+
+      // Do not fold FFT. Evaluating it may significantly increase compile time.
+      if (instruction->opcode() == HloOpcode::kFft) {
+        continue;
+      }
+
+      // Skip while loops as they can significantly increase compile times.
+      if (level_ == Level::kDefault &&
+          instruction->opcode() == HloOpcode::kWhile) {
+        continue;
+      }
+
+      bool source_has_dynamic_constant_marker = false;
+      std::vector<std::string> marked_constant_operands;
+      for (const HloInstruction* operand : instruction->operands()) {
+        if (operand->opcode() != HloOpcode::kConstant ||
+            !operand->has_frontend_attributes()) {
+          continue;
+        }
+        const auto& attrs = operand->frontend_attributes().map();
+        auto it = attrs.find("dynamic_constant_index");
+        if (it == attrs.end()) {
+          continue;
+        }
+        source_has_dynamic_constant_marker = true;
+        marked_constant_operands.push_back(absl::StrFormat(
+            "%s:index=%s literal=%s", operand->name(), it->second,
+            operand->literal().ToString()));
+      }
+      if (source_has_dynamic_constant_marker) {
+        VLOG(1) << "Skipping HloConstantFolding for " << instruction->name()
+                << " (" << HloOpcodeString(instruction->opcode())
+                << ") because source constant operands carry "
+                   "dynamic_constant_index";
+        VLOG(1) << "Marked constant operands: "
+                << absl::StrJoin(marked_constant_operands, ", ");
+        continue;
+      }
+
+      // Check for instructions that we can't fold even if they appear inside of
+      // a subcomputation (e.g. a kCall).
+      if (IsOrContainsIllegalInstr(instruction)) {
+        continue;
+      }
+
+      // Don't constant-fold side-effecting instructions or instructions which
+      // contain side-effecting instructions.
+      if (instruction->HasSideEffect()) {
+        continue;
+      }
+
+      // Skip constant folding for instructions that cannot be safely removed.
+      if (!computation->IsSafelyRemovable(instruction)) {
+        continue;
+      }
+
+      if (instruction->opcode() == HloOpcode::kPad &&
+          instruction->operand(0)->opcode() == HloOpcode::kBroadcast &&
+          instruction->operand(1)->opcode() == HloOpcode::kConstant) {
+        // Reduce the compile time by skipping the constant folding of pad
+        // instruction with broadcast operand. With 45m shape limit the compile
+        // time could be more than 30 seconds. According to the current
+        // benchmarks it does not affect the performance.
+        continue;
+      }
+
+      // Don't constant fold unless output and operand sizes are small.
+      if (level_ == Level::kDefault && instruction->shape().IsArray()) {
+        int64_t elements_in_operands = 0;
+        for (HloInstruction* operand : instruction->operands()) {
+          if (operand->shape().IsArray()) {
+            elements_in_operands += ShapeUtil::ElementsIn(operand->shape());
+          }
+        }
+        int64_t elements_in_constant =
+            ShapeUtil::ElementsIn(instruction->shape());
+
+        static const int64_t kMaximumConstantSizeElements = 45 * 1000 * 1000;
+        if (std::max(elements_in_constant, elements_in_operands) >
+            kMaximumConstantSizeElements) {
+          VLOG(2) << "Ignore constant folding: result shape size is "
+                  << elements_in_constant << " total size of arguments is "
+                  << elements_in_operands;
+          continue;
+        }
+      }
+
       VLOG(5) << "Constant folding: " << instruction->ToString();
 
       absl::Duration slow_timeout =
@@ -355,6 +451,17 @@ absl::StatusOr<bool> HloConstantFolding::Run(
       changed = true;
       HloInstruction* new_constant = instruction->AddInstruction(
           HloInstruction::CreateConstant(std::move(result)));
+      VLOG(1) << "HloConstantFolding created constant from "
+              << instruction->name() << " ("
+              << HloOpcodeString(instruction->opcode())
+              << "), source_has_dynamic_constant_marker="
+              << source_has_dynamic_constant_marker;
+      if (!marked_constant_operands.empty()) {
+        VLOG(1) << "Marked constant operands: "
+                << absl::StrJoin(marked_constant_operands, ", ");
+      }
+      VLOG(1) << "Folded constant literal -> "
+              << new_constant->literal().ToString();
       if (new_constant->shape().has_layout()) {
         // Update element_size_in_bits on the new instruction's layout. Literals
         // always have element_size_in_bits set to 0, and CreateConstant copies

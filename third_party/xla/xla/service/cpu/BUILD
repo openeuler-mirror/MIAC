@@ -287,6 +287,12 @@ cc_library(
         "//xla/mlir_hlo:all_passes",
         "//xla/mlir_hlo:transforms_passes",
         "//xla/service:all_reduce_promotion",
+<<<<<<< HEAD
+=======
+        "//xla/service:dynamic_constant_rewriter",
+        "//xla/service:outer_dimension_propagation",
+        "//xla/service:get_expression_value_simplifier",
+>>>>>>> f6c963e2683 (Add HLO pass to rewrite marked dynamic constants)
         "//xla/service:all_to_all_decomposer",
         "//xla/service:batched_gather_scatter_normalizer",
         "//xla/service:batchnorm_expander",

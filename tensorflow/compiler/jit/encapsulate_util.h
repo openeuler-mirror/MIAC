@@ -37,6 +37,10 @@ extern const char kXlaInferredOutputTensorShapesAttrName[];
 // nodes for XlaCompileOp argument reconstruction.
 extern const char kXlaInferredOutputShapesAttrName[];
 
+// Attribute indicating that a node is shape-derived and worth tracking across
+// JIT boundaries, e.g. Shape and shape-fed Cast.
+extern const char kXlaShapeDerivedAttrName[];
+
 // Infers output shapes for all nodes in graph `g`. The output shapes will be
 // stored in node attribute `kXlaInferredShapesAttrName`.
 //

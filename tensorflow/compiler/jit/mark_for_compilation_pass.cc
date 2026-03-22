@@ -917,6 +917,26 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   if (debug_options_.enable_dynamic_sizes) {
     LogExpressionsViaGraphProperties(*graph_);
     TF_RETURN_IF_ERROR(AssignDimVars());
+    for (Node* n : graph_->op_nodes()) {
+      bool mark_shape_derived = false;
+      if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+        mark_shape_derived = true;
+      } else if (n->type_string() == "Cast") {
+        for (const Edge* edge : n->in_edges()) {
+          if (edge->IsControlEdge()) continue;
+          const Node* src = edge->src();
+          if (src->type_string() == "Shape" || src->type_string() == "ShapeN") {
+            mark_shape_derived = true;
+            break;
+          }
+        }
+      }
+      if (mark_shape_derived) {
+        n->AddAttr(kXlaShapeDerivedAttrName, true);
+        VLOG(1) << "MarkForCompilation marked shape-derived node "
+                << n->name() << " op=" << n->type_string();
+      }
+    }
   }
   if (debug_options_.enable_cluster_parallel) {
     TF_RETURN_IF_ERROR(AssignParallelChains());

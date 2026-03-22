@@ -76,6 +76,11 @@ struct XlaArgument {
   // host-memory tensor.
   Tensor constant_value;
 
+  // Some compile-time constants are really folded dynamic values.
+  // When non-negative, marks the single constant element that later passes may
+  // reinterpret as coming from a dynamic expression instead of the literal.
+  int64_t dynamic_constant_index = -1;
+  xla::DynExpr* dynamic_constant_expr = nullptr;
   // The upper bounds of the value.
   std::optional<Tensor> value_bound;
 

@@ -2365,7 +2365,7 @@ absl::Status IrEmitter::HandleSliceToDynamic(HloInstruction* hlo) {
   return EmitSliceToDynamic(hlo, source_arrays, target_array);
 }
 
-absl::Status IrEmitter::HandleOuterBatchValue(HloInstruction* hlo) {
+absl::Status IrEmitter::HandleShapeExprValue(HloInstruction* hlo) {
   TF_RETURN_IF_ERROR(EmitTargetAddressForOp(hlo));
 
   llvm_ir::IrArray out_array = GetIrArrayFor(hlo);
@@ -2831,8 +2831,8 @@ absl::Status IrEmitter::HandleOneDnnSoftmax(HloInstruction* custom_call) {
 #endif  // INTEL_MKL
 
 absl::Status IrEmitter::HandleCustomCall(HloInstruction* custom_call) {
-  if (custom_call->custom_call_target() == "GetOuterBatchValue") {
-    return HandleOuterBatchValue(custom_call);
+  if (custom_call->custom_call_target() == "GetExpressionValue") {
+    return HandleShapeExprValue(custom_call);
   }
 
   if (custom_call->custom_call_target() == "PadToStatic") {

@@ -49,6 +49,7 @@ namespace tensorflow {
 namespace {
 
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
+const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
 // constant-foldable.
@@ -244,6 +245,11 @@ bool IsConstantFoldable(
     int64_t max_constant_size_in_bytes,
     std::unordered_map<const Node*, std::vector<Tensor>>*
         shape_replacement_map) {
+  if (n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
+    VLOG(1) << "Skipping constant folding for shape-derived node "
+            << n->name() << " op=" << n->type_string();
+    return false;
+  }
   if (n->IsConstant()) {
     // Skip constant folding resources as they cannot be deep copied.
     return n->output_type(0) != DT_RESOURCE;
@@ -478,6 +484,8 @@ void AddShapeNodeToConstantGraph(
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {
+    VLOG(1) << "Constant folding shape node " << node_name
+            << " into Const with value " << t.SummarizeValue(16);
     auto builder =
         NodeDefBuilder(generate_new_name(constant_graph, node_name), "Const")
             .Attr("dtype", t.dtype())
@@ -625,6 +633,9 @@ bool ReplaceTensorWithConstant(
 
   VLOG(1) << "Replacing " << tensor.first->name() << " :: " << tensor.second
           << " with a constant";
+  VLOG(1) << "ReplaceTensorWithConstant creating Const from "
+          << tensor.first->name() << " :: " << tensor.second
+          << " with value " << constant.SummarizeValue(16);
 
   if (!NodeBuilder(builder).Finalize(graph, &constant_node).ok()) {
     return false;

@@ -112,6 +112,17 @@ class XlaExpression {
   // Return the dynamism of the expression, if available.
   std::optional<Tensor> value_dynamism() const { return value_dynamism_; }
 
+  std::optional<int64_t> dynamic_constant_index() const {
+    return dynamic_constant_index_;
+  }
+  void set_dynamic_constant_index(int64_t index) {
+    dynamic_constant_index_ = index;
+  }
+  xla::DynExpr* dynamic_constant_expr() const { return dynamic_constant_expr_; }
+  void set_dynamic_constant_expr(xla::DynExpr* expr) {
+    dynamic_constant_expr_ = expr;
+  }
+
   XlaResource* resource() const { return resource_; }
 
   // Returns a human-readable summary of the expression.
@@ -163,6 +174,11 @@ class XlaExpression {
 
   // Indicate whether each value inside a tensor is dynamic or not.
   std::optional<Tensor> value_dynamism_;
+
+  // For constant expressions, marks a single element that later passes may
+  // reinterpret as coming from a dynamic expression instead of the literal.
+  std::optional<int64_t> dynamic_constant_index_;
+  xla::DynExpr* dynamic_constant_expr_ = nullptr;
 
   // The resource, if kind_ == kResource. Not owned.
   XlaResource* resource_ = nullptr;

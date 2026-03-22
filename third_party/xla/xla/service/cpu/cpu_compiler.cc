@@ -154,6 +154,12 @@ limitations under the License.
 #include "xla/map_util.h"
 #include "xla/mlir_hlo/transforms/passes.h"
 #include "xla/service/all_reduce_promotion.h"
+<<<<<<< HEAD
+=======
+#include "xla/service/dynamic_constant_rewriter.h"
+#include "xla/service/get_expression_value_simplifier.h"
+#include "xla/service/outer_dimension_propagation.h"
+>>>>>>> f6c963e2683 (Add HLO pass to rewrite marked dynamic constants)
 #include "xla/service/all_to_all_decomposer.h"
 #include "xla/service/batched_gather_scatter_normalizer.h"
 #include "xla/service/batchnorm_expander.h"
@@ -499,6 +505,7 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       options::FoldAllConstants(module->config())
           ? HloConstantFolding::Level::kAggressive
           : HloConstantFolding::Level::kDefault);
+  pipeline->AddPass<DynamicConstantRewriter>();
   pipeline->AddPass<ConditionalSimplifier>();
 
   return pipeline;

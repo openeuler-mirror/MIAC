@@ -32,6 +32,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/variant.h"
@@ -93,7 +94,6 @@ namespace {
 constexpr char kSingleOpComponent[] = "TF2XLA_XLA_COMPILER_COMPILE_SINGLE_OP";
 constexpr char kCompileFunctionComponent[] =
     "TF2XLA_XLA_COMPILER_COMPILE_FUNCTION";
-
 // Checks that arguments `args` match types `types`.
 absl::Status CheckSignature(const DataTypeVector& types,
                             absl::Span<const XlaCompiler::Argument> args) {
@@ -1119,6 +1119,10 @@ absl::Status XlaCompiler::BuildArguments(
       }
       case XlaCompiler::Argument::kConstant:
         arg_expression = XlaExpression::Constant(arg.constant_value);
+        if (arg.dynamic_constant_index >= 0) {
+          arg_expression.set_dynamic_constant_index(arg.dynamic_constant_index);
+          arg_expression.set_dynamic_constant_expr(arg.dynamic_constant_expr);
+        }
         break;
       case XlaCompiler::Argument::kInvalid:
         return errors::Internal(

@@ -17,9 +17,11 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
 
@@ -95,6 +97,24 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
         xla::BorrowingLiteral literal;
         TF_RETURN_IF_ERROR(
             HostTensorToBorrowingLiteral(*constant_value_, &literal));
+        if (!dynamic_constant_index_.has_value() ||
+            dynamic_constant_expr_ == nullptr) {
+          return xla::ConstantLiteral(builder, literal);
+        }
+
+        xla::FrontendAttributes attributes = builder->frontend_attributes();
+        (*attributes.mutable_map())["dynamic_constant_index"] =
+            std::to_string(*dynamic_constant_index_);
+        xla::ExpressionProto expr_proto;
+        dynamic_constant_expr_->to_proto(&expr_proto);
+        (*attributes.mutable_map())["dynamic_constant_expr"] =
+            expr_proto.ShortDebugString();
+        VLOG(1) << "Marking HLO constant with dynamic_constant_index="
+                << *dynamic_constant_index_
+                << " dynamic_constant_expr="
+                << expr_proto.ShortDebugString();
+        xla::XlaScopedFrontendAttributesAssignment assign_frontend_attributes(
+            builder, attributes);
         return xla::ConstantLiteral(builder, literal);
       }
       case Kind::kTensorList:

@@ -72,6 +72,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
@@ -509,10 +510,12 @@ absl::Status CompileToLocalExecutable(
     int64_t dynamic_dim_value = 0;
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
-    auto record_dynamic_dim_value = [&](int64_t dim_size) {
+    xla::DynExpr* dynamic_dim_expr = nullptr;
+    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DynExpr* expr) {
       if (!saw_dynamic_dim_value) {
         saw_dynamic_dim_value = true;
         dynamic_dim_value = dim_size;
+        dynamic_dim_expr = expr;
         return;
       }
       if (dynamic_dim_value != dim_size) {
@@ -528,6 +531,12 @@ absl::Status CompileToLocalExecutable(
           const std::string& node_name =
               fdef->signature().input_arg(arg_index).name();
 
+          auto shape_derived_attr = attr_map.find(kXlaShapeDerivedAttrName);
+          if (shape_derived_attr != attr_map.end()) {
+            VLOG(1) << "XlaCompileOp retrieved shape-derived marker for arg "
+                    << arg_index << " node=" << node_name;
+          }
+
           // Special case for _dynamic_dim...
           auto dyn_dim_attr = attr_map.find("_dynamic_dim");
           if (dyn_dim_attr != attr_map.end()) {
@@ -535,7 +544,7 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx));
+            record_dynamic_dim_value(shp.dim_size(idx), xla::DynExpr::V(1));
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
@@ -574,7 +583,7 @@ absl::Status CompileToLocalExecutable(
                   VLOG(1) << "Solved dynamic dimension from "
                           << shp.dim_size(idx) << " to " << var_value;
                 }
-                record_dynamic_dim_value(var_value);
+                record_dynamic_dim_value(var_value, e);
                 filled_batch =
                     xla_batch_matcher->get_xla_compile_batch(var_value);
                 break;
@@ -621,28 +630,46 @@ absl::Status CompileToLocalExecutable(
       }
 
       if (arg.constant_value.dtype() == DT_INT32) {
-        const int32 old_value = arg.constant_value.flat<int32>()(0);
-        // Heuristic: rewrite only scalar constants or shape-like int vectors
-        // whose leading entry matches the observed runtime batch size.
-        if (old_value == dynamic_dim_value) {
-          // Deep-copy before rewrite so the compile-time patch does not mutate
-          // a Tensor buffer shared with caller-visible inputs.
-          Tensor scalar_copy(arg.constant_value.dtype(),
-                             arg.constant_value.shape());
-          scalar_copy.flat<int32>() = arg.constant_value.flat<int32>();
-          arg.constant_value = std::move(scalar_copy);
-          arg.constant_value.flat<int32>()(0) =
-              static_cast<int32>(filled_batch);
+        auto flat = arg.constant_value.flat<int32>();
+        int rewrite_index = -1;
+        // Heuristic: rewrite only scalar constants or shape-like int vectors.
+        // In practice we expect at most one entry to match the observed
+        // runtime batch size, so rewrite the first matching entry.
+        for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
+          if (flat(i) == dynamic_dim_value) {
+            rewrite_index = i;
+            break;
+          }
+        }
+        if (rewrite_index >= 0) {
+          arg.constant_value = tensor::DeepCopy(arg.constant_value);
+          auto mutable_flat = arg.constant_value.flat<int32>();
+          VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
+                  << " index " << rewrite_index
+                  << " matches dynamic_dim_value=" << dynamic_dim_value;
+          arg.dynamic_constant_index = rewrite_index;
+          arg.dynamic_constant_expr = dynamic_dim_expr;
+          mutable_flat(rewrite_index) = filled_batch;
         }
       } else if (arg.constant_value.dtype() == DT_INT64) {
-        const int64_t old_value = arg.constant_value.flat<int64_t>()(0);
-        // Same heuristic for int64 scalar constants.
-        if (old_value == dynamic_dim_value) {
-          Tensor scalar_copy(arg.constant_value.dtype(),
-                             arg.constant_value.shape());
-          scalar_copy.flat<int64_t>() = arg.constant_value.flat<int64_t>();
-          arg.constant_value = std::move(scalar_copy);
-          arg.constant_value.flat<int64_t>()(0) = filled_batch;
+        auto flat = arg.constant_value.flat<int64_t>();
+        int rewrite_index = -1;
+        // Same heuristic for int64 scalar constants or shape-like vectors.
+        for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
+          if (flat(i) == dynamic_dim_value) {
+            rewrite_index = i;
+            break;
+          }
+        }
+        if (rewrite_index >= 0) {
+          arg.constant_value = tensor::DeepCopy(arg.constant_value);
+          auto mutable_flat = arg.constant_value.flat<int64_t>();
+          VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
+                  << " index " << rewrite_index
+                  << " matches dynamic_dim_value=" << dynamic_dim_value;
+          arg.dynamic_constant_index = rewrite_index;
+          arg.dynamic_constant_expr = dynamic_dim_expr;
+          mutable_flat(rewrite_index) = filled_batch;
         }
       }
     };
