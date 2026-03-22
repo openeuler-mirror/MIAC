@@ -31,7 +31,7 @@ class XlaBatchMatcher {
     int64_t find_min_larger_batch(int64_t real_batch);
 
     std::vector<int64_t> all_batches_;
-    const char* env_str_;
+    std::string env_str_;
     int64_t last_batch_ = -1;
 };
 

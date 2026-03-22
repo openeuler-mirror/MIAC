@@ -68,11 +68,14 @@ void ArgOp::Compute(OpKernelContext* ctx) {
   };
 
   Tensor t;
+  int64_t batch_size = -1;
   if (frame->CanConsumeArg(index_)) {
     frame->ConsumeArg(index_, &t);
     OP_REQUIRES_OK(ctx, validate_type(t));
+    if (dynamic_dim_ >= 0) {
+      batch_size = t.dim_size(dynamic_dim_);
+    }
     ctx->set_output(0, std::move(t));
-    val = &t;
   } else {
     OP_REQUIRES_OK(ctx, frame->GetArg(index_, &val));
     OP_REQUIRES_OK(ctx, validate_type(*val));
@@ -89,7 +92,9 @@ void ArgOp::Compute(OpKernelContext* ctx) {
                               return OkStatus();
                             }));
 
-    const int64_t batch_size = val->dim_size(dynamic_dim_);
+    if (batch_size < 0) {
+      batch_size = val->dim_size(dynamic_dim_);
+    }
     VLOG(1) << "Found batch_size in dimension #" << dynamic_dim_;
     if (bsr->GetBatchSize() == 0) {
       bsr->SetBatchSize(batch_size);

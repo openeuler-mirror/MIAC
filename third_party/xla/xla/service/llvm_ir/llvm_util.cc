@@ -381,9 +381,7 @@ llvm::Type* ShapeToIrType(const Shape& shape, llvm::LLVMContext& context) {
   } else if (shape.IsArray()) {
     auto dimensions = LayoutUtil::MinorToMajor(shape);
     for (int i = 0; i < dimensions.size(); i++) {
-      // The MinorToMajor order reverses dimensions...
-      bool is_dynamic =
-           shape.expressions(dimensions.size() - 1 - i)->is_dynamic();
+      bool is_dynamic = shape.expressions(dimensions[i])->is_dynamic();
       int64_t dim_val = is_dynamic ? 0 : shape.dimensions(dimensions[i]);
       result_type = llvm::ArrayType::get(result_type, dim_val);
     }

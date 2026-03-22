@@ -5,9 +5,7 @@
 namespace tensorflow {
 
 XlaBatchMatcher::XlaBatchMatcher() {
-  const std::string xla_compile_batch_sizes =
-      xla::GetDebugOptionsFromFlags().xla_compile_batch_sizes();
-  env_str_ = xla_compile_batch_sizes.c_str();
+  env_str_ = xla::GetDebugOptionsFromFlags().xla_compile_batch_sizes();
   parse_env_config();
 }
 
@@ -89,13 +87,7 @@ void XlaBatchMatcher::print_all_batches() {
 // For example, export XLA_COMPILE_BATCH_SIZES="10:100:10, 977"
 void XlaBatchMatcher::parse_env_config() {
   // If the env var not set or is empty, filled with the nearest power of two by default
-  if (!env_str_) {
-    VLOG(2) << "[XLA_BATCH_WARN] Env var " << "--tf_xla_compile_batch_sizes" <<
-      " not set, filled with the nearest power of two by default";
-    return;
-  }
-
-  if (std::string(env_str_).empty()) {
+  if (env_str_.empty()) {
     VLOG(2) << "[XLA_BATCH_WARN] Env var " << "--tf_xla_compile_batch_sizes" <<
         "is empty, filled with the nearest power of two by default";
     return;

@@ -364,7 +364,7 @@ llvm::Value* KernelApiIrBuilder::EmitGetBatchDim(llvm::IRBuilderBase& builder,
   llvm::FunctionCallee printfFunc =
       module->getOrInsertFunction("printf", printfType);
   llvm::Value* formatStr =
-      builder.CreateGlobalStringPtr("Function: %s, Batch size is : %d!\n");
+      builder.CreateGlobalStringPtr("Function: %s, Batch size is : %lld!\n");
   builder.CreateCall(printfFunc, {formatStr, funcNameStr, bdim_value});
 #endif
 

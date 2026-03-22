@@ -566,16 +566,24 @@ llvm::Value* IrArray::EmitArrayElementAddress(const IrArray::Index& index,
   // Do not make a dynamic "GEP" if only the first dimension is dynamic since
   // it's always indiced with 0 (i.e. the dynamic dimension has no impact on the
   // address computation).
-  auto expressions = shape_.expressions();
+  std::vector<int64_t> gep_dims;
+  std::vector<DynExpr*> gep_expressions;
+  gep_dims.reserve(shape_.dimensions().size());
+  gep_expressions.reserve(shape_.dimensions().size());
+  for (int64_t i = 0; i < shape_.dimensions().size(); ++i) {
+    int64_t dimension = LayoutUtil::Major(shape_.layout(), i);
+    gep_dims.push_back(shape_.dimensions(dimension));
+    gep_expressions.push_back(shape_.expressions(dimension));
+  }
   bool dynamic_first_dim =
-      expressions[0]->is_dynamic() &&
-      std::all_of(expressions.begin() + 1, expressions.end(),
+      gep_expressions[0]->is_dynamic() &&
+      std::all_of(gep_expressions.begin() + 1, gep_expressions.end(),
                   [](DynExpr* e) { return e->is_constant(); });
   if (!dynamic_first_dim && shape_.has_dynamic_expr()) {
     llvm::Type* element_type =
         PrimitiveTypeToIrType(shape_.element_type(), b->getContext());
     return llvm_ir::createDynamicGEP(
-        b, base_ptr_, gep_indices, shape_.dimensions(), expressions,
+        b, base_ptr_, gep_indices, gep_dims, gep_expressions,
         element_type, llvm_ir::AsStringRef(name));
   } else {
     return b->CreateInBoundsGEP(pointee_type_, base_ptr_, gep_indices,
