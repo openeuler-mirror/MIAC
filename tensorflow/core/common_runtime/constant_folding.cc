@@ -437,6 +437,28 @@ void AddNodeToConstantGraph(
   }
 }
 
+bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
+  for (const Edge* edge : node->in_edges()) {
+    if (edge->IsControlEdge()) continue;
+
+    Node* input_node = edge->src();
+    if (input_node->type_string() == "_Arg") {
+      std::vector<TensorShapeProto> shapes;
+      if (GetNodeAttr(input_node->def(), "_output_shapes", &shapes)
+              .ok() &&
+          !shapes.empty()) {
+        for (auto expression : TensorShape(shapes[0]).get_expressions()) {
+          if (expression->is_dynamic()) {
+            *out_shape = shapes[0];
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 // Replaces constant-foldable shape node n by a vector of constants in
 // constant_graph, which is being built up for subsequent evaluation of constant
 // propagation. node_map is the mapping of nodes in the original graph to nodes
@@ -449,12 +471,18 @@ void AddShapeNodeToConstantGraph(
         shape_replacement_map,
     std::unordered_map<Node*, std::vector<Node*>>* node_map,
     const ConstantFoldNameGenerator& generate_new_name, Graph* constant_graph) {
+
+  TensorShapeProto user_inferred_shape;
+  bool has_dynamic = GetShapeFromArgNode(n, &user_inferred_shape);
+
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {
     auto builder =
         NodeDefBuilder(generate_new_name(constant_graph, node_name), "Const")
             .Attr("dtype", t.dtype())
+            .Attr("has_dynamic", has_dynamic)
+            .Attr("user_inferred_shape", user_inferred_shape)
             .Attr("value", t);
     NodeDef def;
     CHECK(builder.Finalize(&def).ok());
@@ -575,8 +603,13 @@ bool ReplaceTensorWithConstant(
   }
   const string& node_name = n->name();
   Node* constant_node;
+
+  TensorShapeProto user_inferred_shape;
+  bool has_dynamic = GetShapeFromArgNode(tensor.first, &user_inferred_shape);
   auto builder = NodeDefBuilder(generate_new_name(graph, node_name), "Const")
                      .Attr("dtype", constant.dtype())
+                     .Attr("has_dynamic", has_dynamic)
+                     .Attr("user_inferred_shape", user_inferred_shape)
                      .Attr("value", constant);
   if (partition_device) {
     builder.Device(partition_device->name());

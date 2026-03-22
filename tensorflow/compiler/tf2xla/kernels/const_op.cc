@@ -117,9 +117,21 @@ class ConstOp : public XlaOpKernel {
   void Compile(XlaOpKernelContext* ctx) override {
     xla::XlaBuilder* b = ctx->builder();
 
+    bool has_dynamic = false;
+    TensorShapeProto inferred_shape_proto;
+    TensorShape shape;
+    if (GetNodeAttr(ctx->op_kernel().def(), "has_dynamic", &has_dynamic).ok() &&
+        has_dynamic) {
+      if (GetNodeAttr(ctx->op_kernel().def(), "user_inferred_shape",
+                      &inferred_shape_proto)
+              .ok()) {
+        shape = TensorShape(inferred_shape_proto);
+      }
+    }
+
     // To avoid blowups for large constants filled with the same value,
     // recognize that case and emit a scalar broadcast instead.
-    TensorShape shape(proto_.tensor_shape());
+    shape = has_dynamic ? shape : TensorShape(proto_.tensor_shape());
     if (shape.num_elements() > 1) {
       xla::XlaOp value = GetScalarConst(proto_, b);
       if (value.valid()) {
@@ -129,11 +141,34 @@ class ConstOp : public XlaOpKernel {
       }
     }
 
-    Tensor tensor(proto_.dtype());
-    OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
-                errors::InvalidArgument("Cannot parse tensor from proto: ",
-                                        proto_.DebugString()));
-    ctx->SetConstantOutput(0, tensor);
+    if (has_dynamic) {
+      std::vector<xla::XlaOp> dimension_constants;
+      for (int i = 0; i < shape.dims(); ++i) {
+        if (shape.get_expression(i)->is_dynamic()) {
+          // Make a dummy op to store shape expression
+          xla::XlaOp zero = xla::ConstantR0<int32>(b, 0);
+          xla::XlaOp dummy_op = xla::Broadcast(zero, shape.dim_sizes(),
+                                               shape.get_expressions());
+          xla::XlaOp outerbatch = xla::GetOuterBatchValue(dummy_op);
+          // TODO: Handle expression arithmetics * + - /
+          dimension_constants.push_back(xla::Reshape(outerbatch, {1}));
+        } else {
+          int32_t dim_val = static_cast<int32_t>(shape.dim_size(i));
+          xla::XlaOp scalar_const = xla::ConstantR0<int32_t>(b, dim_val);
+          dimension_constants.push_back(xla::Reshape(scalar_const, {1}));
+        }
+      }
+
+      xla::XlaOp combined_shape_constant = xla::ConcatInDim(b,
+                                                        dimension_constants, 0);
+      ctx->SetOutput(0, combined_shape_constant);
+    } else {
+      Tensor tensor(proto_.dtype());
+      OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
+                  errors::InvalidArgument("Cannot parse tensor from proto: ",
+                                          proto_.DebugString()));
+      ctx->SetConstantOutput(0, tensor);
+    }
   }
 
  private:
