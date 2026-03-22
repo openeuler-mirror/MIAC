@@ -149,9 +149,9 @@ class ConstOp : public XlaOpKernel {
           xla::XlaOp zero = xla::ConstantR0<int32>(b, 0);
           xla::XlaOp dummy_op = xla::Broadcast(zero, shape.dim_sizes(),
                                                shape.get_expressions());
-          xla::XlaOp outerbatch = xla::GetOuterBatchValue(dummy_op);
+          xla::XlaOp expr_value = xla::GetExpressionValue(dummy_op);
           // TODO: Handle expression arithmetics * + - /
-          dimension_constants.push_back(xla::Reshape(outerbatch, {1}));
+          dimension_constants.push_back(xla::Reshape(expr_value, {1}));
         } else {
           int32_t dim_val = static_cast<int32_t>(shape.dim_size(i));
           xla::XlaOp scalar_const = xla::ConstantR0<int32_t>(b, dim_val);
