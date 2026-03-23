@@ -40,6 +40,7 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -453,6 +454,23 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
   }
 }
 
+bool DynamicConstantRewriterEnabled(const HloModule* module) {
+  const auto& extra_options =
+      module->config().debug_options().xla_backend_extra_options();
+  auto it = extra_options.find("xla_cpu_disable_dynamic_constant_rewriter");
+  if (it == extra_options.end()) {
+    return true;
+  }
+  bool disabled = false;
+  if (!absl::SimpleAtob(it->second, &disabled)) {
+    LOG(WARNING)
+        << "Ignoring invalid xla_cpu_disable_dynamic_constant_rewriter value: "
+        << it->second;
+    return true;
+  }
+  return !disabled;
+}
+
 std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
     absl::string_view name, HloModule* module, bool is_fusion_emitters,
     bool is_onednn_compatible) {
@@ -500,7 +518,9 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       options::FoldAllConstants(module->config())
           ? HloConstantFolding::Level::kAggressive
           : HloConstantFolding::Level::kDefault);
-  pipeline->AddPass<DynamicConstantRewriter>();
+  if (DynamicConstantRewriterEnabled(module)) {
+    pipeline->AddPass<DynamicConstantRewriter>();
+  }
   pipeline->AddPass<ConditionalSimplifier>();
 
   return pipeline;
