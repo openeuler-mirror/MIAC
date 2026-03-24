@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_shape.h"
 
 #include "tensorflow/core/framework/bounds_check.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -25,6 +26,12 @@ limitations under the License.
 #include "tensorflow/core/util/overflow.h"
 
 namespace tensorflow {
+
+namespace {
+
+const bool kTensorShapeExpressionsEnabled = TensorShapeExpressionsEnabled();
+
+}  // namespace
 
 xla::DynExpr* ExprFromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
@@ -251,8 +258,10 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
     for (const auto& d : proto.dim()) {
       AddDim(d.size());
     }
-    for (const auto& e : proto.expressions()) {
-      AddExpression(ExprFromProto(e));
+    if (kTensorShapeExpressionsEnabled) {
+      for (const auto& e : proto.expressions()) {
+        AddExpression(ExprFromProto(e));
+      }
     }
   }
 }
@@ -293,8 +302,10 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
         }
       }
     }
-    for (const auto& e : proto.expressions()) {
-      out->AddExpression(ExprFromProto(e));
+    if (kTensorShapeExpressionsEnabled) {
+      for (const auto& e : proto.expressions()) {
+        out->AddExpression(ExprFromProto(e));
+      }
     }
   }
   return absl::OkStatus();
@@ -481,19 +492,37 @@ void TensorShapeRep::Clear() {
 }
 
 void TensorShapeRep::set_expression(int d, xla::DynExpr* expr) {
+  if (!kTensorShapeExpressionsEnabled) {
+    expressions_.clear();
+    return;
+  }
+  if (expressions_.size() <= static_cast<size_t>(d)) {
+    expressions_.resize(d + 1, nullptr);
+  }
   expressions_[d] = expr;
 }
 
 void TensorShapeRep::AddExpression(xla::DynExpr* expr) {
+  if (!kTensorShapeExpressionsEnabled) {
+    return;
+  }
   CHECK_LT(expressions_.size(), ndims_byte());
   expressions_.push_back(expr);
 }
 
 void TensorShapeRep::set_expressions(std::vector<xla::DynExpr*> exprs) {
+  if (!kTensorShapeExpressionsEnabled) {
+    expressions_.clear();
+    return;
+  }
+  while (!exprs.empty() && exprs.back() == nullptr) {
+    exprs.pop_back();
+  }
   expressions_ = exprs;
 }
 
 void TensorShapeRep::ClearAllButDataType() {
+  expressions_.clear();
   if (tag() == REP_OUT_OF_LINE) {
     delete as64()->dims_;
   }
@@ -706,7 +735,9 @@ template <class Shape>
 void TensorShapeBase<Shape>::set_dim(int d, int64_t size) {
   CHECK_GE(d, 0);
   CHECK_LT(d, dims());
-  if (get_expressions().size() > d) set_expression(d, xla::DynExpr::_(size));
+  if (d < expressions_.size() && expressions_[d] != nullptr) {
+    set_expression(d, xla::DynExpr::_(size));
+  }
   if (!kIsPartial) {
     CHECK_GE(size, 0);
   }
@@ -768,7 +799,9 @@ absl::Status TensorShapeBase<Shape>::SetDimWithStatus(int d, int64_t size) {
     }
   }
 
-  if (get_expressions().size() > d) set_expression(d, xla::DynExpr::_(size));
+  if (d < expressions_.size() && expressions_[d] != nullptr) {
+    set_expression(d, xla::DynExpr::_(size));
+  }
   return RecomputeNumElements();
 }
 
@@ -892,9 +925,13 @@ void TensorShapeBase<Shape>::AsProto(TensorShapeProto* proto) const {
     for (int i = 0; i < dims(); i++) {
       proto->add_dim()->set_size(dim_size(i));
     }
-    for (int i = 0; i < get_expressions().size(); i++) {
-      ExpressionProto* eproto = proto->add_expressions();
-      ExprToProto(get_expression(i), eproto);
+    if (kTensorShapeExpressionsEnabled) {
+      for (int i = 0; i < expressions_.size(); ++i) {
+        ExpressionProto* eproto = proto->add_expressions();
+        if (expressions_[i] != nullptr) {
+          ExprToProto(expressions_[i], eproto);
+        }
+      }
     }
   }
 }
@@ -929,9 +966,10 @@ string TensorShapeRep::DebugString() const {
     } else {
       strings::StrAppend(&s, dim);
     }
-    if (shape.get_expression(i) != nullptr) {
+    if (kTensorShapeExpressionsEnabled && i < expressions_.size() &&
+        expressions_[i] != nullptr) {
       strings::StrAppend(&s, "<");
-      strings::StrAppend(&s, ExprToString(shape.get_expression(i)));
+      strings::StrAppend(&s, ExprToString(expressions_[i]));
       strings::StrAppend(&s, ">");
     }
   }
@@ -957,15 +995,17 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
     first = false;
   }
   strings::StrAppend(&s, "]");
-  strings::StrAppend(&s, "<");
-  first = true;
-  for (const auto& e : proto.expressions()) {
-    if (!first) strings::StrAppend(&s, ",");
-    auto exp = ExprFromProto(e);
-    strings::StrAppend(&s, ExprToString(exp));
-    first = false;
+  if (kTensorShapeExpressionsEnabled) {
+    strings::StrAppend(&s, "<");
+    first = true;
+    for (const auto& e : proto.expressions()) {
+      if (!first) strings::StrAppend(&s, ",");
+      auto exp = ExprFromProto(e);
+      strings::StrAppend(&s, ExprToString(exp));
+      first = false;
+    }
+    strings::StrAppend(&s, ">");
   }
-  strings::StrAppend(&s, ">");
   return s;
 }
 
