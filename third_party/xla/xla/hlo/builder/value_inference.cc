@@ -802,7 +802,7 @@ absl::StatusOr<PostorderDFSNode> PostorderDFSVisitor::AnalyzeUpperBound(
                            InferenceContext({}, {}))
             .AddVisit([](Literal carrier) -> absl::StatusOr<Literal> {
               if (carrier.shape().dimensions_size() != 1 ||
-                  carrier.element_count() != 1) {
+                  carrier.shape().dimensions(0) != 1) {
                 return InvalidArgument(
                     "GetExpressionValue carrier must be rank-1 with one "
                     "element, got %s",
