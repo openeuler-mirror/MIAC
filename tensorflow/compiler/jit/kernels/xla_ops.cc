@@ -63,6 +63,7 @@ limitations under the License.
 #include "xla/client/local_client.h"
 #include "xla/executable_run_options.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/printer.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/protobuf/error_codes.pb.h"
@@ -571,8 +572,10 @@ absl::Status CompileToLocalExecutable(
               // value and exit loop.
               auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
               if (e->is_dynamic()) {
-                int64_t var_value = e->solve(shp.dim_size(idx));
-                if (var_value <= 0) {
+                std::optional<int64_t> solved_value =
+                    e->solve(shp.dim_size(idx));
+                int64_t var_value;
+                if (!solved_value.has_value()) {
                   LOG(WARNING)
                       << "Failed to solve dynamic dimension for argument "
                       << arg_index << " dim " << idx << " with size "
@@ -580,6 +583,7 @@ absl::Status CompileToLocalExecutable(
                       << "; falling back to original dimension size.";
                   var_value = shp.dim_size(idx);
                 } else {
+                  var_value = *solved_value;
                   VLOG(1) << "Solved dynamic dimension from "
                           << shp.dim_size(idx) << " to " << var_value;
                 }
@@ -1272,14 +1276,19 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           VLOG(1) << "input shape is " << ctx->input(input_idx).shape()
                   << ", corresponding xla input shape is " << xla_shape;
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
-          int64_t dyn_val = expr->solve(size); // TODO: check if the result is correct later.
-          VLOG(1) << "Found dynamic input. Real size is: " << size
-                        << ", solved dynamic value is " << dyn_val;
-          if (dyn_val == -1) {
-            VLOG(1) << "Warning: Failed to solve the expression";
+          std::optional<int64_t> dyn_val =
+              expr->solve(size);  // TODO: check if the result is correct later.
+          if (dyn_val.has_value()) {
+            VLOG(1) << "Found dynamic input. Real size is: " << size
+                    << ", solved dynamic value is " << *dyn_val;
+          } else {
+            xla::StringPrinter printer;
+            expr->print(&printer);
+            VLOG(1) << "Warning: Failed to solve the expression "
+                    << std::move(printer).ToString();
             continue;
           }
-          dyn_vals.insert(dyn_val);
+          dyn_vals.insert(*dyn_val);
         }
       }
     }
