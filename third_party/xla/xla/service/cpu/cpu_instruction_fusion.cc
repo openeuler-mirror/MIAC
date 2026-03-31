@@ -63,6 +63,23 @@ bool IsNonComplexNonBatchedMatrixVectorDot(const HloInstruction* hlo) {
          hlo->dot_dimension_numbers().lhs_batch_dimensions_size() == 0;
 }
 
+bool HasDynamicDimensions(const Shape& shape) {
+  for (int64_t i = 0; i < shape.dimensions().size(); ++i) {
+    if (shape.is_dynamic_dimension(i) ||
+        shape.expressions(i)->is_dynamic()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool IsDynamicDot(const HloInstruction* hlo) {
+  return hlo->opcode() == HloOpcode::kDot &&
+         (HasDynamicDimensions(hlo->shape()) ||
+          HasDynamicDimensions(hlo->operand(0)->shape()) ||
+          HasDynamicDimensions(hlo->operand(1)->shape()));
+}
+
 bool HasExactlyOneUse(const HloInstruction& hlo_instr) {
   return hlo_instr.user_count() == 1 &&
          absl::c_count(hlo_instr.users().front()->operands(), &hlo_instr) == 1;
@@ -165,6 +182,10 @@ FusionDecision CpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
 
   if (IsLargeConstant(producer)) {
     return FusionDecision::Forbid("Don't fuse large constants.");
+  }
+
+  if (IsDynamicDot(producer) || IsDynamicDot(consumer)) {
+    return FusionDecision::Forbid("Do not fuse dynamic dots on CPU.");
   }
 
   if (CanBeOutputFused(producer, consumer)) {
