@@ -38,6 +38,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
+#include "tsl/platform/protobuf.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
@@ -4668,12 +4669,19 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
                                          *operand_shape, dimension));
     const DExpr& dim_expr = operand_shape->expressions(dimension);
     if (dim_expr && dim_expr->is_dynamic()) {
-      // Carry the padded static dimension as the operand value so value
-      // inference can treat it as an upper bound for GetExpressionValue.
       XlaOp dim_bound =
           ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
-      XlaOp expr_carrier = Broadcast(dim_bound, {1}, {dim_expr});
-      return GetExpressionValue(expr_carrier);
+      ExpressionProto expr_proto;
+      dim_expr->to_proto(&expr_proto);
+      std::string expr_textproto =
+          tsl::LegacyUnredactedShortDebugString(expr_proto);
+      VLOG(1) << "GetDimensionSize: expr_textproto is " << expr_textproto
+              << " ShortDebugString is " << expr_proto.ShortDebugString();
+      TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
+          dim_bound, "dynamic_constant_index", "0"));
+      TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
+          dim_bound, "dynamic_constant_expr", expr_textproto));
+      return dim_bound;
     }
     // Calling GetDimensionSize on a static dimension returns a constant
     // instruction.
