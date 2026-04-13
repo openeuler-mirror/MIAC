@@ -56,7 +56,7 @@ xla::DExpr DExprFromProto(const ExpressionProto& proto) {
     }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
-      return xla::DExpr::Unknown();
+      return xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
   }
 }
 
@@ -485,9 +485,11 @@ void TensorShapeRep::set_expression(int d, xla::DExpr expr) {
     return;
   }
   if (expressions_.size() <= static_cast<size_t>(d)) {
-    expressions_.resize(d + 1, xla::DExpr::Unknown());
+    expressions_.resize(d + 1,
+                        xla::DExpr::Unknown(xla::kMissingExpressionSentinel));
   }
-  expressions_[d] = expr ? std::move(expr) : xla::DExpr::Unknown();
+  expressions_[d] = expr ? std::move(expr)
+                         : xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
 }
 
 void TensorShapeRep::AddExpression(xla::DExpr expr) {
@@ -495,7 +497,9 @@ void TensorShapeRep::AddExpression(xla::DExpr expr) {
     return;
   }
   CHECK_LT(expressions_.size(), ndims_byte());
-  expressions_.push_back(expr ? std::move(expr) : xla::DExpr::Unknown());
+  expressions_.push_back(expr ? std::move(expr)
+                              : xla::DExpr::Unknown(
+                                    xla::kMissingExpressionSentinel));
 }
 
 void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
@@ -504,7 +508,7 @@ void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
     return;
   }
   for (auto& expr : exprs) {
-    if (!expr) expr = xla::DExpr::Unknown();
+    if (!expr) expr = xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
   }
   expressions_ = std::move(exprs);
 }
@@ -723,7 +727,13 @@ template <class Shape>
 void TensorShapeBase<Shape>::set_dim(int d, int64_t size) {
   CHECK_GE(d, 0);
   CHECK_LT(d, dims());
-  if (get_expressions().size() > d) set_expression(d, xla::DExpr::Const(size));
+  // After DExpr migration, missing slots may be normalized to Unknown().
+  // Preserve those placeholders here instead of materializing them into a
+  // concrete constant just because the dimension size changed.
+  if (get_expressions().size() > d &&
+      get_expression(d).kind() != xla::DExpr::Kind::kUnknown) {
+    set_expression(d, xla::DExpr::Const(size));
+  }
   if (!kIsPartial) {
     CHECK_GE(size, 0);
   }
@@ -785,7 +795,13 @@ absl::Status TensorShapeBase<Shape>::SetDimWithStatus(int d, int64_t size) {
     }
   }
 
-  if (get_expressions().size() > d) set_expression(d, xla::DExpr::Const(size));
+  // After DExpr migration, missing slots may be normalized to Unknown().
+  // Preserve those placeholders here instead of materializing them into a
+  // concrete constant just because the dimension size changed.
+  if (get_expressions().size() > d &&
+      get_expression(d).kind() != xla::DExpr::Kind::kUnknown) {
+    set_expression(d, xla::DExpr::Const(size));
+  }
   return RecomputeNumElements();
 }
 
