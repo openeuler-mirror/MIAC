@@ -310,17 +310,27 @@ IrArray::Index IrArray::Index::SourceIndexOfReshape(
 
 IrArray::Index IrArray::Index::SourceIndexOfSlice(
     const Shape& operand_shape, absl::Span<const int64_t> starts,
-    absl::Span<const int64_t> strides, llvm::IRBuilderBase* builder) const {
+    absl::Span<const DExpr> start_exprs, absl::Span<const int64_t> strides,
+    llvm::IRBuilderBase* builder) const {
+  static const DExpr kMissingSliceExpr =
+      DExpr::Unknown(kMissingExpressionSentinel);
   std::vector<llvm::Value*> source_multi_index(multidim_.size());
   for (int i = 0; i < multidim_.size(); ++i) {
+    llvm::Value* start_value = GetConstantWithIndexType(starts[i]);
+    const DExpr& start_expr =
+        i < start_exprs.size() ? start_exprs[i] : kMissingSliceExpr;
+    if (start_expr && start_expr->is_dynamic()) {
+      start_value = builder->CreateIntCast(
+          llvm_ir::EmitExpression(builder, start_expr), index_type_,
+          /*isSigned=*/true);
+    }
     int64_t stride = strides[i];
     if (stride != 1) {
       source_multi_index[i] = builder->CreateAdd(
           builder->CreateMul(multidim_[i], GetConstantWithIndexType(stride)),
-          GetConstantWithIndexType(starts[i]));
+          start_value);
     } else {
-      source_multi_index[i] =
-          builder->CreateAdd(multidim_[i], GetConstantWithIndexType(starts[i]));
+      source_multi_index[i] = builder->CreateAdd(multidim_[i], start_value);
     }
   }
   return Index(source_multi_index, operand_shape, index_type_);

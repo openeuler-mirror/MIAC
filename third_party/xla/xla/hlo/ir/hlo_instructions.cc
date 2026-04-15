@@ -76,6 +76,15 @@ namespace {
 using absl::CEscape;
 using absl::StrCat;
 
+std::string DExprToString(const DExpr& expr) {
+  if (!expr) {
+    return "_";
+  }
+  StringPrinter printer;
+  expr.simplify()->print(&printer);
+  return std::move(printer).ToString();
+}
+
 bool IsInstructionElementwiseOnOperand(const HloInstruction* instruction,
                                        const HloInstruction* operand) {
   const auto operand_indices = instruction->OperandIndices(operand);
@@ -1721,10 +1730,20 @@ HloSliceInstruction::HloSliceInstruction(
     const Shape& shape, HloInstruction* operand,
     absl::Span<const int64_t> start_indices,
     absl::Span<const int64_t> limit_indices, absl::Span<const int64_t> strides)
+    : HloSliceInstruction(shape, operand, start_indices, limit_indices, strides,
+                          /*start_exprs=*/{}, /*limit_exprs=*/{}) {}
+
+HloSliceInstruction::HloSliceInstruction(
+    const Shape& shape, HloInstruction* operand,
+    absl::Span<const int64_t> start_indices,
+    absl::Span<const int64_t> limit_indices, absl::Span<const int64_t> strides,
+    absl::Span<const DExpr> start_exprs, absl::Span<const DExpr> limit_exprs)
     : HloInstruction(HloOpcode::kSlice, shape),
       slice_starts_(start_indices.begin(), start_indices.end()),
       slice_limits_(limit_indices.begin(), limit_indices.end()),
-      slice_strides_(strides.begin(), strides.end()) {
+      slice_strides_(strides.begin(), strides.end()),
+      slice_start_exprs_(start_exprs.begin(), start_exprs.end()),
+      slice_limit_exprs_(limit_exprs.begin(), limit_exprs.end()) {
   AppendOperand(operand);
   // For backward compatibility with old serialized computations: if there are
   // no strides, assume all strides are 1.
@@ -1741,6 +1760,14 @@ HloInstructionProto HloSliceInstruction::ToProto() const {
     slice_dimension->set_start(slice_starts_[i]);
     slice_dimension->set_limit(slice_limits_[i]);
     slice_dimension->set_stride(slice_strides_[i]);
+    const DExpr& start_expr = slice_start_exprs(i);
+    const DExpr& limit_expr = slice_limit_exprs(i);
+    if (start_expr) {
+      start_expr.to_proto(slice_dimension->mutable_start_expr());
+    }
+    if (limit_expr) {
+      limit_expr.to_proto(slice_dimension->mutable_limit_expr());
+    }
   }
   return proto;
 }
@@ -1758,6 +1785,12 @@ void HloSliceInstruction::PrintExtraAttributesImpl(
                  if (!omit_stride) {
                    AppendCat(printer, ":", slice_strides_[i]);
                  }
+                 const DExpr& start_expr = slice_start_exprs(i);
+                 const DExpr& limit_expr = slice_limit_exprs(i);
+                 if (start_expr || limit_expr) {
+                   AppendCat(printer, " start_expr=", DExprToString(start_expr),
+                             " limit_expr=", DExprToString(limit_expr));
+                 }
                  printer->Append("]");
                });
     printer->Append("}");
@@ -1771,7 +1804,9 @@ bool HloSliceInstruction::IdenticalSlowPath(
   const auto& other_slice = static_cast<const HloSliceInstruction&>(other);
   return slice_starts_ == other_slice.slice_starts_ &&
          slice_limits_ == other_slice.slice_limits_ &&
-         slice_strides_ == other_slice.slice_strides_;
+         slice_strides_ == other_slice.slice_strides_ &&
+         slice_start_exprs_ == other_slice.slice_start_exprs_ &&
+         slice_limit_exprs_ == other_slice.slice_limit_exprs_;
 }
 
 std::unique_ptr<HloInstruction> HloSliceInstruction::CloneWithNewOperandsImpl(
@@ -1779,7 +1814,8 @@ std::unique_ptr<HloInstruction> HloSliceInstruction::CloneWithNewOperandsImpl(
     HloCloneContext* context) const {
   CHECK_EQ(new_operands.size(), 1);
   return std::make_unique<HloSliceInstruction>(
-      shape, new_operands[0], slice_starts_, slice_limits_, slice_strides_);
+      shape, new_operands[0], slice_starts_, slice_limits_, slice_strides_,
+      slice_start_exprs_, slice_limit_exprs_);
 }
 
 HloConstantInstruction::HloConstantInstruction(Literal literal)

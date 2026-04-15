@@ -24,6 +24,7 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -248,6 +249,8 @@ class StridedSliceOp : public XlaOpKernel {
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const TensorShape input_shape = ctx->InputShape(0);
     const TensorShape begin_shape = ctx->InputShape("begin");
     OP_REQUIRES(
@@ -338,8 +341,10 @@ class StridedSliceOp : public XlaOpKernel {
       if (!dimensions_to_reverse.empty()) {
         slice = xla::Rev(slice, dimensions_to_reverse);
       }
-      slice = xla::Slice(slice, slice_begin, slice_end, slice_begin_expr,
-                         slice_end_expr, slice_strides);
+      slice = enable_dynamic_sizes
+                  ? xla::Slice(slice, slice_begin, slice_end, slice_begin_expr,
+                               slice_end_expr, slice_strides)
+                  : xla::Slice(slice, slice_begin, slice_end, slice_strides);
       auto operand_shape_or = ctx->builder()->GetShape(ctx->Input(0));
       OP_REQUIRES_OK(ctx, operand_shape_or.status());
       xla::Shape xla_shape = operand_shape_or.value();
@@ -459,6 +464,8 @@ class StridedSliceGradOp : public XlaOpKernel {
   void CompileAsDynamicUpdateSlice(XlaOpKernelContext* ctx,
                                    const TensorShape& input_shape,
                                    const xla::Literal& strides_literal) {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     bool dummy = false;
     Tensor strides_tensor;
     PartialTensorShape processing_shape, final_shape;
@@ -556,8 +563,10 @@ class StridedSliceGradOp : public XlaOpKernel {
       std::vector<int64_t> start_indices(input_shape.dims(), 0);
       std::vector<xla::DExpr> start_exprs(input_shape.dims(),
                                           xla::DExpr::Const(0));
-      grad = xla::Slice(grad, start_indices, input_sizes, start_exprs,
-                        input_exprs, strides);
+      grad = enable_dynamic_sizes
+                 ? xla::Slice(grad, start_indices, input_sizes, start_exprs,
+                              input_exprs, strides)
+                 : xla::Slice(grad, start_indices, input_sizes, strides);
     }
     ctx->SetOutput(0, grad);
   }

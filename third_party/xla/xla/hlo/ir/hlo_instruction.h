@@ -872,6 +872,13 @@ class HloInstruction {
       absl::Span<const int64_t> start_indices,
       absl::Span<const int64_t> limit_indices,
       absl::Span<const int64_t> strides);
+  static std::unique_ptr<HloInstruction> CreateSlice(
+      const Shape& shape, HloInstruction* operand,
+      absl::Span<const int64_t> start_indices,
+      absl::Span<const int64_t> limit_indices,
+      absl::Span<const int64_t> strides,
+      absl::Span<const DExpr> start_exprs,
+      absl::Span<const DExpr> limit_exprs);
 
   // Creates a slice instruction, where the first operand is sliced by
   // start indices specified in the second operand, and by size specified in

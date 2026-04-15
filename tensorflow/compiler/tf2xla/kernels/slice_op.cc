@@ -20,6 +20,7 @@ limitations under the License.
 
 #include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/lib/constants.h"
@@ -42,6 +43,8 @@ class SliceOp : public XlaOpKernel {
   explicit SliceOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const TensorShape input_shape = ctx->InputShape(0);
     const TensorShape begin_tensor_shape = ctx->InputShape(1);
     const TensorShape size_tensor_shape = ctx->InputShape(2);
@@ -114,8 +117,10 @@ class SliceOp : public XlaOpKernel {
         exprs.push_back(begin_exprs[i] + wrapped_size_exprs[i]);
       }
       std::vector<int64_t> strides(begin.size(), 1);
-      auto slice =
-          xla::Slice(ctx->Input(0), begin, limits, begin_exprs, exprs, strides);
+      auto slice = enable_dynamic_sizes
+                       ? xla::Slice(ctx->Input(0), begin, limits, begin_exprs,
+                                    exprs, strides)
+                       : xla::Slice(ctx->Input(0), begin, limits, strides);
       // Check for slice on dynamic dimensions.
       std::vector<bool> size_is_dynamic;
       OP_REQUIRES_OK(

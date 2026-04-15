@@ -656,6 +656,13 @@ class XlaBuilder {
       absl::Span<const int64_t> start_indices,
       absl::Span<const int64_t> limit_indices,
       absl::Span<const int64_t> strides);
+  virtual absl::StatusOr<XlaOp> SliceInternal(
+      const Shape& shape, XlaOp operand,
+      absl::Span<const int64_t> start_indices,
+      absl::Span<const int64_t> limit_indices,
+      absl::Span<const DExpr> start_exprs,
+      absl::Span<const DExpr> limit_exprs,
+      absl::Span<const int64_t> strides);
   virtual XlaOp SliceInDim(XlaOp operand, int64_t start_index,
                            int64_t limit_index, int64_t stride, int64_t dimno);
 

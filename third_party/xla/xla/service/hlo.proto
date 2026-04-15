@@ -174,6 +174,8 @@ message HloInstructionProto {
     int64 start = 1;
     int64 limit = 2;
     int64 stride = 3;
+    xla.ExpressionProto start_expr = 4;
+    xla.ExpressionProto limit_expr = 5;
   }
   repeated SliceDimensions slice_dimensions = 17;
 

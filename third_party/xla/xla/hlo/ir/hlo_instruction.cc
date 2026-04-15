@@ -623,14 +623,32 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
       break;
     case HloOpcode::kSlice: {
       std::vector<int64_t> slice_starts, slice_limits, slice_strides;
+      std::vector<DExpr> slice_start_exprs, slice_limit_exprs;
+      bool has_symbolic_slice_bounds = false;
       for (const HloInstructionProto::SliceDimensions& slice_dimensions :
            proto.slice_dimensions()) {
         slice_starts.push_back(slice_dimensions.start());
         slice_limits.push_back(slice_dimensions.limit());
         slice_strides.push_back(slice_dimensions.stride());
+        if (slice_dimensions.has_start_expr() ||
+            slice_dimensions.has_limit_expr()) {
+          has_symbolic_slice_bounds = true;
+        }
+        slice_start_exprs.push_back(
+            slice_dimensions.has_start_expr()
+                ? DExprFromProto(slice_dimensions.start_expr())
+                : DExpr::Unknown(kMissingExpressionSentinel));
+        slice_limit_exprs.push_back(
+            slice_dimensions.has_limit_expr()
+                ? DExprFromProto(slice_dimensions.limit_expr())
+                : DExpr::Unknown(kMissingExpressionSentinel));
       }
-      instruction = CreateSlice(shape, operands(0), slice_starts, slice_limits,
-                                slice_strides);
+      instruction = has_symbolic_slice_bounds
+                        ? CreateSlice(shape, operands(0), slice_starts,
+                                      slice_limits, slice_strides,
+                                      slice_start_exprs, slice_limit_exprs)
+                        : CreateSlice(shape, operands(0), slice_starts,
+                                      slice_limits, slice_strides);
       break;
     }
     case HloOpcode::kConstant: {
@@ -2043,6 +2061,18 @@ HloInstruction::CreateAddDependency(HloInstruction* data_operand,
     absl::Span<const int64_t> strides) {
   return std::make_unique<HloSliceInstruction>(shape, operand, start_indices,
                                                limit_indices, strides);
+}
+
+/* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateSlice(
+    const Shape& shape, HloInstruction* operand,
+    absl::Span<const int64_t> start_indices,
+    absl::Span<const int64_t> limit_indices,
+    absl::Span<const int64_t> strides,
+    absl::Span<const DExpr> start_exprs,
+    absl::Span<const DExpr> limit_exprs) {
+  return std::make_unique<HloSliceInstruction>(shape, operand, start_indices,
+                                               limit_indices, strides,
+                                               start_exprs, limit_exprs);
 }
 
 /* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateDynamicSlice(

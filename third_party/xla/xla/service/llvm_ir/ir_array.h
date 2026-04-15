@@ -158,6 +158,7 @@ class IrArray {
     // `operand_shape`.
     Index SourceIndexOfSlice(const Shape& operand_shape,
                              absl::Span<const int64_t> starts,
+                             absl::Span<const DExpr> start_exprs,
                              absl::Span<const int64_t> strides,
                              llvm::IRBuilderBase* builder) const;
 

@@ -2057,9 +2057,11 @@ absl::Status IrEmitter::HandleSlice(HloInstruction* slice) {
   }
 
   llvm_ir::IrArray source_array = GetIrArrayFor(operand);
+  const auto* slice_hlo = Cast<HloSliceInstruction>(slice);
   const llvm_ir::IrArray::Index source_index = target_index.SourceIndexOfSlice(
-      /*operand_shape=*/operand->shape(), /*starts=*/slice->slice_starts(),
-      /*strides=*/slice->slice_strides(), /*builder=*/b());
+      /*operand_shape=*/operand->shape(), /*starts=*/slice_hlo->slice_starts(),
+      /*start_exprs=*/slice_hlo->slice_start_exprs(),
+      /*strides=*/slice_hlo->slice_strides(), /*builder=*/b());
 
   llvm::Value* memcpy_dest =
       target_array.EmitArrayElementAddress(target_index, b(), "slice.dest");

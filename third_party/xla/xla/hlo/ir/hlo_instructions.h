@@ -1275,6 +1275,12 @@ class HloSliceInstruction : public HloInstruction {
                                absl::Span<const int64_t> start_indices,
                                absl::Span<const int64_t> limit_indices,
                                absl::Span<const int64_t> strides);
+  explicit HloSliceInstruction(const Shape& shape, HloInstruction* operand,
+                               absl::Span<const int64_t> start_indices,
+                               absl::Span<const int64_t> limit_indices,
+                               absl::Span<const int64_t> strides,
+                               absl::Span<const DExpr> start_exprs,
+                               absl::Span<const DExpr> limit_exprs);
 
   HloInstructionProto ToProto() const override;
 
@@ -1300,6 +1306,32 @@ class HloSliceInstruction : public HloInstruction {
   const std::vector<int64_t>& slice_strides() const { return slice_strides_; }
   std::vector<int64_t>* mutable_slice_strides() { return &slice_strides_; }
 
+  const DExpr& slice_start_exprs(int64_t dimension) const {
+    static const DExpr kMissingSliceExpr =
+        DExpr::Unknown(kMissingExpressionSentinel);
+    if (dimension < 0 ||
+        dimension >= static_cast<int64_t>(slice_start_exprs_.size())) {
+      return kMissingSliceExpr;
+    }
+    return slice_start_exprs_[dimension];
+  }
+  const std::vector<DExpr>& slice_start_exprs() const {
+    return slice_start_exprs_;
+  }
+
+  const DExpr& slice_limit_exprs(int64_t dimension) const {
+    static const DExpr kMissingSliceExpr =
+        DExpr::Unknown(kMissingExpressionSentinel);
+    if (dimension < 0 ||
+        dimension >= static_cast<int64_t>(slice_limit_exprs_.size())) {
+      return kMissingSliceExpr;
+    }
+    return slice_limit_exprs_[dimension];
+  }
+  const std::vector<DExpr>& slice_limit_exprs() const {
+    return slice_limit_exprs_;
+  }
+
   static bool ClassOf(const HloInstruction* hlo) {
     return hlo->opcode() == HloOpcode::kSlice;
   }
@@ -1320,6 +1352,8 @@ class HloSliceInstruction : public HloInstruction {
   std::vector<int64_t> slice_starts_;
   std::vector<int64_t> slice_limits_;
   std::vector<int64_t> slice_strides_;
+  std::vector<DExpr> slice_start_exprs_;
+  std::vector<DExpr> slice_limit_exprs_;
 };
 
 class HloConstantInstruction : public HloInstruction {

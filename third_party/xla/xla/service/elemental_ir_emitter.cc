@@ -3935,11 +3935,12 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
     case HloOpcode::kSlice:
       return [this, hlo, &operand_to_generator](
                  const IrArray::Index& index) -> absl::StatusOr<llvm::Value*> {
-        IrArray::Index sliced_index = index.SourceIndexOfSlice(
-            /*operand_shape=*/hlo->operand(0)->shape(),
-            /*starts=*/hlo->slice_starts(),
-            /*strides=*/hlo->slice_strides(), /*builder=*/b_);
-        return operand_to_generator.at(hlo->operand(0))(sliced_index);
+        const auto* slice = Cast<HloSliceInstruction>(hlo);
+        return operand_to_generator.at(hlo->operand(0))(
+            index.SourceIndexOfSlice(hlo->operand(0)->shape(),
+                                     hlo->slice_starts(),
+                                     slice->slice_start_exprs(),
+                                     hlo->slice_strides(), b_));
       };
     case HloOpcode::kDynamicSlice:
       return [this, hlo, &operand_to_generator](

@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -35,6 +36,8 @@ class SplitOp : public XlaOpKernel {
   explicit SplitOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const int32_t num_split = num_outputs();
     const TensorShape split_dim_shape = ctx->InputShape("split_dim");
     const TensorShape input_shape = ctx->InputShape(1);
@@ -108,10 +111,14 @@ class SplitOp : public XlaOpKernel {
       begin[split_dim] = i * slice_size;
       limits[split_dim] = (i + 1) * slice_size;
 
-      begin_expr[split_dim] = i * slice_expr;
-      limits_expr[split_dim] = (i + 1) * slice_expr;
-      ctx->SetOutput(i, xla::Slice(input, begin, limits, begin_expr,
-                                   limits_expr, strides));
+      if (enable_dynamic_sizes) {
+        begin_expr[split_dim] = (i * slice_expr).simplify();
+        limits_expr[split_dim] = ((i + 1) * slice_expr).simplify();
+        ctx->SetOutput(i, xla::Slice(input, begin, limits, begin_expr,
+                                     limits_expr, strides));
+      } else {
+        ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
+      }
     }
   }
 };
@@ -123,6 +130,8 @@ class SplitVOp : public XlaOpKernel {
   explicit SplitVOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const int32_t num_split = num_outputs();
     const TensorShape input_shape = ctx->InputShape(0);
     const TensorShape index_shape = ctx->InputShape(2);
@@ -233,12 +242,19 @@ class SplitVOp : public XlaOpKernel {
 
       // Slice out the ith split from the split dimension.
       limits[split_dim] = begin[split_dim] + slice_size;
-      limits_expr[split_dim] = begin_expr[split_dim] + slice_expr;
-      ctx->SetOutput(i,
-                     xla::Slice(input, begin, limits, begin_expr, limits_expr,
-                                strides));
+      if (enable_dynamic_sizes) {
+        limits_expr[split_dim] =
+            (begin_expr[split_dim] + slice_expr).simplify();
+        ctx->SetOutput(i,
+                       xla::Slice(input, begin, limits, begin_expr,
+                                  limits_expr, strides));
+      } else {
+        ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
+      }
       begin[split_dim] = limits[split_dim];
-      begin_expr[split_dim] = limits_expr[split_dim];
+      if (enable_dynamic_sizes) {
+        begin_expr[split_dim] = limits_expr[split_dim];
+      }
     }
   }
 };
