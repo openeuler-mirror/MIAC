@@ -651,7 +651,7 @@ absl::Status CompileToLocalExecutable(
                   << " index " << rewrite_index
                   << " matches dynamic_dim_value=" << dynamic_dim_value;
           arg.dynamic_constant_index = rewrite_index;
-          arg.dynamic_constant_expr = dynamic_dim_expr;
+          arg.dynamic_constant_expr = dynamic_dim_expr->simplify();
           mutable_flat(rewrite_index) = filled_batch;
         }
       } else if (arg.constant_value.dtype() == DT_INT64) {
@@ -671,7 +671,7 @@ absl::Status CompileToLocalExecutable(
                   << " index " << rewrite_index
                   << " matches dynamic_dim_value=" << dynamic_dim_value;
           arg.dynamic_constant_index = rewrite_index;
-          arg.dynamic_constant_expr = dynamic_dim_expr;
+          arg.dynamic_constant_expr = dynamic_dim_expr->simplify();
           mutable_flat(rewrite_index) = filled_batch;
         }
       }

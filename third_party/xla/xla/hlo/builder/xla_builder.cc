@@ -4668,10 +4668,11 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
                                          *operand_shape, dimension));
     const DExpr& dim_expr = operand_shape->expressions(dimension);
     if (dim_expr && dim_expr->is_dynamic()) {
+      DExpr simplified_expr = dim_expr.simplify();
       XlaOp dim_bound =
           ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
       ExpressionProto expr_proto;
-      dim_expr->to_proto(&expr_proto);
+      simplified_expr->to_proto(&expr_proto);
       std::string expr_textproto =
           tsl::LegacyUnredactedShortDebugString(expr_proto);
       VLOG(1) << "GetDimensionSize: expr_textproto is " << expr_textproto

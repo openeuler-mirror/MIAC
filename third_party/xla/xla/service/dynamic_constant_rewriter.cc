@@ -155,6 +155,8 @@ absl::StatusOr<bool> DynamicConstantRewriter::Run(
               << HloOpcodeString(replacement->opcode()) << ")";
       TF_RETURN_IF_ERROR(
           computation->ReplaceInstruction(constant_instr, replacement));
+      replacement->erase_frontend_attribute("dynamic_constant_index");
+      replacement->erase_frontend_attribute("dynamic_constant_expr");
       changed = true;
     }
   }
