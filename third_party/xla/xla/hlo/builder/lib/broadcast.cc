@@ -100,7 +100,7 @@ absl::StatusOr<XlaOp> BroadcastTo(
         broadcast_exprs.push_back(*output_et);
       } else if (!(**output_et == **input_et)) {
         broadcast_exprs.push_back(*input_et);
-        broadcast_exprs.push_back((*output_et / *input_et).simplify());
+        broadcast_exprs.push_back(*output_et / *input_et);
       }
       ++input_dim_et;
       ++input_et;

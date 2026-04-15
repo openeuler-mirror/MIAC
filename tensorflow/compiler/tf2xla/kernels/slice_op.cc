@@ -73,7 +73,7 @@ class SliceOp : public XlaOpKernel {
           // A size[i] of -1 means "all elements from begin[i] to dim_size(i)".
           wrapped_size[i] = input_shape.dim_size(i) - begin[i];
           wrapped_size_exprs[i] =
-              (input_shape.get_filled_expression(i) - begin[i]).simplify();
+              input_shape.get_filled_expression(i) - begin[i];
         } else {
           wrapped_size[i] = size[i];
           wrapped_size_exprs[i] = xla::DExpr::Const(size[i]);
@@ -111,7 +111,7 @@ class SliceOp : public XlaOpKernel {
       exprs.reserve(begin.size());
       for (int i = 0; i < begin.size(); ++i) {
         limits.push_back(begin[i] + wrapped_size[i]);
-        exprs.push_back((begin_exprs[i] + wrapped_size_exprs[i]).simplify());
+        exprs.push_back(begin_exprs[i] + wrapped_size_exprs[i]);
       }
       std::vector<int64_t> strides(begin.size(), 1);
       auto slice =

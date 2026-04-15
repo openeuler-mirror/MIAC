@@ -4113,8 +4113,7 @@ XlaOp XlaBuilder::AllToAllArray(
       sizes.push_back(operand_shape->is_unbounded_dynamic_dimension(i)
                           ? Shape::kUnboundedSize
                           : operand_shape->dimensions(i) / split_count);
-      expressions.push_back(
-          (operand_shape->expressions(i) / split_count).simplify());
+      expressions.push_back(operand_shape->expressions(i) / split_count);
 
       if (is_unbounded) {
         dynamic_sizes.push_back(r1_split_count);

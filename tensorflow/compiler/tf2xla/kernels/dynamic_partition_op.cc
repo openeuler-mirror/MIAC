@@ -58,7 +58,7 @@ std::vector<xla::DExpr> GetFilledExpressions(const xla::Shape& shape) {
 xla::DExpr CollapseExpressions(absl::Span<const xla::DExpr> expressions) {
   xla::DExpr collapsed = xla::DExpr::Const(1);
   for (const xla::DExpr& expression : expressions) {
-    collapsed = (collapsed * expression).simplify();
+    collapsed = collapsed * expression;
   }
   return collapsed;
 }

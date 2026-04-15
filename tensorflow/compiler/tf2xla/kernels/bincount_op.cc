@@ -117,7 +117,7 @@ class DenseBincountOp : public XlaOpKernel {
           xla::ShapeUtil::MakeShape(input_xla_type, {input_shape.dimensions()});
       auto i = xla::Iota(ctx->builder(), i_shape, 0);
       xla::DExpr flattened_expr =
-          (input_shape.expressions(0) * input_shape.expressions(1)).simplify();
+          input_shape.expressions(0) * input_shape.expressions(1);
       i = xla::Reshape(
           i, {input_shape.dimensions(0) * input_shape.dimensions(1), 1},
           {flattened_expr, xla::DExpr::Const(1)});

@@ -681,7 +681,7 @@ absl::StatusOr<HloInstruction*> CollapseFirstNDims(HloInstruction* operand,
 
   std::vector<DExpr> new_shape_expressions;
   new_shape_expressions.reserve(operand_shape.dimensions_size() - n + 1);
-  new_shape_expressions.push_back(new_shape_leading_expression.simplify());
+  new_shape_expressions.push_back(new_shape_leading_expression);
   auto exprs = operand_shape.expressions();
   std::copy(exprs.begin() + n, exprs.end(),
             std::back_inserter(new_shape_expressions));

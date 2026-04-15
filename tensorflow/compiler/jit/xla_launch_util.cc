@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,7 @@ limitations under the License.
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/jit/pjrt_tensor_buffer.h"
 #include "tensorflow/compiler/jit/pjrt_tensor_buffer_util.h"
@@ -38,6 +40,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_future.h"
+#include "xla/printer.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/platform_manager.h"
@@ -64,6 +67,17 @@ limitations under the License.
 #include "tsl/platform/statusor.h"
 
 namespace tensorflow {
+
+std::string DExprToString(const xla::DExpr& expr) {
+  xla::DExpr simplified = expr.simplify();
+  if (!simplified && !simplified.is_unknown()) {
+    return "";
+  }
+  xla::StringPrinter printer;
+  simplified->print(&printer);
+  return std::move(printer).ToString();
+}
+
 namespace {
 using xla::ScopedShapedBuffer;
 using xla::ShapedBuffer;
@@ -448,6 +462,12 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           if (run_options) {
             xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            if (!subst_expr->is_constant()) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution did not produce an integer "
+                  "constant for output ",
+                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+            }
             shape.set_dim(dim, subst_expr->get_val());
           } else {
             // TODO: Fallback to BatchSizeResource for now. Remove it later.
@@ -459,6 +479,12 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
             // Just substitute Var(1) for now.
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            if (!subst_expr->is_constant()) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution did not produce an integer "
+                  "constant for output ",
+                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+            }
             shape.set_dim(dim, subst_expr->get_val());
             bsr->Unref();
           }

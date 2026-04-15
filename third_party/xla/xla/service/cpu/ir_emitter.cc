@@ -3178,12 +3178,11 @@ absl::Status EmitFastConcatenate(
 
     ::xla::cpu::EmitTransferElements(
         copy_target_address, copy_source_address,
-        (inner_exprs_product * cexpr).simplify(), primitive_type, target_array,
+        inner_exprs_product * cexpr, primitive_type, target_array,
         source_array, module, b);
 
     llvm::Value* concat_dim_count = xla::llvm_ir::EmitExpression(
-        &b, (inner_exprs_product * input_shape.expressions(concat_dim))
-                .simplify());
+        &b, inner_exprs_product * input_shape.expressions(concat_dim));
 
     llvm::Value* concat_dim_size =
         b.CreateMul(concat_dim_count, b.getInt64(primitive_type_size));
@@ -4120,7 +4119,7 @@ absl::Status IrEmitter::EmitMemcpy(const HloInstruction& source,
       }
     }
     llvm::Value* expr_value =
-        xla::llvm_ir::EmitExpression(b(), expression_accu.simplify());
+        xla::llvm_ir::EmitExpression(b(), expression_accu);
     // Divide the size in bytes by the size of the dynamic dimension(s).
     // TODO: make that less hacky
     llvm::ConstantInt* size =

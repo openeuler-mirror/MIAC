@@ -39,7 +39,7 @@ limitations under the License.
 #include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "xla/shape_dynexpr.h"
+#include "xla/shape_expr.h"
 
 namespace xla {
 

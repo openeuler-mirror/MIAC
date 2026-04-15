@@ -109,7 +109,7 @@ class SplitOp : public XlaOpKernel {
       limits[split_dim] = (i + 1) * slice_size;
 
       begin_expr[split_dim] = i * slice_expr;
-      limits_expr[split_dim] = ((i + 1) * slice_expr).simplify();
+      limits_expr[split_dim] = (i + 1) * slice_expr;
       ctx->SetOutput(i, xla::Slice(input, begin, limits, begin_expr,
                                    limits_expr, strides));
     }
@@ -233,7 +233,7 @@ class SplitVOp : public XlaOpKernel {
 
       // Slice out the ith split from the split dimension.
       limits[split_dim] = begin[split_dim] + slice_size;
-      limits_expr[split_dim] = (begin_expr[split_dim] + slice_expr).simplify();
+      limits_expr[split_dim] = begin_expr[split_dim] + slice_expr;
       ctx->SetOutput(i,
                      xla::Slice(input, begin, limits, begin_expr, limits_expr,
                                 strides));

@@ -585,7 +585,7 @@ absl::StatusOr<DimAndBound> InferMostSpecificDimAndBound(int64_t dim,
       }
       inferred_sizes[dim] = inferred_dim_and_bound.dimension;
       inferred_bounds[dim] = inferred_dim_and_bound.bound;
-      inferred_expressions[dim] = inferred_expression.simplify();
+      inferred_expressions[dim] = inferred_expression;
     }
   }
 
@@ -793,7 +793,7 @@ absl::StatusOr<DimAndBound> InferMostSpecificDimAndBound(int64_t dim,
     }
     is_dynamic[i] = operand_shape.is_dynamic_dimension(i);
     auto diff = dimensions[i] - operand_shape.dimensions(i);
-    expressions[i] = (operand_shape.expressions(i) + diff).simplify();
+    expressions[i] = operand_shape.expressions(i) + diff;
   }
 
   return ShapeUtil::MakeShape(
@@ -3317,9 +3317,8 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
         start_exprs.empty() ? DExpr::Const(start_index) : start_exprs[dimension];
 
     auto new_expr =
-        (limit_expr - start_expr + DExpr::Const(stride) - DExpr::Const(1))
-            .simplify();
-    expressions.push_back((new_expr / DExpr::Const(stride)).simplify());
+        limit_expr - start_expr + DExpr::Const(stride) - DExpr::Const(1);
+    expressions.push_back(new_expr / DExpr::Const(stride));
   }
 
   std::vector<bool> is_dynamic(arg.dimensions_size());

@@ -18,6 +18,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_
 #define TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_
 
+#include <string>
 #include <map>
 #include <memory>
 #include <set>
@@ -36,7 +37,13 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 
+namespace xla {
+class DExpr;
+}
+
 namespace tensorflow {
+
+std::string DExprToString(const xla::DExpr& expr);
 
 // Creates a list of updated resource variables.
 absl::StatusOr<std::vector<VariableInfo>> GatherVariableInfo(

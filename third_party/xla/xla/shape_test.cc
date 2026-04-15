@@ -24,6 +24,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "xla/hlo/testlib/test.h"
 #include "xla/layout.h"
+#include "xla/printer.h"
 #include "xla/shape_util.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/test_benchmark.h"
@@ -31,6 +32,12 @@ limitations under the License.
 
 namespace xla {
 namespace {
+
+std::string DExprToString(const DExpr& expr) {
+  StringPrinter printer;
+  expr->print(&printer);
+  return std::move(printer).ToString();
+}
 
 class ShapeTest : public ::testing::Test {
  protected:
@@ -119,6 +126,16 @@ TEST_F(ShapeTest, DynamicShapeToString) {
   EXPECT_EQ("f32[<=23,44,55]", array_shape.ToString());
 
   EXPECT_EQ("f32[?,784]", unbounded_.ToString());
+}
+
+TEST_F(ShapeTest, DExprSimplifyScalesMixedDenominators) {
+  DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 3);
+  EXPECT_EQ("((5 * A) / 6)", DExprToString(expr.simplify()));
+}
+
+TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {
+  DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 2);
+  EXPECT_EQ("A", DExprToString(expr.simplify()));
 }
 
 TEST_F(ShapeTest, DeleteDimensions) {

@@ -77,7 +77,7 @@ class TileOp : public XlaOpKernel {
                                           "] >= 0, but got ", output_dims[i]));
       output_dims[i] = input_shape.dim_size(i) * multiples_bounds[i];
       output_exprs[i] =
-          (expr_sizes[i] * xla::DExpr::Const(multiples_bounds[i])).simplify();
+          expr_sizes[i] * xla::DExpr::Const(multiples_bounds[i]);
     }
 
     std::vector<bool> multiples_are_dynamic;

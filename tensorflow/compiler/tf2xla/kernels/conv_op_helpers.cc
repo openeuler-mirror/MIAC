@@ -99,7 +99,7 @@ xla::XlaOp TransposeFilterForGroupConvolutionBackpropInput(
   new_shape.set_dimensions(num_dims - 1, num_groups);
   new_shape.add_dimensions(
       filter_shape.dimensions(num_dims - 1) / num_groups,
-      (filter_shape.expressions(num_dims - 1) / num_groups).simplify());
+      filter_shape.expressions(num_dims - 1) / num_groups);
   xla::XlaOp result =
       xla::Reshape(filter, new_shape.dimensions(), new_shape.expressions());
 

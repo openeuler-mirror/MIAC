@@ -1217,7 +1217,7 @@ Shape CollapseFirstNDims(const Shape& shape, int64_t n) {
   DimensionVector result_dims;
   std::vector<DExpr> result_expressions;
   result_dims.push_back(prefix_dim);
-  result_expressions.push_back(prefix_expression.simplify());
+  result_expressions.push_back(prefix_expression);
   std::copy(input_shape_dims.begin() + n, input_shape_dims.end(),
             std::back_inserter(result_dims));
   std::copy(input_expressions.begin() + n, input_expressions.end(),

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SHAPE_DYNEXPR_H_
-#define XLA_SHAPE_DYNEXPR_H_
+#ifndef XLA_SHAPE_EXPR_H_
+#define XLA_SHAPE_EXPR_H_
 
 #include <cstdint>
 #include <memory>
@@ -236,10 +236,14 @@ class Variable : public DynExpr {
   }
   DExprKind kind() const override { return DExprKind::kVariable; }
   void print(xla::Printer* printer) const override {
-    // printer->Append("(Var ");
-    char letter = 'A' + (id - 1);
-    printer->Append(std::string(1, letter));
-    // printer->Append(")");
+    if (id >= 1 && id <= 26) {
+      char letter = 'A' + (id - 1);
+      printer->Append(std::string(1, letter));
+      return;
+    }
+    printer->Append("V(");
+    printer->Append(id);
+    printer->Append(")");
   }
   void to_proto(xla::ExpressionProto* proto) const override {
     proto->set_variable_id(id);
@@ -301,11 +305,11 @@ class Add : public DynExpr {
   std::optional<int64_t> solve(int64_t x) {
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
-    if (lhs->get_all_ids().size() == 1) {
+    if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A + c) = x <=> A = x - c => solve A = y with y = x - c
       return lhs->solve(x - rhs->get_val());
     }
-    if (rhs->get_all_ids().size() == 1) {
+    if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c + A) = x <=> A = x - c => solve A = y with y = x - c
       return rhs->solve(x - lhs->get_val());
     }
@@ -365,11 +369,11 @@ class Sub : public DynExpr {
   std::optional<int64_t> solve(int64_t x) {
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
-    if (lhs->get_all_ids().size() == 1) {
+    if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A - c) = x <=> A = x + c => solve A = y with y = x + c
       return lhs->solve(x + rhs->get_val());
     }
-    if (rhs->get_all_ids().size() == 1) {
+    if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c - A) = x <=> A = c - x => solve A = y with y = c - x
       return rhs->solve(lhs->get_val() - x);
     }
@@ -429,14 +433,14 @@ class Mul : public DynExpr {
   std::optional<int64_t> solve(int64_t x) {
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
-    if (lhs->get_all_ids().size() == 1) {
+    if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A * c) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = rhs->get_val();
       if (c == 0) return x == 0 ? lhs->solve(0) : std::nullopt;
       if (x % c != 0) return std::nullopt;
       return lhs->solve(x / c);
     }
-    if (rhs->get_all_ids().size() == 1) {
+    if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c * A) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = lhs->get_val();
       if (c == 0) return x == 0 ? rhs->solve(0) : std::nullopt;
@@ -466,9 +470,9 @@ class Div : public DynExpr {
   void print(xla::Printer* printer) const override {
     printer->Append("(");
     lhs->print(printer);
-    printer->Append(" / ( ");
+    printer->Append(" / ");
     rhs->print(printer);
-    printer->Append(") )");
+    printer->Append(")");
   }
 
   DynExpr* get_lhs() const { return lhs.get(); }
@@ -481,10 +485,15 @@ class Div : public DynExpr {
   }
 
   bool is_constant() const override {
-    return lhs->is_constant() && rhs->is_constant();
+    return lhs->is_constant() && rhs->is_constant() && rhs->get_val() != 0 &&
+           lhs->get_val() % rhs->get_val() == 0;
   }
 
-  int64_t get_val() const override { return lhs->get_val() / rhs->get_val(); }
+  int64_t get_val() const override {
+    CHECK(is_constant()) << "Attempted to get integer value of non-integral "
+                         << "division expression";
+    return lhs->get_val() / rhs->get_val();
+  }
 
   DynExpr* substitute(int id, DynExpr* v) {
     return new Div(lhs->substitute(id, v), rhs->substitute(id, v));
@@ -501,11 +510,11 @@ class Div : public DynExpr {
   std::optional<int64_t> solve(int64_t x) {
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
-    if (lhs->get_all_ids().size() == 1) {
+    if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A / c) = x <=> A = x * c => solve A = y with y = x * c
       return lhs->solve(x * rhs->get_val());
     }
-    if (rhs->get_all_ids().size() == 1) {
+    if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c / A) = x <=> A = c / x => solve A = y with y = c / x
       int64_t c = lhs->get_val();
       if (x == 0) return std::nullopt;
@@ -596,4 +605,4 @@ inline DynExpr* DynExpr::V(int var_id) { return new Variable(var_id); }
 
 }  // namespace xla
 
-#endif  // XLA_SHAPE_DYNEXPR_H_
+#endif  // XLA_SHAPE_EXPR_H_

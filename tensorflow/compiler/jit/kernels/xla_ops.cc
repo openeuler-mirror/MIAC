@@ -599,7 +599,7 @@ absl::Status CompileToLocalExecutable(
             dyn_exprs.push_back(xla::DExpr::Const(d));
           }
           for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get()).simplify();
+            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
             if (e->is_dynamic()) {
               dyn_exprs[j] = e;
             }
@@ -692,6 +692,12 @@ absl::Status CompileToLocalExecutable(
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
             xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
+            if (!subst_expr->is_constant()) {
+              return errors::InvalidArgument(
+                  "Dynamic shape padding substitution did not produce an "
+                  "integer constant for argument ",
+                  i, ", dimension ", j, ": ", DExprToString(subst_expr));
+            }
             int64_t new_dim = subst_expr->get_val();
             if (new_dim >= 0) {
               shp.set_dim(j, new_dim);
@@ -1267,6 +1273,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
         const auto& expr = xla_shape.expressions(dim);
         if (expr && expr->is_dynamic()) {
+          xla::DExpr simplified_expr = expr.simplify();
           int input_idx = comp_result->input_mapping[i] - num_constant_args;
           if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
             VLOG(1) << "Warning: Input index is out of range";
@@ -1276,13 +1283,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                   << ", corresponding xla input shape is " << xla_shape;
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
           std::optional<int64_t> dyn_val =
-              expr->solve(size);  // TODO: check if the result is correct later.
+              simplified_expr->solve(
+                  size);  // TODO: check if the result is correct later.
           if (dyn_val.has_value()) {
             VLOG(1) << "Found dynamic input. Real size is: " << size
                     << ", solved dynamic value is " << *dyn_val;
           } else {
             xla::StringPrinter printer;
-            expr->print(&printer);
+            simplified_expr->print(&printer);
             VLOG(1) << "Warning: Failed to solve the expression "
                     << std::move(printer).ToString();
             continue;

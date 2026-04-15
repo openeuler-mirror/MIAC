@@ -824,18 +824,20 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
                       expr->get_val() != shape.dimensions(i);
       printer->Append(shape.dimensions(i));
       if (is_wrong) {
+        DExpr simplified_expr = expr.simplify();
         xla::StringPrinter expr_printer;
-        expr->print(&expr_printer);
+        simplified_expr->print(&expr_printer);
         LOG(ERROR) << "Mismatched static shape expression at dim " << i
                    << ": dim=" << shape.dimensions(i)
                    << ", expr=" << std::move(expr_printer).ToString();
         printer->Append("<!");
-        expr->print(printer);
+        simplified_expr->print(printer);
         printer->Append("!>");
       }
       if (expr && expr->is_dynamic()) {
+        DExpr simplified_expr = expr.simplify();
         printer->Append("<");
-        expr->print(printer);
+        simplified_expr->print(printer);
         printer->Append(">");
       }
     }

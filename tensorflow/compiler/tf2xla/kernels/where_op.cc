@@ -169,7 +169,6 @@ absl::StatusOr<XlaOp> CompileWhereWithSort(XlaOpKernelContext* ctx) {
   for (auto e : iota_shape.expressions()){
     flattened_expr = flattened_expr * e;
   }
-  flattened_expr = flattened_expr.simplify();
   XlaOp reshaped_condition =
       xla::Reshape(condition, {flattened_size}, {flattened_expr});
   XlaOp zeros = xla::ZerosLike(reshaped_condition);
@@ -225,7 +224,6 @@ absl::StatusOr<XlaOp> CompileWhereWithPrefixSum(XlaOpKernelContext* ctx) {
   for (auto e : input_shape.expressions()) {
     flattened_expr = flattened_expr * e;
   }
-  flattened_expr = flattened_expr.simplify();
   XlaOp reshaped_condition =
       xla::Reshape(condition, {flattened_size}, {flattened_expr});
   XlaOp zeros = xla::ZerosLike(reshaped_condition);

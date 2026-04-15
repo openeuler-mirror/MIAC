@@ -1011,11 +1011,12 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
 
 llvm::Value* EmitExpression(llvm::IRBuilderBase* b, const DExpr& expr) {
   if (!expr) return nullptr;
+  DExpr simplified = expr.simplify();
   StringPrinter printer;
-  expr->print(&printer);
+  simplified->print(&printer);
   VLOG(2) << "EmitExpression expr=" << std::move(printer).ToString()
-          << " kind=" << static_cast<int>(expr.kind());
-  llvm::Value* value = EmitExpressionImpl(b, *expr.get());
+          << " kind=" << static_cast<int>(simplified.kind());
+  llvm::Value* value = EmitExpressionImpl(b, *simplified.get());
   return value;
 }
 

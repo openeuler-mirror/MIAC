@@ -143,11 +143,11 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
   if (lhs_non_contracting_size > 1) {
     lhs_reshape_dims.push_back(lhs_non_contracting_size);
     lhs_reshape_dynamic_dims.push_back(lhs_non_contracting_dynamic);
-    lhs_reshape_expressions.push_back(lhs_non_contracting_expression.simplify());
+    lhs_reshape_expressions.push_back(lhs_non_contracting_expression);
   }
   lhs_reshape_dims.push_back(lhs_contracting_size);
   lhs_reshape_dynamic_dims.push_back(lhs_contracting_dynamic);
-  lhs_reshape_expressions.push_back(lhs_contracting_expression.simplify());
+  lhs_reshape_expressions.push_back(lhs_contracting_expression);
   // Reshape the contracting and non-contracting dimensions together.
   auto sh_lhs = ShapeUtil::MakeShape(lhs_shape.element_type(), lhs_reshape_dims,
                                      lhs_reshape_dynamic_dims,
@@ -216,11 +216,11 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
   std::vector<bool> rhs_reshape_dynamic_dims = batch_dynamic_dims;
   rhs_reshape_dynamic_dims.push_back(rhs_contracting_dynamic);
   std::vector<DExpr> rhs_reshape_expressions = batch_expressions;
-  rhs_reshape_expressions.push_back(rhs_contracting_expression.simplify());
+  rhs_reshape_expressions.push_back(rhs_contracting_expression);
   if (rhs_non_contracting_size > 1) {
     rhs_reshape_dims.push_back(rhs_non_contracting_size);
     rhs_reshape_dynamic_dims.push_back(rhs_non_contracting_dynamic);
-    rhs_reshape_expressions.push_back(rhs_non_contracting_expression.simplify());
+    rhs_reshape_expressions.push_back(rhs_non_contracting_expression);
   }
   // Reshape the contracting and non-contracting dimensions together.
   auto sh_rhs = ShapeUtil::MakeShape(rhs_shape.element_type(), rhs_reshape_dims,
@@ -238,12 +238,12 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
   if (lhs_non_contracting_size > 1) {
     dot_dims.push_back(lhs_non_contracting_size);
     dot_dynamic_dims.push_back(lhs_non_contracting_dynamic);
-    dot_expressions.push_back(lhs_non_contracting_expression.simplify());
+    dot_expressions.push_back(lhs_non_contracting_expression);
   }
   if (rhs_non_contracting_size > 1) {
     dot_dims.push_back(rhs_non_contracting_size);
     dot_dynamic_dims.push_back(rhs_non_contracting_dynamic);
-    dot_expressions.push_back(rhs_non_contracting_expression.simplify());
+    dot_expressions.push_back(rhs_non_contracting_expression);
   }
 
   DotDimensionNumbers dot_dnums;
