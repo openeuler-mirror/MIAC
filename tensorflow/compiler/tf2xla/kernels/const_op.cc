@@ -15,7 +15,9 @@ limitations under the License.
 
 #include <cstdint>
 #include <type_traits>
+#include <vector>
 
+#include "xla/printer.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -25,7 +27,10 @@ limitations under the License.
 #include "tsl/platform/protobuf.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
 namespace {
@@ -102,6 +107,99 @@ xla::XlaOp GetScalarConst(const TensorProto& proto, xla::XlaBuilder* b) {
   return xla::XlaOp();
 }
 
+bool IsDynamicExpressionProto(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return IsDynamicExpressionProto(proto.add_node().lhs()) ||
+             IsDynamicExpressionProto(proto.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return IsDynamicExpressionProto(proto.sub_node().lhs()) ||
+             IsDynamicExpressionProto(proto.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return IsDynamicExpressionProto(proto.mul_node().lhs()) ||
+             IsDynamicExpressionProto(proto.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return IsDynamicExpressionProto(proto.div_node().lhs()) ||
+             IsDynamicExpressionProto(proto.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
+
+static xla::DExpr DimExprToDExpr(const DimExpr* e) {
+  if (e == nullptr) {
+    return xla::DExpr();
+  }
+  switch (e->kind()) {
+    case DimExpr::Kind::kConstant: {
+      const auto* ac = static_cast<const Constant*>(e);
+      return xla::DExpr::Const(ac->value());
+    }
+    case DimExpr::Kind::kVariable: {
+      const auto* av = static_cast<const Variable*>(e);
+      return xla::DExpr::Var(av->id());
+    }
+    case DimExpr::Kind::kAdd: {
+      const auto* ee = static_cast<const ExprAdd*>(e);
+      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
+    }
+    case DimExpr::Kind::kSub: {
+      const auto* ee = static_cast<const ExprSub*>(e);
+      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
+    }
+    case DimExpr::Kind::kMul: {
+      const auto* ee = static_cast<const ExprMul*>(e);
+      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
+    }
+    case DimExpr::Kind::kDiv: {
+      const auto* ee = static_cast<const ExprDiv*>(e);
+      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
+    }
+  }
+  return xla::DExpr();
+}
+
+std::vector<xla::DExpr> BuildShapeContentsFromTensorShapeProto(
+    const TensorShapeProto& shape) {
+  std::vector<xla::DExpr> contents;
+  contents.reserve(shape.dim_size());
+  for (int i = 0; i < shape.dim_size(); ++i) {
+    xla::DExpr expr;
+    if (i < shape.expressions_size()) {
+      auto tf_expr = DimExpr::FromProto(shape.expressions(i));
+      expr = DimExprToDExpr(tf_expr.get());
+    }
+    if (expr) {
+      xla::StringPrinter printer;
+      expr->print(&printer);
+      VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
+              << " expr=" << std::move(printer).ToString()
+              << " dynamic=" << (expr->is_dynamic() ? "true" : "false");
+    } else {
+      VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
+              << " expr=_ dynamic=false";
+    }
+    contents.push_back(expr && expr->is_dynamic()
+                           ? std::move(expr)
+                           : xla::DExpr::Unknown(
+                                 xla::kUnknownContentSentinel));
+  }
+  return contents;
+}
+
+int64_t CountDynamicShapeContents(const TensorShapeProto& shape) {
+  int64_t dynamic_count = 0;
+  for (int i = 0; i < shape.expressions_size(); ++i) {
+    if (IsDynamicExpressionProto(shape.expressions(i))) {
+      ++dynamic_count;
+    }
+  }
+  return dynamic_count;
+}
+
 class ConstOp : public XlaOpKernel {
  public:
   explicit ConstOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
@@ -121,65 +219,66 @@ class ConstOp : public XlaOpKernel {
 
     bool has_dynamic = false;
     TensorShapeProto inferred_shape_proto;
-    TensorShape shape;
     if (GetNodeAttr(ctx->op_kernel().def(), "has_dynamic", &has_dynamic).ok() &&
         has_dynamic) {
       if (GetNodeAttr(ctx->op_kernel().def(), "user_inferred_shape",
                       &inferred_shape_proto)
               .ok()) {
-        shape = TensorShape(inferred_shape_proto);
+        VLOG(1) << "ConstOp recovered dynamic folded-const metadata with "
+                  << "inferred_shape=" << inferred_shape_proto.DebugString()
+                  << " dynamic_exprs="
+                  << CountDynamicShapeContents(inferred_shape_proto);
       }
     }
 
     // To avoid blowups for large constants filled with the same value,
     // recognize that case and emit a scalar broadcast instead.
-    shape = has_dynamic ? shape : TensorShape(proto_.tensor_shape());
+    TensorShape shape(proto_.tensor_shape());
     if (shape.num_elements() > 1) {
       xla::XlaOp value = GetScalarConst(proto_, b);
       if (value.valid()) {
-        ctx->SetOutput(0, xla::Broadcast(value, shape.dim_sizes(),
-                                         shape.get_filled_expressions()));
+        if (has_dynamic) {
+          VLOG(1) << "ConstOp broadcast fast path shape="
+                    << shape.DebugString() << " inferred_rank="
+                    << inferred_shape_proto.dim_size();
+        }
+        xla::XlaOp broadcast =
+            xla::Broadcast(value, shape.dim_sizes(), shape.get_expressions());
+        XlaExpression output =
+            XlaExpression::XlaOp(broadcast, ctx->expected_output_dtype(0));
+        if (has_dynamic && shape.dims() == 1 &&
+            shape.dim_size(0) == inferred_shape_proto.dim_size()) {
+          VLOG(1) << "ConstOp attaching shape contents through broadcast fast "
+                    << "path with " << shape.dim_size(0)
+                    << " entries and dynamic_exprs="
+                    << CountDynamicShapeContents(inferred_shape_proto);
+          output.set_contents(
+              BuildShapeContentsFromTensorShapeProto(inferred_shape_proto));
+        }
+        ctx->SetOutputExpression(0, output);
         return;
       }
     }
 
+    Tensor tensor(proto_.dtype());
+    OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
+                errors::InvalidArgument("Cannot parse tensor from proto: ",
+                                        proto_.DebugString()));
     if (has_dynamic) {
-      std::vector<xla::XlaOp> dimension_constants;
-      for (int i = 0; i < shape.dims(); ++i) {
-        if (shape.get_expression(i) && shape.get_expression(i)->is_dynamic()) {
-          int32_t dim_val = static_cast<int32_t>(shape.dim_size(i));
-          xla::XlaOp scalar_const = xla::ConstantR0<int32_t>(b, dim_val);
-          xla::ExpressionProto expr_proto;
-          shape.get_expression(i)->to_proto(&expr_proto);
-          std::string expr_textproto =
-              tsl::LegacyUnredactedShortDebugString(expr_proto);
-          VLOG(1) << "ConstOp:expr_textproto is " << expr_textproto;
-          OP_REQUIRES_OK(
-              ctx, b->SetInstructionFrontendAttribute(scalar_const,
-                                                      "dynamic_constant_index",
-                                                      "0"));
-          OP_REQUIRES_OK(ctx,
-                         b->SetInstructionFrontendAttribute(
-                              scalar_const, "dynamic_constant_expr",
-                              expr_textproto));
-          dimension_constants.push_back(xla::Reshape(scalar_const, {1}));
-        } else {
-          int32_t dim_val = static_cast<int32_t>(shape.dim_size(i));
-          xla::XlaOp scalar_const = xla::ConstantR0<int32_t>(b, dim_val);
-          dimension_constants.push_back(xla::Reshape(scalar_const, {1}));
-        }
-      }
-
-      xla::XlaOp combined_shape_constant = xla::ConcatInDim(b,
-                                                        dimension_constants, 0);
-      ctx->SetOutput(0, combined_shape_constant);
-    } else {
-      Tensor tensor(proto_.dtype());
-      OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
-                  errors::InvalidArgument("Cannot parse tensor from proto: ",
-                                          proto_.DebugString()));
-      ctx->SetConstantOutput(0, tensor);
+      VLOG(1) << "ConstOp tensor path tensor_shape="
+                << tensor.shape().DebugString() << " inferred_rank="
+                << inferred_shape_proto.dim_size();
     }
+    XlaExpression output = XlaExpression::Constant(tensor);
+    if (has_dynamic && tensor.dims() == 1 &&
+        tensor.dim_size(0) == inferred_shape_proto.dim_size()) {
+      VLOG(1) << "ConstOp attaching shape contents to folded const with "
+                << tensor.dim_size(0) << " entries and dynamic_exprs="
+                << CountDynamicShapeContents(inferred_shape_proto);
+      output.set_contents(
+          BuildShapeContentsFromTensorShapeProto(inferred_shape_proto));
+    }
+    ctx->SetOutputExpression(0, output);
   }
 
  private:

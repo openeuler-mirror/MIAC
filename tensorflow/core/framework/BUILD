@@ -736,6 +736,7 @@ cc_library(
         ":tensor_shape_proto_cc",
         "//tensorflow/core:lib",
         "@local_xla//xla:parse_flags_from_env",
+        "@local_xla//xla:shape_util",
         "@local_xla//xla/tsl/util:command_line_flags",
     ],
     alwayslink = 1,

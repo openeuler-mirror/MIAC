@@ -47,9 +47,23 @@ namespace xla {
 
 namespace {
 
+bool HasDynamicConstantContents(const HloInstruction* instruction) {
+  if (!instruction->has_contents()) {
+    return false;
+  }
+  for (const auto& content : instruction->contents()) {
+    if (content.node_type_case() != ExpressionProto::kConstantValue &&
+        content.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool HasDynamicConstantFrontendAttributes(const HloInstruction* instruction) {
   const auto& attrs = instruction->frontend_attributes().map();
-  return attrs.contains("dynamic_constant_index") ||
+  return HasDynamicConstantContents(instruction) ||
+         attrs.contains("dynamic_constant_index") ||
          attrs.contains("dynamic_constant_expr");
 }
 

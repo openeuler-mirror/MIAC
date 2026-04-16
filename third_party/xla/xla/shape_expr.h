@@ -34,6 +34,7 @@ namespace xla {
 // Reserved sentinel for "missing expression". Keep this outside the normal
 // expression id space so it cannot be confused with a real UnknownExpr id.
 inline constexpr int kMissingExpressionSentinel = -1000001;
+inline constexpr int64_t kUnknownContentSentinel = -444;
 
 enum class DExprKind {
   kUnknown,
@@ -164,7 +165,7 @@ class UnknownExpr : public DynExpr {
   }
   DExprKind kind() const override { return DExprKind::kUnknown; }
   void print(xla::Printer* printer) const override {
-    if (id_ == kMissingExpressionSentinel) {
+    if (id_ == kMissingExpressionSentinel || id_ == kUnknownContentSentinel) {
       printer->Append("_");
       return;
     }

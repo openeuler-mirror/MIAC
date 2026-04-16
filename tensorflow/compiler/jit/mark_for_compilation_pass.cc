@@ -923,15 +923,45 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   if (debug_options_.enable_dynamic_sizes) {
     LogExpressionsViaGraphProperties(*graph_);
     TF_RETURN_IF_ERROR(AssignDimVars());
+    auto has_dynamic_input_expression = [&](const Node* n) {
+      for (const Edge* edge : n->in_edges()) {
+        if (edge->IsControlEdge()) {
+          continue;
+        }
+        const Node* src = edge->src();
+        auto it = expr_map.find(src->name());
+        if (it == expr_map.end()) {
+          continue;
+        }
+        const int output_index = edge->src_output();
+        if (output_index < 0 || output_index >= it->second.size()) {
+          continue;
+        }
+        for (const auto& expr_ptr : it->second[output_index]) {
+          if (expr_ptr == nullptr) {
+            continue;
+          }
+          xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+          if (dyn && dyn->is_dynamic()) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
     for (Node* n : graph_->op_nodes()) {
       bool mark_shape_derived = false;
       if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-        mark_shape_derived = true;
+        mark_shape_derived = has_dynamic_input_expression(n);
       } else if (n->type_string() == "Cast") {
         for (const Edge* edge : n->in_edges()) {
-          if (edge->IsControlEdge()) continue;
+          if (edge->IsControlEdge()) {
+            continue;
+          }
           const Node* src = edge->src();
-          if (src->type_string() == "Shape" || src->type_string() == "ShapeN") {
+          if ((src->type_string() == "Shape" ||
+               src->type_string() == "ShapeN") &&
+              has_dynamic_input_expression(src)) {
             mark_shape_derived = true;
             break;
           }

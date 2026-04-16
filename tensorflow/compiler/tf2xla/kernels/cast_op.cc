@@ -92,6 +92,15 @@ class CastOp : public XlaOpKernel {
       output = xla::ConvertElementType(input, dst_type_);
     }
 
+    const auto& input_contents = ctx->InputExpression(0).contents();
+    if (!input_contents.empty()) {
+      auto output_expr =
+          XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
+      output_expr.set_contents(std::vector<xla::DExpr>(input_contents.begin(),
+                                                       input_contents.end()));
+      ctx->SetOutputExpression(0, output_expr);
+      return;
+    }
     ctx->SetOutput(0, output);
   }
 

@@ -67,6 +67,14 @@ class XlaBinaryOp : public XlaOpKernel {
       const absl::Span<const int64_t>& rhs_shape, const BCast& broadcast_helper,
       const std::vector<int64_t>& extend_dimensions) = 0;
 
+  // Returns a symbolic expression for one output element when content metadata
+  // should be propagated through this op. Returns an empty DExpr when the operation
+  // should not propagate symbolic contents.
+  virtual xla::DExpr SymbolicComputation(const xla::DExpr& lhs,
+                                         const xla::DExpr& rhs) {
+    return xla::DExpr();
+  }
+
   void Compile(XlaOpKernelContext* ctx) override;
 
   // Helper function that performs the broadcasting described by

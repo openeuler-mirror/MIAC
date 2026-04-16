@@ -19,8 +19,10 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/jit/device_util.h"
+#include "tensorflow/compiler/jit/encapsulate_util.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/framework/function.h"
@@ -47,6 +49,10 @@ absl::Status FindNodesToDecluster(const Graph& graph,
   MemoryTypeVector input_mtypes, output_mtypes;
 
   for (Node* n : post_order) {
+    if (SymbolicContentEnabled() &&
+        n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
+      continue;
+    }
     std::optional<absl::string_view> from_cluster = GetXlaClusterForNode(*n);
     if (!from_cluster) {
       continue;
@@ -308,6 +314,10 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
     if (!compile_time_const_nodes[n->id()]) {
       continue;
     }
+    if (SymbolicContentEnabled() &&
+        n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
+      continue;
+    }
 
     absl::string_view cluster_name = *GetXlaClusterForNode(*n);
     bool node_on_cluster_edge =
@@ -377,6 +387,10 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
 
   for (Node* n : reverse_post_order) {
     if (!IsShapeConsumerOp(*n)) {
+      continue;
+    }
+    if (SymbolicContentEnabled() &&
+        n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
       continue;
     }
 

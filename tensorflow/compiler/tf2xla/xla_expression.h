@@ -16,11 +16,15 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_XLA_EXPRESSION_H_
 #define TENSORFLOW_COMPILER_TF2XLA_XLA_EXPRESSION_H_
 
+#include <vector>
+
 #include "absl/types/optional.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_resource.h"
 #include "xla/client/client.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "xla/hlo/builder/xla_builder.h"
+#include "xla/shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/statusor.h"
@@ -112,18 +116,12 @@ class XlaExpression {
   // Return the dynamism of the expression, if available.
   std::optional<Tensor> value_dynamism() const { return value_dynamism_; }
 
-  std::optional<int64_t> dynamic_constant_index() const {
-    return dynamic_constant_index_;
-  }
-  void set_dynamic_constant_index(int64_t index) {
-    dynamic_constant_index_ = index;
-  }
-  const std::optional<xla::DExpr>& dynamic_constant_expr() const {
-    return dynamic_constant_expr_;
-  }
-  void set_dynamic_constant_expr(xla::DExpr expr) {
-    dynamic_constant_expr_ = std::move(expr);
-  }
+  // Set symbolic content metadata for expressions whose values should retain
+  // links to symbolic dimensions across shape-tensor flows.
+  void set_contents(std::vector<xla::DExpr> contents);
+
+  // Return symbolic content metadata.
+  absl::Span<const xla::DExpr> contents() const;
 
   XlaResource* resource() const { return resource_; }
 
@@ -179,8 +177,9 @@ class XlaExpression {
 
   // For constant expressions, marks a single element that later passes may
   // reinterpret as coming from a dynamic expression instead of the literal.
-  std::optional<int64_t> dynamic_constant_index_;
-  std::optional<xla::DExpr> dynamic_constant_expr_;
+  // Symbolic expressions describing tensor contents when this expression is
+  // used as a shape-like value.
+  std::vector<xla::DExpr> local_contents_;
 
   // The resource, if kind_ == kResource. Not owned.
   XlaResource* resource_ = nullptr;

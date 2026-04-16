@@ -53,11 +53,20 @@ class FillOp : public XlaOpKernel {
     OP_REQUIRES_OK(ctx,
                    ctx->ConstantInputAsIntVector(
                        "dims", &dims, xla::ValueInferenceMode::kUpperBound));
+    std::vector<xla::DExpr> dim_exprs;
+    dim_exprs.reserve(dims.size());
+    const auto& contents = ctx->InputExpression("dims").contents();
+    for (int64_t i = 0; i < dims.size(); ++i) {
+      dim_exprs.push_back(i < contents.size() && contents[i] &&
+                                  contents[i]->is_dynamic()
+                              ? contents[i]
+                              : xla::DExpr::Const(dims[i]));
+    }
     std::vector<bool> dynamic_dims;
     OP_REQUIRES_OK(
         ctx, ctx->ResolveInputDynamismIntoPredVector("dims", &dynamic_dims));
 
-    auto output = xla::Broadcast(ctx->Input("value"), dims);
+    auto output = xla::Broadcast(ctx->Input("value"), dims, dim_exprs);
     for (int64_t i = 0; i < dims.size(); ++i) {
       // If a dimension is dynamic, call set-dimension-size on the output.
       if (dynamic_dims[i]) {

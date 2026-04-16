@@ -464,6 +464,12 @@ absl::Status XlaOpKernelContext::ConstantInputAsShape(
           ", result: ", num_elements);
   }
   *shape = TensorShape(dims);
+  const auto& contents = InputExpression(index).contents();
+  for (int i = 0; i < shape->dims() && i < contents.size(); ++i) {
+    if (contents[i] && contents[i]->is_dynamic()) {
+      shape->set_expression(i, contents[i]);
+    }
+  }
   return absl::OkStatus();
 }
 

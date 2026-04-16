@@ -90,6 +90,19 @@ using primitive_util::NativeTypeOf;
 static bool HasDynamicConstantFrontendAttributes(
     const HloInstruction* instruction);
 
+static bool HasDynamicConstantContents(const HloInstruction* instruction) {
+  if (!instruction->has_contents()) {
+    return false;
+  }
+  for (const auto& content : instruction->contents()) {
+    if (content.node_type_case() != ExpressionProto::kConstantValue &&
+        content.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Unwraps broadcasts hunting for a constant.  If we find one, checks if the
 // constant contains only the given value.
 bool IsAll(const HloInstruction* op, int8_t value) {
@@ -190,7 +203,8 @@ static bool IsScalarConstant(const HloInstruction* hlo) {
 static bool HasDynamicConstantFrontendAttributes(
     const HloInstruction* instruction) {
   const auto& attrs = instruction->frontend_attributes().map();
-  return attrs.contains("dynamic_constant_index") ||
+  return HasDynamicConstantContents(instruction) ||
+         attrs.contains("dynamic_constant_index") ||
          attrs.contains("dynamic_constant_expr");
 }
 

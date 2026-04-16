@@ -32,9 +32,181 @@ limitations under the License.
 #include "xla/shape.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/bcast.h"
 
 namespace tensorflow {
+
+namespace {
+
+bool IsSymbolicContentType(DataType type) {
+  type = BaseType(type);
+  return type == DT_INT32 || type == DT_INT64;
+}
+
+bool TryGetIntContentsFromConstant(const Tensor& tensor,
+                                   std::vector<xla::DExpr>* contents) {
+  contents->clear();
+  if (tensor.dims() > 1) {
+    return false;
+  }
+  if (tensor.dtype() == DT_INT32) {
+    if (tensor.dims() == 0) {
+      contents->push_back(xla::DExpr::Const(tensor.scalar<int32>()()));
+      return true;
+    }
+    auto flat = tensor.flat<int32>();
+    contents->reserve(flat.size());
+    for (int i = 0; i < flat.size(); ++i) {
+      contents->push_back(xla::DExpr::Const(flat(i)));
+    }
+    return true;
+  }
+  if (tensor.dtype() == DT_INT64) {
+    if (tensor.dims() == 0) {
+      contents->push_back(xla::DExpr::Const(tensor.scalar<int64_t>()()));
+      return true;
+    }
+    auto flat = tensor.flat<int64_t>();
+    contents->reserve(flat.size());
+    for (int i = 0; i < flat.size(); ++i) {
+      contents->push_back(xla::DExpr::Const(flat(i)));
+    }
+    return true;
+  }
+  return false;
+}
+
+bool TryGetIntContentsFromLiteral(const xla::LiteralSlice& literal,
+                                  std::vector<xla::DExpr>* contents) {
+  contents->clear();
+  if (literal.shape().dimensions_size() > 1) {
+    return false;
+  }
+  if (literal.shape().element_type() == xla::S32) {
+    if (literal.shape().dimensions_size() == 0) {
+      contents->push_back(xla::DExpr::Const(literal.Get<int32>({})));
+      return true;
+    }
+    const int64_t size = literal.shape().dimensions(0);
+    contents->reserve(size);
+    for (int64_t i = 0; i < size; ++i) {
+      contents->push_back(xla::DExpr::Const(literal.Get<int32>({i})));
+    }
+    return true;
+  }
+  if (literal.shape().element_type() == xla::S64) {
+    if (literal.shape().dimensions_size() == 0) {
+      contents->push_back(xla::DExpr::Const(literal.Get<int64_t>({})));
+      return true;
+    }
+    const int64_t size = literal.shape().dimensions(0);
+    contents->reserve(size);
+    for (int64_t i = 0; i < size; ++i) {
+      contents->push_back(xla::DExpr::Const(literal.Get<int64_t>({i})));
+    }
+    return true;
+  }
+  return false;
+}
+
+bool TryGetInputContents(XlaOpKernelContext* ctx, const XlaExpression& expr,
+                         const TensorShape& shape,
+                         std::vector<xla::DExpr>* contents) {
+  if (shape.dims() > 1) {
+    return false;
+  }
+  if (!expr.contents().empty()) {
+    if (absl::c_any_of(expr.contents(),
+                       [](const xla::DExpr& e) { return !e; })) {
+      return false;
+    }
+    contents->assign(expr.contents().begin(), expr.contents().end());
+    return true;
+  }
+  auto constant = expr.constant_value();
+  if (!constant.has_value()) {
+    if (!expr.handle().valid() || expr.handle().IsUninitialized()) {
+      return false;
+    }
+    auto literal_or =
+        ctx->value_inference().AnalyzeConstant(expr.handle(),
+                                               xla::ValueInferenceMode::kValue);
+    if (!literal_or.ok() || !literal_or->AllValid()) {
+      return false;
+    }
+    auto literal = literal_or->GetValue();
+    if (!literal.has_value()) {
+      return false;
+    }
+    return TryGetIntContentsFromLiteral(*literal, contents);
+  }
+  return TryGetIntContentsFromConstant(*constant, contents);
+}
+
+xla::DExpr BroadcastedContentAt(absl::Span<const xla::DExpr> contents,
+                                const TensorShape& shape,
+                                int64_t output_index) {
+  if (shape.dims() == 0) {
+    return contents.empty() ? xla::DExpr() : contents[0];
+  }
+  if (contents.empty()) {
+    return xla::DExpr();
+  }
+  if (shape.dim_size(0) == 1) {
+    return contents[0];
+  }
+  if (output_index >= contents.size()) {
+    return xla::DExpr();
+  }
+  return contents[output_index];
+}
+
+bool TryBuildSymbolicBinaryContents(XlaOpKernelContext* ctx,
+                                    XlaBinaryOp* op,
+                                    const TensorShape& lhs_shape,
+                                    const TensorShape& rhs_shape,
+                                    const BCast& bcast,
+                                    std::vector<xla::DExpr>* contents) {
+  contents->clear();
+  if (!IsSymbolicContentType(ctx->input_type(0)) ||
+      !IsSymbolicContentType(ctx->expected_output_dtype(0))) {
+    return false;
+  }
+  const auto& output_shape = bcast.output_shape();
+  if (output_shape.size() > 1) {
+    return false;
+  }
+
+  std::vector<xla::DExpr> lhs_contents;
+  std::vector<xla::DExpr> rhs_contents;
+  if (!TryGetInputContents(ctx, ctx->InputExpression(0), lhs_shape,
+                           &lhs_contents) ||
+      !TryGetInputContents(ctx, ctx->InputExpression(1), rhs_shape,
+                           &rhs_contents)) {
+    return false;
+  }
+
+  int64_t output_elements = output_shape.empty() ? 1 : output_shape[0];
+  contents->reserve(output_elements);
+  for (int64_t i = 0; i < output_elements; ++i) {
+    xla::DExpr lhs_expr = BroadcastedContentAt(lhs_contents, lhs_shape, i);
+    xla::DExpr rhs_expr = BroadcastedContentAt(rhs_contents, rhs_shape, i);
+    if (!lhs_expr || !rhs_expr) {
+      contents->clear();
+      return false;
+    }
+    xla::DExpr out_expr = op->SymbolicComputation(lhs_expr, rhs_expr);
+    if (!out_expr) {
+      contents->clear();
+      return false;
+    }
+    contents->push_back(out_expr.simplify());
+  }
+  return true;
+}
+
+}  // namespace
 
 void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   TensorShape lhs_shape = ctx->InputShape(0);
@@ -192,6 +364,15 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   // The TensorFlow helper computed the post-broadcast shape in
   // output_shape: we rely on subclassed Computations to implement the
   // same broadcast semantics.
+  std::vector<xla::DExpr> output_contents;
+  if (TryBuildSymbolicBinaryContents(ctx, this, lhs_shape, rhs_shape, bcast,
+                                     &output_contents)) {
+    auto output_expr =
+        XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
+    output_expr.set_contents(std::move(output_contents));
+    ctx->SetOutputExpression(0, output_expr);
+    return;
+  }
   ctx->SetOutput(0, output);
 }
 

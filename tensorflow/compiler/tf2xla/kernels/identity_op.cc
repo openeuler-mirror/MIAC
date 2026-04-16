@@ -32,6 +32,10 @@ class IdentityOp : public XlaOpKernel {
     for (int i = 0; i < ctx->num_inputs(); ++i) {
       if (IsTensorListInput(ctx, i)) {
         ctx->SetTensorListOutput(i, ctx->Input(i));
+      } else if (ctx->InputExpression(i).kind() !=
+                     XlaExpression::Kind::kResource &&
+                 ctx->input_type(i) != DT_VARIANT) {
+        ctx->SetOutputExpression(i, ctx->InputExpression(i));
       } else {
         DCHECK(ctx->input_type(i) != DT_VARIANT);
         // Forwards using the underlying op_kernel_context so both tensor and

@@ -39,6 +39,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/shape_inference.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
@@ -1124,11 +1125,24 @@ absl::Status XlaCompiler::BuildArguments(
       }
       case XlaCompiler::Argument::kConstant:
         arg_expression = XlaExpression::Constant(arg.constant_value);
-        if (arg.dynamic_constant_index >= 0) {
-          arg_expression.set_dynamic_constant_index(arg.dynamic_constant_index);
-          if (arg.dynamic_constant_expr.has_value()) {
-            arg_expression.set_dynamic_constant_expr(*arg.dynamic_constant_expr);
+        if (!arg.constant_value_expressions.empty()) {
+          VLOG(1) << "BuildArguments attaching "
+                    << arg.constant_value_expressions.size()
+                    << " constant_value_expressions to constant arg " << i
+                    << " (" << arg.name << ")";
+          // Preserve symbolic per-element metadata for shape-like constants so
+          // later tf2xla consumers can recover dynamic contents from them.
+          std::vector<xla::DExpr> contents;
+          contents.reserve(arg.constant_value_expressions.size());
+          for (const xla::ExpressionProto& expr :
+               arg.constant_value_expressions) {
+            xla::DExpr parsed = xla::DExprFromProto(expr);
+            contents.push_back(parsed && parsed->is_dynamic()
+                                   ? std::move(parsed)
+                                   : xla::DExpr::Unknown(
+                                         xla::kUnknownContentSentinel));
           }
+          arg_expression.set_contents(std::move(contents));
         }
         break;
       case XlaCompiler::Argument::kInvalid:

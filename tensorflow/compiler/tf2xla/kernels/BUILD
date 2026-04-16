@@ -1510,6 +1510,7 @@ tf_kernel_library(
     name = "slice_op",
     srcs = ["slice_op.cc"],
     deps = [
+        "//tensorflow/compiler/tf2xla:common",
         "//tensorflow/compiler/tf2xla:xla_compilation_device",
         "//tensorflow/compiler/tf2xla:xla_compiler",
         "//tensorflow/compiler/tf2xla:xla_context",
@@ -2217,6 +2218,7 @@ tf_kernel_library(
     deps = [
         ":shape_util",
         ":tensor_list_utils",
+        "//tensorflow/compiler/tf2xla:common",
         "//tensorflow/compiler/tf2xla:xla_compilation_device",
         "//tensorflow/compiler/tf2xla:xla_compiler",
         "//tensorflow/compiler/tf2xla:xla_context",

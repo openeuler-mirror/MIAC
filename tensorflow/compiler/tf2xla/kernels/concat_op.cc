@@ -18,9 +18,11 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_join.h"
 #include "tensorflow/compiler/tf2xla/kernels/shape_util.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -40,6 +42,44 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
+
+bool AppendConcatInputContents(const XlaExpression& expr,
+                               const TensorShape& shape,
+                               std::vector<xla::DExpr>* contents) {
+  const auto& input_contents = expr.contents();
+  if (!input_contents.empty()) {
+    if (shape.dims() == 0) {
+      if (input_contents.size() != 1) {
+        return false;
+      }
+      contents->push_back(input_contents[0]);
+      return true;
+    }
+    if (shape.dims() == 1) {
+      contents->insert(contents->end(), input_contents.begin(),
+                       input_contents.end());
+      return true;
+    }
+    return false;
+  }
+  if (shape.dims() == 0) {
+    contents->push_back(xla::DExpr::Unknown(xla::kUnknownContentSentinel));
+    return true;
+  }
+  if (shape.dims() != 1) {
+    return false;
+  }
+  for (int64_t i = 0; i < shape.dim_size(0); ++i) {
+    contents->push_back(xla::DExpr::Unknown(xla::kUnknownContentSentinel));
+  }
+  return true;
+}
+
+bool HasDynamicContents(absl::Span<const xla::DExpr> contents) {
+  return absl::c_any_of(contents, [](const xla::DExpr& expr) {
+    return expr && expr->is_dynamic();
+  });
+}
 
 // --------------------------------------------------------------------------
 class ConcatBaseOp : public XlaOpKernel {
@@ -74,6 +114,29 @@ class ConcatBaseOp : public XlaOpKernel {
     // Make a vector holding the XlaOp for each of the inputs that has non-zero
     // elements.
     std::vector<xla::XlaOp> input_data;
+    std::vector<std::vector<xla::DExpr>> input_contents;
+    input_contents.resize(N);
+    bool has_output_contents = SymbolicContentEnabled() && axis == 0;
+    std::vector<xla::DExpr> output_contents;
+    if (has_output_contents) {
+      for (int i = 0; i < N; ++i) {
+        if (!AppendConcatInputContents(ctx->InputExpression(ValueInputIndex(i)),
+                                       shapes[i],
+                                       &output_contents)) {
+          has_output_contents = false;
+          output_contents.clear();
+          break;
+        }
+        if (shapes[i].dims() == 0) {
+          input_contents[i].push_back(output_contents.back());
+        } else if (shapes[i].dims() == 1) {
+          input_contents[i].insert(input_contents[i].end(),
+                                   output_contents.end() - shapes[i].dim_size(0),
+                                   output_contents.end());
+        }
+      }
+      has_output_contents = has_output_contents && HasDynamicContents(output_contents);
+    }
     int output_concat_dim = 0;
     for (int i = 0; i < N; ++i) {
       xla::XlaOp handle = values[i];
@@ -86,7 +149,12 @@ class ConcatBaseOp : public XlaOpKernel {
               "] = ", in_shape.DebugString()));
       if (in_shape.dims() == 0) {
         // Inputs that come in as scalars must be reshaped to 1-vectors.
-        input_data.push_back(xla::Reshape(handle, {1}));
+        xla::XlaOp reshaped = xla::Reshape(handle, {1});
+        if (has_output_contents) {
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(reshaped, input_contents[i]));
+        }
+        input_data.push_back(reshaped);
       } else {
         input_data.push_back(handle);
       }
@@ -94,10 +162,24 @@ class ConcatBaseOp : public XlaOpKernel {
     }
 
     VLOG(1) << "Concat dim " << concat_dim << " equivalent to " << axis;
-    ctx->SetOutput(0, xla::ConcatInDim(ctx->builder(), input_data, axis));
+    auto output = xla::ConcatInDim(ctx->builder(), input_data, axis);
+    if (has_output_contents) {
+      OP_REQUIRES_OK(
+          ctx, ctx->builder()->SetInstructionContents(output, output_contents));
+      auto output_expr =
+          XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
+      output_expr.set_contents(std::move(output_contents));
+      ctx->SetOutputExpression(0, output_expr);
+      return;
+    }
+    ctx->SetOutput(0, output);
   }
 
  private:
+  int ValueInputIndex(int value_index) const {
+    return value_index < axis_index_ ? value_index : value_index + 1;
+  }
+
   int axis_index_;
 };
 

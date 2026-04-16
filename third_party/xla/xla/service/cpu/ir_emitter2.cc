@@ -29,6 +29,7 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "xla/shape_expr.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -204,7 +205,10 @@ IrEmitter2::EmitGetExpressionValueHostKernel(const HloInstruction* getBatch) {
                       EmitKernelPrototype(getBatch));
   llvm_ir::IrArray operand_array = kernel_prototype.arguments[0];
   llvm_ir::IrArray output_array = kernel_prototype.results[0];
-  const auto& expr = getBatch->operand(0)->shape().expressions(0);
+  TF_RET_CHECK(getBatch->has_contents());
+  TF_RET_CHECK(!getBatch->contents().empty());
+  xla::DExpr expr = xla::DExprFromProto(getBatch->contents()[0]);
+  TF_RET_CHECK(expr);
   llvm::IRBuilder<> b(module_->getContext());
   b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
   llvm::Value* bdim_value = llvm_ir::EmitExpression(&b, expr);

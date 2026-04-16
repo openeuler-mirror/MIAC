@@ -38,6 +38,7 @@ limitations under the License.
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "xla/shape_expr.h"
 #include "absl/meta/type_traits.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -2372,7 +2373,10 @@ absl::Status IrEmitter::HandleShapeExprValue(HloInstruction* hlo) {
   TF_RETURN_IF_ERROR(EmitTargetAddressForOp(hlo));
 
   llvm_ir::IrArray out_array = GetIrArrayFor(hlo);
-  const auto& expr = hlo->operand(0)->shape().expressions(0);
+  TF_RET_CHECK(hlo->has_contents());
+  TF_RET_CHECK(!hlo->contents().empty());
+  xla::DExpr expr = xla::DExprFromProto(hlo->contents()[0]);
+  TF_RET_CHECK(expr);
   llvm::Value* expr_value = llvm_ir::EmitExpression(b(), expr);
 
   auto it = emitted_value_.find(hlo);

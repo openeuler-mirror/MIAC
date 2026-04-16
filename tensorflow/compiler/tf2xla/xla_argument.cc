@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/xla_argument.h"
 
+#include "absl/algorithm/container.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace tensorflow {
@@ -44,6 +45,14 @@ bool XlaArgument::operator==(const XlaArgument& other) const {
     }
   }
   if (constant_value.shape() != other.constant_value.shape()) {
+    return false;
+  }
+  if (!absl::c_equal(
+          constant_value_expressions, other.constant_value_expressions,
+          [](const xla::ExpressionProto& lhs,
+             const xla::ExpressionProto& rhs) {
+            return lhs.SerializeAsString() == rhs.SerializeAsString();
+          })) {
     return false;
   }
   if (is_same_data_across_replicas != other.is_same_data_across_replicas) {

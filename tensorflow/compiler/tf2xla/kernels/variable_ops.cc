@@ -20,6 +20,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/kernels/gather_op_helpers.h"
 #include "tensorflow/compiler/tf2xla/kernels/shape_util.h"
 #include "tensorflow/compiler/tf2xla/lib/scatter.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/compiler/tf2xla/xla_resource.h"
@@ -50,6 +51,19 @@ absl::Status ValidateAssignUpdateVariableOpShapes(XlaOpKernelContext* ctx) {
   return absl::OkStatus();
 }
 
+std::vector<xla::DExpr> BuildVariableShapeContents(const TensorShape& shape) {
+  std::vector<xla::DExpr> contents;
+  contents.reserve(shape.dims());
+  for (int i = 0; i < shape.dims(); ++i) {
+    xla::DExpr expr = shape.get_filled_expression(i);
+    contents.push_back(expr && expr->is_dynamic()
+                           ? expr
+                           : xla::DExpr::Unknown(
+                                 xla::kUnknownContentSentinel));
+  }
+  return contents;
+}
+
 class VarIsInitializedOp : public XlaOpKernel {
  public:
   explicit VarIsInitializedOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
@@ -75,7 +89,11 @@ class VariableShapeOp : public XlaOpKernel {
                    ctx->GetVariableTypeAndShape(0, &variable_dtype, &shape));
     Tensor shape_constant(out_dtype_, TensorShape({shape.dims()}));
     OP_REQUIRES_OK(ctx, TensorShapeToConstant(shape, &shape_constant));
-    ctx->SetConstantOutput(0, shape_constant);
+    auto output = XlaExpression::Constant(shape_constant);
+    if (SymbolicContentEnabled()) {
+      output.set_contents(BuildVariableShapeContents(shape));
+    }
+    ctx->SetOutputExpression(0, output);
   }
 
  private:

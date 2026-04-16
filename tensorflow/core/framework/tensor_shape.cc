@@ -837,7 +837,6 @@ void TensorShapeBase<Shape>::RemoveDimRange(int begin, int end) {
     new_exprs.resize(new_rank);
   }
 
-
   ClearAllButDataType();
   set_expressions(new_exprs);
   for (auto dval : vals) {
@@ -880,7 +879,6 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
 
   std::vector<xla::DExpr> new_exprs(get_expressions().begin(),
                                     get_expressions().end());
-
   if (begin < static_cast<int64_t>(new_exprs.size())) {
     int64_t expr_end = end;
     if (expr_end > static_cast<int64_t>(new_exprs.size())) {
@@ -892,14 +890,15 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
   }
 
   vals.erase(vals.begin() + begin, vals.begin() + end);
-  ClearAllButDataType();
 
   const int64_t new_rank = vals.size();
   if (new_exprs.size() > static_cast<size_t>(new_rank)) {
     new_exprs.resize(new_rank);
   }
 
+  ClearAllButDataType();
   set_expressions(new_exprs);
+
   absl::Status s = absl::OkStatus();
   for (auto dval : vals) {
     s.Update(AddDimWithStatus(dval));

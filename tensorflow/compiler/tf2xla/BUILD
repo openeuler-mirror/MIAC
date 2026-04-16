@@ -880,6 +880,7 @@ cc_library(
     hdrs = [
         "literal_util.h",
         "shape_util.h",
+        "symbolic_content_util.h",
         "type_util.h",
     ],
     visibility = [":friends"],

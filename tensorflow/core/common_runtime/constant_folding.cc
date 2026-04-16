@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -41,6 +42,7 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/gtl/flatset.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/denormal.h"
 #include "tensorflow/core/platform/setround.h"
 #include "tensorflow/core/public/session_options.h"
@@ -51,6 +53,32 @@ namespace {
 
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
 const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
+
+bool IsShapeOp(const Node* n);
+
+bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
+  for (const Edge* edge : node->in_edges()) {
+    if (edge->IsControlEdge()) continue;
+
+    Node* input_node = edge->src();
+    if (input_node->type_string() == "_Arg") {
+      std::vector<TensorShapeProto> shapes;
+      if (GetNodeAttr(input_node->def(), "_output_shapes", &shapes).ok() &&
+          !shapes.empty() && HasDynamicDimExprs(shapes[0])) {
+        *out_shape = shapes[0];
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool GetShapeFromDirectDynamicSource(const Node* node,
+                                     TensorShapeProto* out_shape) {
+  return (IsShapeOp(node) ||
+          node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
+         GetShapeFromArgNode(node, out_shape);
+}
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
 // constant-foldable.
@@ -244,8 +272,14 @@ bool IsConstantFoldable(
         shape_map,
     const std::function<bool(const Node*)>& consider,
     int64_t max_constant_size_in_bytes,
-    std::unordered_map<const Node*, std::vector<Tensor>>*
-        shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
+  TensorShapeProto dynamic_shape;
+  if (GetShapeFromDirectDynamicSource(n, &dynamic_shape)) {
+    VLOG(1) << "Skipping constant folding for dynamic shape-derived node "
+            << n->name() << " op=" << n->type_string()
+            << " inferred_shape=" << dynamic_shape.DebugString();
+    return false;
+  }
   if (n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
     VLOG(1) << "Skipping constant folding for shape-derived node "
             << n->name() << " op=" << n->type_string();
@@ -334,7 +368,7 @@ void ConsiderConstantFoldableNode(
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
     bool* internal_node_inserted) {
-    if (!IsConstantFoldable(n, opts.shape_map, opts.consider,
+  if (!IsConstantFoldable(n, opts.shape_map, opts.consider,
                           opts.max_constant_size_in_bytes,
                           shape_replacement_map)) {
     return;
@@ -390,8 +424,7 @@ void FindConstantFoldableNodes(
     const Graph* graph, const ConstantFoldingOptions& opts,
     std::vector<Node*>* nodes,
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
-    std::unordered_map<const Node*, std::vector<Tensor>>*
-        shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
   bool internal_node_inserted = false;
   // Walk the nodes in data flow order.
   ReverseDFS(
@@ -444,30 +477,6 @@ void AddNodeToConstantGraph(
   }
 }
 
-bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
-  for (const Edge* edge : node->in_edges()) {
-    if (edge->IsControlEdge()) continue;
-
-    Node* input_node = edge->src();
-    if (input_node->type_string() == "_Arg") {
-      std::vector<TensorShapeProto> shapes;
-      if (GetNodeAttr(input_node->def(), "_output_shapes", &shapes)
-              .ok() &&
-          !shapes.empty()) {
-        // Stay on the proto here instead of rebuilding a TensorShape. These
-        // inferred shapes may still contain unknown (-1) dimensions, and the
-        // proto expressions are enough for deciding whether the value is
-        // dynamically derived.
-        if (HasDynamicDimExprs(shapes[0])) {
-          *out_shape = shapes[0];
-          return true;
-        }
-      }
-    }
-  }
-  return false;
-}
-
 // Replaces constant-foldable shape node n by a vector of constants in
 // constant_graph, which is being built up for subsequent evaluation of constant
 // propagation. node_map is the mapping of nodes in the original graph to nodes
@@ -480,10 +489,9 @@ void AddShapeNodeToConstantGraph(
         shape_replacement_map,
     std::unordered_map<Node*, std::vector<Node*>>* node_map,
     const ConstantFoldNameGenerator& generate_new_name, Graph* constant_graph) {
-
   TensorShapeProto user_inferred_shape;
-  bool has_dynamic = GetShapeFromArgNode(n, &user_inferred_shape);
-
+  const bool has_dynamic =
+      GetShapeFromDirectDynamicSource(n, &user_inferred_shape);
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {
@@ -492,9 +500,11 @@ void AddShapeNodeToConstantGraph(
     auto builder =
         NodeDefBuilder(generate_new_name(constant_graph, node_name), "Const")
             .Attr("dtype", t.dtype())
-            .Attr("has_dynamic", has_dynamic)
-            .Attr("user_inferred_shape", user_inferred_shape)
             .Attr("value", t);
+    if (has_dynamic) {
+      builder.Attr("has_dynamic", has_dynamic)
+          .Attr("user_inferred_shape", user_inferred_shape);
+    }
     NodeDef def;
     CHECK(builder.Finalize(&def).ok());
     Node* constant_node;
@@ -613,15 +623,17 @@ bool ReplaceTensorWithConstant(
     }
   }
   const string& node_name = n->name();
-  Node* constant_node;
-
   TensorShapeProto user_inferred_shape;
-  bool has_dynamic = GetShapeFromArgNode(tensor.first, &user_inferred_shape);
+  const bool has_dynamic =
+      GetShapeFromDirectDynamicSource(tensor.first, &user_inferred_shape);
+  Node* constant_node;
   auto builder = NodeDefBuilder(generate_new_name(graph, node_name), "Const")
                      .Attr("dtype", constant.dtype())
-                     .Attr("has_dynamic", has_dynamic)
-                     .Attr("user_inferred_shape", user_inferred_shape)
                      .Attr("value", constant);
+  if (has_dynamic) {
+    builder.Attr("has_dynamic", has_dynamic)
+        .Attr("user_inferred_shape", user_inferred_shape);
+  }
   if (partition_device) {
     builder.Device(partition_device->name());
   }

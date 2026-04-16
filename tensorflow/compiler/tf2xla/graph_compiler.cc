@@ -83,11 +83,6 @@ absl::Status PrepareArguments(
       case XlaExpression::Kind::kConstant:
         arg.kind = XlaCompiler::Argument::kConstant;
         arg.constant_value = *expressions[i]->constant_value();
-        if (expressions[i]->dynamic_constant_index().has_value()) {
-          arg.dynamic_constant_index =
-              *expressions[i]->dynamic_constant_index();
-          arg.dynamic_constant_expr = expressions[i]->dynamic_constant_expr();
-        }
         break;
       case XlaExpression::Kind::kXlaOp:
         if (arg_must_be_compile_time_constant[i]) {

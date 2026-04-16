@@ -57,6 +57,7 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/permutation_util.h"
+#include "xla/printer.h"
 #include "xla/primitive_util.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/shape_inference.h"
@@ -584,6 +585,20 @@ static std::string ShapeToString(const ShapeProto& shape) {
   return absl::StrCat("[", absl::StrJoin(shape.dimensions(), ", "), "]");
 }
 
+static std::vector<ExpressionProto> ContentsToProto(
+    absl::Span<const DExpr> contents) {
+  std::vector<ExpressionProto> protos;
+  protos.reserve(contents.size());
+  for (const DExpr& expr : contents) {
+    ExpressionProto proto;
+    if (expr) {
+      expr.to_proto(&proto);
+    }
+    protos.push_back(std::move(proto));
+  }
+  return protos;
+}
+
 void XlaBuilder::ToStringHelper(std::string* out, int ident,
                                 int64_t op_handle) const {
   const HloInstructionProto& instr =
@@ -773,6 +788,37 @@ absl::Status XlaBuilder::SetInstructionFrontendAttribute(const XlaOp op,
   return absl::OkStatus();
 }
 
+absl::Status XlaBuilder::SetInstructionContents(XlaOp op,
+                                                std::vector<DExpr> contents) {
+  auto it = handle_to_index_.find(op.handle());
+  if (it == handle_to_index_.end()) {
+    return InvalidArgument("No XlaOp with handle %d", op.handle());
+  }
+  const bool has_dynamic_content =
+      absl::c_any_of(contents, [](const DExpr& expr) {
+        return expr && expr->is_dynamic();
+      });
+  if (!has_dynamic_content) {
+    VLOG(1) << "SetInstructionContents clearing non-dynamic contents for op "
+              << op.handle() << " size=" << contents.size();
+    contents.clear();
+  } else {
+    VLOG(1) << "SetInstructionContents keeping dynamic contents for op "
+              << op.handle() << " size=" << contents.size();
+  }
+  instruction_contents_.at(it->second) = std::move(contents);
+  return absl::OkStatus();
+}
+
+absl::StatusOr<const std::vector<DExpr>*> XlaBuilder::GetInstructionContents(
+    XlaOp op) const {
+  auto it = handle_to_index_.find(op.handle());
+  if (it == handle_to_index_.end()) {
+    return InvalidArgument("No XlaOp with handle %d", op.handle());
+  }
+  return &instruction_contents_.at(it->second);
+}
+
 absl::Status XlaBuilder::SetInstructionSharding(
     XlaOp op, const std::optional<OpSharding>& sharding) {
   TF_ASSIGN_OR_RETURN(auto instr_proto, LookUpMutableInstruction(op));
@@ -926,7 +972,13 @@ absl::Status XlaBuilder::BuildComputationProto(int64_t root_id,
   *proto.mutable_program_shape() = program_shape.ToProto();
   proto.set_root_id(root_id);
 
-  for (auto& instruction : instructions_) {
+  for (size_t index = 0; index < instructions_.size(); ++index) {
+    auto& instruction = instructions_[index];
+    if (!instruction_contents_[index].empty()) {
+      for (const auto& content : ContentsToProto(instruction_contents_[index])) {
+        *instruction.add_contents() = content;
+      }
+    }
     // Ensures that the instruction names are unique among the whole graph.
     instruction.set_name(
         GetFullName(instruction.name(), kNameSeparator, instruction.id()));
@@ -936,6 +988,7 @@ absl::Status XlaBuilder::BuildComputationProto(int64_t root_id,
   // Clear data held by this builder.
   this->instructions_.clear();
   this->instruction_shapes_.clear();
+  this->instruction_contents_.clear();
   this->handle_to_index_.clear();
   this->parameter_numbers_.clear();
   return absl::OkStatus();
@@ -4699,16 +4752,7 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
       DExpr simplified_expr = dim_expr.simplify();
       XlaOp dim_bound =
           ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
-      ExpressionProto expr_proto;
-      simplified_expr->to_proto(&expr_proto);
-      std::string expr_textproto =
-          tsl::LegacyUnredactedShortDebugString(expr_proto);
-      VLOG(1) << "GetDimensionSize: expr_textproto is " << expr_textproto
-              << " ShortDebugString is " << expr_proto.ShortDebugString();
-      TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
-          dim_bound, "dynamic_constant_index", "0"));
-      TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
-          dim_bound, "dynamic_constant_expr", expr_textproto));
+      TF_RETURN_IF_ERROR(SetInstructionContents(dim_bound, {simplified_expr}));
       return dim_bound;
     }
     // Calling GetDimensionSize on a static dimension returns a constant
@@ -5088,6 +5132,7 @@ absl::StatusOr<XlaOp> XlaBuilder::AddInstruction(
   TF_ASSIGN_OR_RETURN(Shape shape,
                       Shape::FromProto(instructions_.back().shape()));
   instruction_shapes_.push_back(std::make_unique<Shape>(std::move(shape)));
+  instruction_contents_.push_back({});
 
   XlaOp op(handle, this);
   return op;

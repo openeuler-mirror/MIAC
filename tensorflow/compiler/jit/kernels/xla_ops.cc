@@ -65,6 +65,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/printer.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/shape_expr.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/framework/allocator.h"
@@ -511,6 +512,71 @@ absl::Status CompileToLocalExecutable(
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     std::optional<xla::DExpr> dynamic_dim_expr;
+    auto maybe_attach_shape_contents_from_attrs =
+        [&](int arg_index, const auto& attr_map,
+            const std::string& node_name) {
+          auto& arg = norm_args[arg_index];
+          if (arg.kind != XlaCompiler::Argument::kConstant) {
+            return;
+          }
+
+          bool has_dynamic = false;
+          auto has_dynamic_it = attr_map.find("has_dynamic");
+          if (has_dynamic_it == attr_map.end()) {
+            return;
+          }
+          has_dynamic = has_dynamic_it->second.b();
+          if (!has_dynamic) {
+            return;
+          }
+
+          auto inferred_shape_it = attr_map.find("user_inferred_shape");
+          if (inferred_shape_it == attr_map.end()) {
+            VLOG(1) << "XlaCompileOp saw has_dynamic for const arg "
+                      << arg_index << " node=" << node_name
+                      << " but no user_inferred_shape attr";
+            return;
+          }
+
+          TensorShapeProto inferred_shape_proto;
+          inferred_shape_proto = inferred_shape_it->second.shape();
+
+          TensorShape inferred_shape(inferred_shape_proto);
+          if (!TensorShapeUtils::IsVector(arg.constant_value.shape()) ||
+              arg.constant_value.NumElements() != inferred_shape.dims()) {
+            VLOG(1) << "XlaCompileOp const arg " << arg_index
+                      << " node=" << node_name
+                      << " has dynamic shape metadata but tensor shape "
+                      << arg.constant_value.shape().DebugString()
+                      << " does not match inferred rank " << inferred_shape.dims();
+            return;
+          }
+
+          arg.constant_value_expressions.clear();
+          arg.constant_value_expressions.reserve(inferred_shape.dims());
+          for (int64_t i = 0; i < inferred_shape.dims(); ++i) {
+            xla::ExpressionProto expr;
+            const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
+            if (dim_expr && dim_expr->is_dynamic()) {
+              dim_expr->to_proto(&expr);
+            } else if (arg.constant_value.dtype() == DT_INT32) {
+              expr.set_constant_value(arg.constant_value.flat<int32>()(i));
+            } else if (arg.constant_value.dtype() == DT_INT64) {
+              expr.set_constant_value(arg.constant_value.flat<int64_t>()(i));
+            } else {
+              VLOG(1) << "XlaCompileOp const arg " << arg_index
+                        << " node=" << node_name
+                        << " has unsupported dtype for inferred shape contents: "
+                        << DataTypeString(arg.constant_value.dtype());
+              arg.constant_value_expressions.clear();
+              return;
+            }
+            arg.constant_value_expressions.push_back(std::move(expr));
+          }
+          VLOG(1) << "XlaCompileOp recovered " << arg.constant_value_expressions.size()
+                    << " constant_value_expressions for const arg " << arg_index
+                    << " node=" << node_name << " from user_inferred_shape";
+        };
     auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DExpr expr) {
       if (!saw_dynamic_dim_value) {
         saw_dynamic_dim_value = true;
@@ -536,6 +602,7 @@ absl::Status CompileToLocalExecutable(
             VLOG(1) << "XlaCompileOp retrieved shape-derived marker for arg "
                     << arg_index << " node=" << node_name;
           }
+          maybe_attach_shape_contents_from_attrs(arg_index, attr_map, node_name);
 
           // Special case for _dynamic_dim...
           auto dyn_dim_attr = attr_map.find("_dynamic_dim");
@@ -632,6 +699,21 @@ absl::Status CompileToLocalExecutable(
         return;
       }
 
+      auto set_constant_contents = [&]<typename T>(int rewrite_index) {
+        arg.constant_value_expressions.clear();
+        const int64_t num_elements = arg.constant_value.NumElements();
+        arg.constant_value_expressions.reserve(num_elements);
+        for (int64_t i = 0; i < num_elements; ++i) {
+          xla::ExpressionProto expr;
+          if (i == rewrite_index) {
+            dynamic_dim_expr->to_proto(&expr);
+          } else {
+            expr.set_constant_value(arg.constant_value.flat<T>()(i));
+          }
+          arg.constant_value_expressions.push_back(std::move(expr));
+        }
+      };
+
       if (arg.constant_value.dtype() == DT_INT32) {
         auto flat = arg.constant_value.flat<int32>();
         int rewrite_index = -1;
@@ -650,9 +732,8 @@ absl::Status CompileToLocalExecutable(
           VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
                   << " index " << rewrite_index
                   << " matches dynamic_dim_value=" << dynamic_dim_value;
-          arg.dynamic_constant_index = rewrite_index;
-          arg.dynamic_constant_expr = dynamic_dim_expr->simplify();
           mutable_flat(rewrite_index) = filled_batch;
+          set_constant_contents.template operator()<int32>(rewrite_index);
         }
       } else if (arg.constant_value.dtype() == DT_INT64) {
         auto flat = arg.constant_value.flat<int64_t>();
@@ -670,9 +751,8 @@ absl::Status CompileToLocalExecutable(
           VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
                   << " index " << rewrite_index
                   << " matches dynamic_dim_value=" << dynamic_dim_value;
-          arg.dynamic_constant_index = rewrite_index;
-          arg.dynamic_constant_expr = dynamic_dim_expr->simplify();
           mutable_flat(rewrite_index) = filled_batch;
+          set_constant_contents.template operator()<int64_t>(rewrite_index);
         }
       }
     };
@@ -687,8 +767,8 @@ absl::Status CompileToLocalExecutable(
         TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
         for (int j = 0; j < shp.get_expressions().size(); ++j) {
           auto e = shp.get_expression(j);
-          if (e->is_dynamic()) {
-            int old = shp.dim_size(j);
+          if (e && e->is_dynamic()) {
+            int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
             xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
