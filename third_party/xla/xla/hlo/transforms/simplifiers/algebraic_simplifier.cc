@@ -87,6 +87,9 @@ namespace m = match;
 
 using primitive_util::NativeTypeOf;
 
+static bool HasDynamicConstantFrontendAttributes(
+    const HloInstruction* instruction);
+
 // Unwraps broadcasts hunting for a constant.  If we find one, checks if the
 // constant contains only the given value.
 bool IsAll(const HloInstruction* op, int8_t value) {
@@ -94,6 +97,9 @@ bool IsAll(const HloInstruction* op, int8_t value) {
     case HloOpcode::kBroadcast:
       return IsAll(op->operand(0), value);
     case HloOpcode::kConstant:
+      if (HasDynamicConstantFrontendAttributes(op)) {
+        return false;
+      }
       return op->literal().IsAll(value);
     default:
       return false;
@@ -107,6 +113,9 @@ bool IsAllFloat(const HloInstruction* op, float value) {
     case HloOpcode::kBroadcast:
       return IsAllFloat(op->operand(0), value);
     case HloOpcode::kConstant:
+      if (HasDynamicConstantFrontendAttributes(op)) {
+        return false;
+      }
       return op->literal().IsAllFloat(value);
     default:
       return false;
@@ -119,6 +128,9 @@ bool IsAll(const HloInstruction* op, const Literal& scalar) {
     case HloOpcode::kBroadcast:
       return IsAll(op->operand(0), scalar);
     case HloOpcode::kConstant:
+      if (HasDynamicConstantFrontendAttributes(op)) {
+        return false;
+      }
       return op->literal().IsAll(scalar);
     default:
       return false;
@@ -171,7 +183,15 @@ bool IsPositive(const HloInstruction* hlo,
 
 static bool IsScalarConstant(const HloInstruction* hlo) {
   return hlo->opcode() == HloOpcode::kConstant &&
+         !HasDynamicConstantFrontendAttributes(hlo) &&
          ShapeUtil::IsEffectiveScalar(hlo->shape());
+}
+
+static bool HasDynamicConstantFrontendAttributes(
+    const HloInstruction* instruction) {
+  const auto& attrs = instruction->frontend_attributes().map();
+  return attrs.contains("dynamic_constant_index") ||
+         attrs.contains("dynamic_constant_expr");
 }
 
 std::optional<double> GetConstantValue(const HloInstruction* inst) {
@@ -702,8 +722,9 @@ absl::Status AlgebraicSimplifierVisitor::ScalarMultiplyReduction(
     HloInstruction* multiplier;
     // Pattern match a scalar multiply.
     if (Match(inst, m::MultiplyAnyOrder(
-                        m::Op(&operand),
-                        m::Broadcast(m::ConstantScalar(&multiplier))))) {
+                        m::Op(&operand), m::Broadcast(m::ConstantScalar(
+                                            &multiplier)))) &&
+        !HasDynamicConstantFrontendAttributes(multiplier)) {
       CHECK_LT(index, user->operand_count());
       CHECK_EQ(inst, user->operands()[index]);
 
@@ -733,8 +754,9 @@ absl::Status AlgebraicSimplifierVisitor::ScalarMultiplyReduction(
     HloInstruction* operand;
     HloInstruction* multiplier;
     if (Match(inst, m::MultiplyAnyOrder(
-                        m::Op(&operand),
-                        m::Broadcast(m::ConstantScalar(&multiplier))))) {
+                        m::Op(&operand), m::Broadcast(m::ConstantScalar(
+                                            &multiplier)))) &&
+        !HasDynamicConstantFrontendAttributes(multiplier)) {
       values.push_back(*GetConstantValue(multiplier));
 
       TF_RETURN_IF_ERROR(inst->ReplaceAllUsesWith(operand));
@@ -905,6 +927,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleAdd(HloInstruction* add) {
       Match(add, m::Add(m::Add(m::NonConstant(&a),
                                m::Broadcast(m::ConstantScalar(&c1))),
                         m::Broadcast(m::ConstantScalar(&c2))))) {
+    if (HasDynamicConstantFrontendAttributes(c1) ||
+        HasDynamicConstantFrontendAttributes(c2)) {
+      return absl::OkStatus();
+    }
     TF_ASSIGN_OR_RETURN(auto* sum_of_constants,
                         MakeBinaryHlo(HloOpcode::kAdd, c1, c2));
     if (ShapeUtil::IsScalar(sum_of_constants->shape()) &&
@@ -923,6 +949,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleAdd(HloInstruction* add) {
       Match(add, m::Add(m::Subtract(m::Broadcast(m::ConstantScalar(&c1)),
                                     m::NonConstant(&a)),
                         m::Broadcast(m::ConstantScalar(&c2))))) {
+    if (HasDynamicConstantFrontendAttributes(c1) ||
+        HasDynamicConstantFrontendAttributes(c2)) {
+      return absl::OkStatus();
+    }
     TF_ASSIGN_OR_RETURN(HloInstruction * sum_of_constants,
                         MakeBinaryHlo(HloOpcode::kAdd, c1, c2));
     if (ShapeUtil::IsScalar(sum_of_constants->shape()) &&
@@ -1203,13 +1233,15 @@ absl::StatusOr<bool> AlgebraicSimplifierVisitor::TrySimplifyTautologicalCompare(
         m::Shape().IsEffectiveScalar().WithElementType(PrimitiveType::S32);
     if (Match(cmp, m::Compare(m::Op(&lhs),
                               m::Constant(&rhs).WithShape(scalar_shape_matcher))
-                       .WithComparisonDirection(ComparisonDirection::kLt))) {
+                       .WithComparisonDirection(ComparisonDirection::kLt)) &&
+        !HasDynamicConstantFrontendAttributes(rhs)) {
       return {LessThanCompareInfo{lhs, *rhs->literal().GetFirstInteger()}};
     } else if (Match(
                    cmp,
                    m::Compare(m::Constant(&lhs).WithShape(scalar_shape_matcher),
                               m::Op(&rhs))
-                       .WithComparisonDirection(ComparisonDirection::kGt))) {
+                       .WithComparisonDirection(ComparisonDirection::kGt)) &&
+               !HasDynamicConstantFrontendAttributes(lhs)) {
       return {LessThanCompareInfo{rhs, *lhs->literal().GetFirstInteger()}};
     }
     return std::nullopt;
@@ -1234,6 +1266,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleAllGather(
   if (all_gather->shape().IsArray() &&
       Match(all_gather->mutable_operand(0),
             m::Broadcast(m::ConstantScalar()))) {
+    if (HasDynamicConstantFrontendAttributes(
+            all_gather->mutable_operand(0)->operand(0))) {
+      return absl::OkStatus();
+    }
     return ReplaceWithNewInstruction(
         all_gather,
         all_gather->mutable_operand(0)->CloneWithNewShape(all_gather->shape()));
@@ -1246,6 +1282,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleAllToAll(
   if (all_to_all->shape().IsArray() &&
       Match(all_to_all->mutable_operand(0),
             m::Broadcast(m::ConstantScalar()))) {
+    if (HasDynamicConstantFrontendAttributes(
+            all_to_all->mutable_operand(0)->operand(0))) {
+      return absl::OkStatus();
+    }
     return ReplaceInstruction(all_to_all, all_to_all->mutable_operand(0));
   }
   return absl::OkStatus();
@@ -2187,6 +2227,10 @@ std::unique_ptr<HloInstruction> TryDivideToShift(
     return nullptr;
   }
 
+  if (HasDynamicConstantFrontendAttributes(c)) {
+    return nullptr;
+  }
+
   if (ShapeUtil::ElementIsSigned(divide->shape())) {
     int64_t b_value = static_cast<int64_t>(c->literal().GetFirstElement<T>());
     if (b_value > 0 && absl::has_single_bit(static_cast<uint64_t>(b_value))) {
@@ -2236,6 +2280,13 @@ absl::Status AlgebraicSimplifierVisitor::HandleDivide(HloInstruction* divide) {
   CHECK(Match(divide, m::Divide(m::Op(&a), m::Op(&b))));
   // A/1 => A
   VLOG(10) << "trying transform [A/1 => A]: " << divide->ToString();
+  if ((b->opcode() == HloOpcode::kConstant &&
+       HasDynamicConstantFrontendAttributes(b)) ||
+      (b->opcode() == HloOpcode::kBroadcast &&
+       b->operand(0)->opcode() == HloOpcode::kConstant &&
+       HasDynamicConstantFrontendAttributes(b->operand(0)))) {
+    return absl::OkStatus();
+  }
   if (IsAll(b, 1) && ReplaceInstructionIfCompatible(divide, a)) {
     return absl::OkStatus();
   }
@@ -4459,6 +4510,10 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> MinMaxToClamp(
   CHECK(Match(clamp_upper_bound_bcast,
               m::Broadcast(m::ConstantEffectiveScalar(&clamp_upper_bound))))
       << clamp_upper_bound_bcast->ToString();
+  if (HasDynamicConstantFrontendAttributes(clamp_lower_bound) ||
+      HasDynamicConstantFrontendAttributes(clamp_upper_bound)) {
+    return nullptr;
+  }
 
   const Literal& lower_bound =
       Cast<HloConstantInstruction>(clamp_lower_bound)->literal();
@@ -4703,6 +4758,9 @@ absl::Status AlgebraicSimplifierVisitor::HandleClamp(HloInstruction* clamp) {
   if ((Match(to_clamp, m::PartitionId()) || Match(to_clamp, m::ReplicaId())) &&
       Match(clamp_lower_bound, m::ConstantScalar(0U)) &&
       Match(clamp_upper_bound, m::ConstantScalar())) {
+    if (HasDynamicConstantFrontendAttributes(clamp_upper_bound)) {
+      return absl::OkStatus();
+    }
     int64_t upper_bound = Cast<HloConstantInstruction>(clamp_upper_bound)
                               ->literal()
                               .GetFirstElement<uint32_t>();
@@ -4932,6 +4990,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleMultiply(
             m::Multiply(
                 m::Multiply(m::Op(&a), m::Broadcast(m::ConstantScalar(&c1))),
                 m::Broadcast(m::ConstantScalar(&c2))))) {
+    if (HasDynamicConstantFrontendAttributes(c1) ||
+        HasDynamicConstantFrontendAttributes(c2)) {
+      return absl::OkStatus();
+    }
     TF_ASSIGN_OR_RETURN(auto* product_of_constants,
                         MakeBinaryHlo(HloOpcode::kMultiply, c1, c2));
     if (ShapeUtil::IsScalar(product_of_constants->shape()) &&
@@ -5983,6 +6045,9 @@ std::unique_ptr<HloInstruction> TryRemainderToAnd(
       !Match(b, m::Broadcast(m::ConstantEffectiveScalar(&c)))) {
     return nullptr;
   }
+  if (HasDynamicConstantFrontendAttributes(c)) {
+    return nullptr;
+  }
 
   if (ShapeUtil::ElementIsSigned(remainder->shape())) {
     int64_t b_value = static_cast<int64_t>(c->literal().GetFirstElement<T>());
@@ -6068,7 +6133,8 @@ absl::Status AlgebraicSimplifierVisitor::HandleRemainder(
   HloInstruction* divisor;
   if (Match(remainder,
             m::Remainder(m::Iota(&iota),
-                         m::Broadcast(m::ConstantEffectiveScalar(&divisor))))) {
+                         m::Broadcast(m::ConstantEffectiveScalar(&divisor)))) &&
+      !HasDynamicConstantFrontendAttributes(divisor)) {
     // The iota counts {0, ..., iota_upper_bound - 1}.  (Actually this is
     // conservative; the iota may overflow and count up to a smaller value than
     // this.  But that's OK for our purposes here.)
@@ -6096,7 +6162,7 @@ absl::Status AlgebraicSimplifierVisitor::HandleRemainder(
               m::AddAnyOrder(m::Iota(&iota),
                              m::Broadcast(m::ConstantEffectiveScalar(&addend))),
               m::Broadcast(&bcast, m::ConstantEffectiveScalar(&divisor)))) &&
-      addend == divisor) {
+      addend == divisor && !HasDynamicConstantFrontendAttributes(divisor)) {
     // The iota counts {0, ...iota_upper_bound - 1}, with the same caveat above
     // that iota_upper_bound is conservative, and the true upper bound may be
     // smaller.
@@ -7317,6 +7383,9 @@ absl::Status AlgebraicSimplifierVisitor::HandleDynamicSlice(
     std::vector<int64_t> slice_strides(rank, 1);
 
     for (int64_t i = 0; i < rank; ++i) {
+      if (HasDynamicConstantFrontendAttributes(dynamic_slice->operand(i + 1))) {
+        return absl::OkStatus();
+      }
       std::optional<int64_t> offset =
           dynamic_slice->operand(i + 1)->literal().GetFirstInteger();
       if (!offset || *offset < 0) {
@@ -7507,6 +7576,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleDynamicUpdateSlice(
         auto padding_config_dim = padding_config.add_dimensions();
         auto slice_dim_start = update_start_indx->operand(dim + offset);
         if (!Match(slice_dim_start, m::ConstantScalar())) {
+          compatible = false;
+          break;
+        }
+        if (HasDynamicConstantFrontendAttributes(slice_dim_start)) {
           compatible = false;
           break;
         }
