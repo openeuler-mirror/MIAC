@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.pb.h"  // NOLINT
 #include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/framework/versions.pb.h"
@@ -41,6 +42,14 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 namespace {
+
+std::string ShapeDimExprDebugString(const TensorShapeProto& shape, int dim) {
+  if (dim >= shape.expressions_size()) {
+    return "";
+  }
+  auto expr = DimExpr::FromProto(shape.expressions(dim));
+  return expr ? expr->DebugString() : "";
+}
 
 using shape_inference::InferenceContext;
 using shape_inference::ShapeAndType;
@@ -2209,6 +2218,146 @@ TEST_F(GraphPropertiesTest, StridedSliceOfShapeWithShrinkAxisMask) {
         properties.GetOutputProperties("slice").at(0).value();
     ExpectTensorValues({5}, slice_value);
   }
+}
+
+TEST_F(GraphPropertiesTest, ShapeTensorContentsThroughGatherProdAndUnpack) {
+  GrapplerItem item;
+
+  TF_ASSERT_OK(NodeDefBuilder("input", "Placeholder")
+                   .Attr("dtype", DT_FLOAT)
+                   .Attr("shape", PartialTensorShape({-1, 26, 8}))
+                   .Finalize(item.graph.add_node()));
+  TF_ASSERT_OK(NodeDefBuilder("shape", "Shape")
+                   .Input("input", 0, DT_FLOAT)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("out_type", DT_INT32)
+                   .Finalize(item.graph.add_node()));
+
+  Tensor gather_indices(DT_INT32, TensorShape({2}));
+  gather_indices.vec<int32>()(0) = 0;
+  gather_indices.vec<int32>()(1) = 1;
+  TF_ASSERT_OK(NodeDefBuilder("gather_indices", "Const")
+                   .Attr("dtype", DT_INT32)
+                   .Attr("value", gather_indices)
+                   .Finalize(item.graph.add_node()));
+
+  Tensor zero_scalar(DT_INT32, TensorShape({}));
+  zero_scalar.scalar<int32>()() = 0;
+  TF_ASSERT_OK(NodeDefBuilder("zero_axis", "Const")
+                   .Attr("dtype", DT_INT32)
+                   .Attr("value", zero_scalar)
+                   .Finalize(item.graph.add_node()));
+
+  Tensor eight_scalar(DT_INT32, TensorShape({}));
+  eight_scalar.scalar<int32>()() = 8;
+  TF_ASSERT_OK(NodeDefBuilder("eight", "Const")
+                   .Attr("dtype", DT_INT32)
+                   .Attr("value", eight_scalar)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("gather", "GatherV2")
+                   .Input("shape", 0, DT_INT32)
+                   .Input("gather_indices", 0, DT_INT32)
+                   .Input("zero_axis", 0, DT_INT32)
+                   .Attr("Tparams", DT_INT32)
+                   .Attr("Tindices", DT_INT32)
+                   .Attr("Taxis", DT_INT32)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("flat_dim", "Prod")
+                   .Input("gather", 0, DT_INT32)
+                   .Input("zero_axis", 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("keep_dims", false)
+                   .Finalize(item.graph.add_node()));
+
+  std::vector<NodeDefBuilder::NodeOut> gather_pack_inputs(2);
+  gather_pack_inputs[0] = NodeDefBuilder::NodeOut{"flat_dim", 0, DT_INT32};
+  gather_pack_inputs[1] = NodeDefBuilder::NodeOut{"eight", 0, DT_INT32};
+  TF_ASSERT_OK(NodeDefBuilder("gather_shape", "Pack")
+                   .Input(gather_pack_inputs)
+                   .Attr("N", 2)
+                   .Attr("T", DT_INT32)
+                   .Attr("axis", 0)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("reshape_from_gather", "Reshape")
+                   .Input("input", 0, DT_FLOAT)
+                   .Input("gather_shape", 0, DT_INT32)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("Tshape", DT_INT32)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("unpack", "Unpack")
+                   .Input("shape", 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("axis", 0)
+                   .Attr("num", 3)
+                   .Finalize(item.graph.add_node()));
+
+  std::vector<NodeDefBuilder::NodeOut> tail_inputs(2);
+  tail_inputs[0] = NodeDefBuilder::NodeOut{"unpack", 1, DT_INT32};
+  tail_inputs[1] = NodeDefBuilder::NodeOut{"unpack", 2, DT_INT32};
+  TF_ASSERT_OK(NodeDefBuilder("tail_shape", "Pack")
+                   .Input(tail_inputs)
+                   .Attr("N", 2)
+                   .Attr("T", DT_INT32)
+                   .Attr("axis", 0)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("tail_prod", "Prod")
+                   .Input("tail_shape", 0, DT_INT32)
+                   .Input("zero_axis", 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("keep_dims", false)
+                   .Finalize(item.graph.add_node()));
+
+  std::vector<NodeDefBuilder::NodeOut> unpack_pack_inputs(2);
+  unpack_pack_inputs[0] = NodeDefBuilder::NodeOut{"unpack", 0, DT_INT32};
+  unpack_pack_inputs[1] = NodeDefBuilder::NodeOut{"tail_prod", 0, DT_INT32};
+  TF_ASSERT_OK(NodeDefBuilder("unpack_shape", "Pack")
+                   .Input(unpack_pack_inputs)
+                   .Attr("N", 2)
+                   .Attr("T", DT_INT32)
+                   .Attr("axis", 0)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("reshape_from_unpack", "Reshape")
+                   .Input("input", 0, DT_FLOAT)
+                   .Input("unpack_shape", 0, DT_INT32)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("Tshape", DT_INT32)
+                   .Finalize(item.graph.add_node()));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(true));
+
+  const auto& input_shape = properties.GetOutputProperties("input")[0].shape();
+  const auto& gather_reshape_shape =
+      properties.GetOutputProperties("reshape_from_gather")[0].shape();
+  const auto& unpack_reshape_shape =
+      properties.GetOutputProperties("reshape_from_unpack")[0].shape();
+
+  ASSERT_EQ(3, input_shape.dim_size());
+  ASSERT_EQ(2, gather_reshape_shape.dim_size());
+  ASSERT_EQ(2, unpack_reshape_shape.dim_size());
+  ASSERT_GT(input_shape.expressions_size(), 0);
+  ASSERT_GT(gather_reshape_shape.expressions_size(), 0);
+  ASSERT_GT(unpack_reshape_shape.expressions_size(), 0);
+
+  auto expected_gather_dim0 =
+      std::make_unique<ExprMul>(DimExpr::FromProto(input_shape.expressions(0))
+                                    .release(),
+                                new Constant(26));
+  EXPECT_EQ(expected_gather_dim0->DebugString(),
+            ShapeDimExprDebugString(gather_reshape_shape, 0));
+  EXPECT_EQ(8, gather_reshape_shape.dim(1).size());
+
+  EXPECT_EQ(ShapeDimExprDebugString(input_shape, 0),
+            ShapeDimExprDebugString(unpack_reshape_shape, 0));
+  EXPECT_EQ(208, unpack_reshape_shape.dim(1).size());
 }
 
 TEST_F(GraphPropertiesTest, ValuePropagationThroughArithmeticOps) {

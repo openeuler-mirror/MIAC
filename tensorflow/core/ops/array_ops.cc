@@ -266,15 +266,38 @@ absl::Status SetOutputShapeForReshape(InferenceContext* c) {
                                      true /* evenly_divisible */,
                                      &inferred_dim));
         DimensionHandle unknown_in_dim = c->Dim(in, in_unknown_idx);
+        // Record the inferred scale factor on the input-side unknown.
         TF_RETURN_IF_ERROR(
             c->Merge(unknown_in_dim, inferred_dim, &unknown_in_dim));
       } else if (in_unknown_idx >= 0 && out_unknown_idx >= 0) {
         // Exactly one unknown dimension in both input and output. These 2 are
-        // equal iff the known elements are equal.
+        // related through the ratio of known elements.
+        DimensionHandle unknown_in_dim = c->Dim(in, in_unknown_idx);
         if (c->Value(known_in_elems) == c->Value(known_out_elems)) {
-          DimensionHandle unknown_in_dim = c->Dim(in, in_unknown_idx);
+          // Example: [?,8] -> [?,8], so the unknown is unchanged.
           TF_RETURN_IF_ERROR(
               c->ReplaceDim(out, out_unknown_idx, unknown_in_dim, &out));
+        } else if (c->Value(known_out_elems) > 0 &&
+                   c->Value(known_in_elems) % c->Value(known_out_elems) == 0) {
+          DimensionHandle inferred_out_dim;
+          // Example: [?,26,8] -> [?,8], so the output unknown absorbs *26.
+          TF_RETURN_IF_ERROR(c->Multiply(
+              unknown_in_dim,
+              c->Value(known_in_elems) / c->Value(known_out_elems),
+              &inferred_out_dim));
+          TF_RETURN_IF_ERROR(
+              c->ReplaceDim(out, out_unknown_idx, inferred_out_dim, &out));
+        } else if (c->Value(known_in_elems) > 0 &&
+                   c->Value(known_out_elems) % c->Value(known_in_elems) == 0) {
+          DimensionHandle inferred_out_dim;
+          // Example: [?,8] -> [?,26,8], so the output unknown is the
+          // input-side unknown divided by 26.
+          TF_RETURN_IF_ERROR(c->Divide(
+              unknown_in_dim,
+              c->Value(known_out_elems) / c->Value(known_in_elems),
+              true /* evenly_divisible */, &inferred_out_dim));
+          TF_RETURN_IF_ERROR(
+              c->ReplaceDim(out, out_unknown_idx, inferred_out_dim, &out));
         }
       }
     }
