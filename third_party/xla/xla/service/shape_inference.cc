@@ -1329,8 +1329,7 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(const Shape& lhs,
       output_dimensions_expressions[i] = lhs.dimensions(i) == 1
                                              ? rhs.expressions(i)
                                              : lhs.expressions(i);
-    } else if (lhs.dimensions(i) == rhs.dimensions(i)) {  // &&
-      //  *lhs.expressions(i) == *rhs.expressions(i)) {
+    } else if (lhs.dimensions(i) == rhs.dimensions(i)) {
       // LHS | RHS | Result
       // X   | X   | X
       // X   | <=X | <=X
@@ -1538,6 +1537,7 @@ ShapeInference::InferElementwiseBinaryOpShape(
     for (int64_t i = 0; i < rhs.dimensions().size(); ++i) {
       if (rhs.is_dynamic_dimension(i)) {
         result.set_dynamic_dimension(i, true);
+        result.set_expression(i, rhs.expressions(i));
       }
     }
     return result;
