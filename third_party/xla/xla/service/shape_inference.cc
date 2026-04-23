@@ -1230,6 +1230,12 @@ void GenerateDotResultDimensions(
   if (mode == kContracting) {
     dimensions.push_back(num_groups);
     is_dynamic.push_back(is_dynamic_group_sizes);
+    const DExpr& group_expr =
+        group_sizes.expressions(group_sizes.dimensions_size() - 1);
+    expressions.push_back(group_expr ? group_expr
+                                     : (is_dynamic_group_sizes
+                                            ? DExpr::Unknown(70)
+                                            : DExpr::Const(num_groups)));
   }
   GenerateDotResultDimensions(lhs, rhs, dimension_numbers, dimensions,
                               expressions, is_dynamic, rhs_group_dimensions);
@@ -2483,6 +2489,15 @@ ShapeInference::InferScalarBroadcastShape(absl::Span<const Shape> shapes) {
         window_output_shape.dimensions(i);
   }
   std::vector<bool> is_dynamic(num_dims);
+  std::vector<DExpr> output_expressions(num_dims);
+  output_expressions[dnums.output_batch_dimension()] =
+      lhs.expressions(dnums.input_batch_dimension()) / batch_group_count;
+  output_expressions[dnums.output_feature_dimension()] =
+      DExpr::Const(kernel_output_features);
+  for (int i = 0; i < num_spatial_dims; ++i) {
+    output_expressions[dnums.output_spatial_dimensions(i)] =
+        window_output_shape.expressions(i);
+  }
   for (int i = 0; i < num_dims; i++) {
     if (lhs.is_dynamic_dimension(i)) {
       if (i == dnums.input_batch_dimension()) {
@@ -2523,7 +2538,7 @@ ShapeInference::InferScalarBroadcastShape(absl::Span<const Shape> shapes) {
   PrimitiveType type = preferred_element_type.value_or(
       ShapeUtil::HigherPrecisionElementType(lhs, rhs));
   return ShapeUtil::MakeShape(type, dimensions, is_dynamic,
-                              expressions);
+                              output_expressions);
 }
 
 /* static */ absl::StatusOr<Shape> ShapeInference::InferFftShape(
