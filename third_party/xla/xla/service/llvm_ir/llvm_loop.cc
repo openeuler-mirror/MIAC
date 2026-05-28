@@ -189,7 +189,7 @@ llvm::BasicBlock* ForLoop::CreateLoopBB(absl::string_view name,
 std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
     absl::string_view suffix, llvm::Value* start_index, llvm::Value* end_index,
     UnrollMode unroll_mode, bool prevent_vectorization,
-    DynExpr* expression) {
+    DExpr expression) {
   return AddLoop(suffix, start_index, end_index, GetConstantWithIndexType(1),
                  unroll_mode, prevent_vectorization, expression);
 }
@@ -197,7 +197,7 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
 std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
     absl::string_view suffix, llvm::Value* start_index, llvm::Value* end_index,
     llvm::Value* stride, UnrollMode unroll_mode, bool prevent_vectorization,
-    DynExpr* expression) {
+    DExpr expression) {
   if (inner_loop_body_bb_ != nullptr) {
     // Create this loop inside the previous one.
     b_->SetInsertPoint(&*inner_loop_body_bb_->getFirstInsertionPt());
@@ -205,8 +205,7 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
   llvm::Value* actual_end = end_index;
   if (expression && expression->is_dynamic()) {
     // Get batch dim and compare with end_index to use minimum value
-    llvm::Value* expr_value =
-        llvm_ir::EmitExpression(b_, expression);
+    llvm::Value* expr_value = llvm_ir::EmitExpression(b_, expression);
     actual_end = b_->CreateSelect(b_->CreateICmpULT(end_index, expr_value),
                                   end_index, expr_value, "loop_end_min");
   }
@@ -231,7 +230,7 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
 std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
     int64_t start_index, int64_t end_index, absl::string_view suffix,
     UnrollMode unroll_mode, bool prevent_vectorization,
-    DynExpr* expression) {
+    DExpr expression) {
   CHECK_LE(start_index, end_index);
 
   llvm::Value* end = (expression && expression->is_dynamic())
@@ -246,7 +245,7 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(int64_t start_index,
                                               absl::string_view suffix,
                                               UnrollMode unroll_mode,
                                               bool prevent_vectorization,
-                                              DynExpr* expression) {
+                                              DExpr expression) {
   CHECK_LE(start_index, end_index);
 
   llvm::Value* end = (expression && expression->is_dynamic())

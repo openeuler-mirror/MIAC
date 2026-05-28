@@ -75,8 +75,8 @@ absl::Status ValidateStridedSliceOp(
     absl::InlinedVector<int64_t, 4UL>* begin,
     absl::InlinedVector<int64_t, 4UL>* end,
     absl::InlinedVector<int64_t, 4UL>* strides,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* begin_expr = nullptr,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* end_expr = nullptr,
+    absl::InlinedVector<xla::DExpr, 4UL>* begin_expr = nullptr,
+    absl::InlinedVector<xla::DExpr, 4UL>* end_expr = nullptr,
     StridedSliceShapeSpec* shape_spec = nullptr);
 
 // Same as above, but the outputs are TensorShape, not PartialTensorShape
@@ -90,8 +90,8 @@ absl::Status ValidateStridedSliceOp(
     absl::InlinedVector<int64_t, 4UL>* begin,
     absl::InlinedVector<int64_t, 4UL>* end,
     absl::InlinedVector<int64_t, 4UL>* strides,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* begin_expr = nullptr,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* end_expr = nullptr,
+    absl::InlinedVector<xla::DExpr, 4UL>* begin_expr = nullptr,
+    absl::InlinedVector<xla::DExpr, 4UL>* end_expr = nullptr,
     StridedSliceShapeSpec* shape_spec = nullptr);
 
 // Simple class for determining if it is possible to broadcast a tensor to a

@@ -80,7 +80,7 @@ struct XlaArgument {
   // When non-negative, marks the single constant element that later passes may
   // reinterpret as coming from a dynamic expression instead of the literal.
   int64_t dynamic_constant_index = -1;
-  xla::DynExpr* dynamic_constant_expr = nullptr;
+  std::optional<xla::DExpr> dynamic_constant_expr;
   // The upper bounds of the value.
   std::optional<Tensor> value_bound;
 
@@ -121,7 +121,7 @@ struct XlaArgument {
 
   // Returns the dimension sizes for either TensorShape or xla::Shape.
   std::vector<int64_t> DimensionSizes() const;
-  std::vector<xla::DynExpr*> DimensionExpressions() const;
+  std::vector<xla::DExpr> DimensionExpressions() const;
   absl::InlinedVector<int64_t, 4> DimensionSizesAsInlinedVector() const;
 
   // Returns the human-readable string for either TensorShape or xla::Shape.

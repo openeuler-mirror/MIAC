@@ -441,13 +441,13 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
       bool has_dynamic = false;
 
       for (int dim = 0; dim < subshape.expressions().size(); ++dim) {
-        auto expr = subshape.expressions(dim);
-        if (expr != nullptr && expr->is_dynamic()) {
+        const auto& expr = subshape.expressions(dim);
+        if (expr && expr->is_dynamic()) {
           has_dynamic = true;
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
-            xla::DynExpr* batch_size = xla::DynExpr::_(run_options->batch_size());
-            xla::DynExpr* subst_expr = expr->substitute(1, batch_size)->s();
+            xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
+            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             shape.set_dim(dim, subst_expr->get_val());
           } else {
             // TODO: Fallback to BatchSizeResource for now. Remove it later.
@@ -456,9 +456,9 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             ScopedStepContainer* step_container = ctx->step_container();
             TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
-            xla::DynExpr* batch_size = xla::DynExpr::_(bsr->GetBatchSize());
+            xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
             // Just substitute Var(1) for now.
-            xla::DynExpr* subst_expr = expr->substitute(1, batch_size)->s();
+            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             shape.set_dim(dim, subst_expr->get_val());
             bsr->Unref();
           }

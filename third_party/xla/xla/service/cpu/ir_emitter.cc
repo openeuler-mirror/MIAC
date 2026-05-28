@@ -77,6 +77,7 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/map_util.h"
+#include "xla/printer.h"
 #include "xla/primitive_util.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/collective_ops_utils.h"
@@ -2068,7 +2069,7 @@ absl::Status IrEmitter::HandleSlice(HloInstruction* slice) {
   const int64_t memcpy_elements =
       primitive_elements_per_logical_element * memcpy_logical_elements;
 
-  EmitTransferElements(memcpy_dest, memcpy_source, DynExpr::_(memcpy_elements),
+  EmitTransferElements(memcpy_dest, memcpy_source, DExpr::Const(memcpy_elements),
                        slice->shape().element_type(), target_array,
                        source_array);
 
@@ -2369,9 +2370,8 @@ absl::Status IrEmitter::HandleShapeExprValue(HloInstruction* hlo) {
   TF_RETURN_IF_ERROR(EmitTargetAddressForOp(hlo));
 
   llvm_ir::IrArray out_array = GetIrArrayFor(hlo);
-
-  llvm::Value* expr_value =
-      llvm_ir::EmitExpression(b(), hlo->operand(0)->shape().expressions(0));
+  const auto& expr = hlo->operand(0)->shape().expressions(0);
+  llvm::Value* expr_value = llvm_ir::EmitExpression(b(), expr);
 
   auto it = emitted_value_.find(hlo);
   if (it == emitted_value_.end()) {
@@ -3156,9 +3156,9 @@ absl::Status EmitFastConcatenate(
       target_array.EmitArrayElementAddress(target_index, &b, "target_region");
   llvm::Value* byte_offset_into_target_region = b.getInt64(0);
 
-  DynExpr* inner_exprs_product = absl::c_accumulate(
-      inner_dims, DynExpr::one, [&](DynExpr* product, int64_t inner_dim) {
-        return *product * *output_shape.expressions(inner_dim);
+  DExpr inner_exprs_product = absl::c_accumulate(
+      inner_dims, DExpr::Const(1), [&](DExpr product, int64_t inner_dim) {
+        return product * output_shape.expressions(inner_dim);
       });
 
   // For each operand, emit a memcpy from the operand to the target of size
@@ -3176,13 +3176,14 @@ absl::Status EmitFastConcatenate(
 
     auto cexpr = input_shape.expressions(concat_dim);
 
-    ::xla::cpu::EmitTransferElements(copy_target_address, copy_source_address,
-                                     (*inner_exprs_product * *cexpr)->s(),
-                                     primitive_type, target_array, source_array,
-                                     module, b);
+    ::xla::cpu::EmitTransferElements(
+        copy_target_address, copy_source_address,
+        (inner_exprs_product * cexpr).simplify(), primitive_type, target_array,
+        source_array, module, b);
 
     llvm::Value* concat_dim_count = xla::llvm_ir::EmitExpression(
-        &b, (*inner_exprs_product * *input_shape.expressions(concat_dim))->s());
+        &b, (inner_exprs_product * input_shape.expressions(concat_dim))
+                .simplify());
 
     llvm::Value* concat_dim_size =
         b.CreateMul(concat_dim_count, b.getInt64(primitive_type_size));
@@ -3399,7 +3400,7 @@ llvm::Value* IrEmitter::EmitCallToFfi(HloCustomCallInstruction* custom_call,
 }
 
 void IrEmitter::EmitTransferElements(llvm::Value* target, llvm::Value* source,
-                                     xla::DynExpr* element_count,
+                                     const xla::DExpr& element_count,
                                      PrimitiveType primitive_type,
                                      const llvm_ir::IrArray& target_array,
                                      const llvm_ir::IrArray& source_array) {
@@ -3409,7 +3410,7 @@ void IrEmitter::EmitTransferElements(llvm::Value* target, llvm::Value* source,
 }
 
 void EmitTransferElements(llvm::Value* target, llvm::Value* source,
-                          xla::DynExpr* element_count,
+                          const xla::DExpr& element_count,
                           PrimitiveType primitive_type,
                           const llvm_ir::IrArray& target_array,
                           const llvm_ir::IrArray& source_array,
@@ -3422,7 +3423,7 @@ void EmitTransferElements(llvm::Value* target, llvm::Value* source,
   llvm::Type* primitive_llvm_type =
       llvm_ir::PrimitiveTypeToIrType(primitive_type, module->getContext());
 
-  if (element_count == DynExpr::one) {
+  if (element_count->is_constant() && element_count->get_val() == 1) {
     auto* load_instruction =
         b.CreateAlignedLoad(primitive_llvm_type, source, element_alignment);
     source_array.AnnotateLoadStoreInstructionWithMetadata(load_instruction);
@@ -4105,21 +4106,21 @@ absl::Status IrEmitter::EmitMemcpy(const HloInstruction& source,
   auto expressions = shape.expressions();
   bool is_dynamic =
       std::any_of(expressions.begin(), expressions.end(),
-                  [](DynExpr* e) { return e->is_dynamic(); });
+                  [](const DExpr& e) { return e && e->is_dynamic(); });
   if (is_dynamic) {
     llvm::LLVMContext& ctx = b()->getContext();
     llvm::IntegerType* i64Type = llvm::IntegerType::getInt64Ty(ctx);
     int64_t dimensions_accu = 1;
-    DynExpr* expression_accu = DynExpr::one;
+    DExpr expression_accu = DExpr::Const(1);
     for (int i = 0; i < shape.dimensions_size(); i++) {
-      auto expression = shape.expressions(i);
-      if (expression->is_dynamic()) {
+      const auto& expression = shape.expressions(i);
+      if (expression && expression->is_dynamic()) {
         dimensions_accu *= shape.dimensions(i);
-        expression_accu = (*expression_accu) * (*expression);
+        expression_accu = expression_accu * expression;
       }
     }
     llvm::Value* expr_value =
-        xla::llvm_ir::EmitExpression(b(), expression_accu->s());
+        xla::llvm_ir::EmitExpression(b(), expression_accu.simplify());
     // Divide the size in bytes by the size of the dynamic dimension(s).
     // TODO: make that less hacky
     llvm::ConstantInt* size =

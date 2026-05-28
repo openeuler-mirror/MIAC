@@ -309,8 +309,8 @@ class StridedSliceAssignOp : public OpKernel {
     bool is_simple_slice = true;
     absl::InlinedVector<int64_t, 4UL> begin;
     absl::InlinedVector<int64_t, 4UL> end;
-    absl::InlinedVector<xla::DynExpr*, 4UL> begin_expr;
-    absl::InlinedVector<xla::DynExpr*, 4UL> end_expr;
+    absl::InlinedVector<xla::DExpr, 4UL> begin_expr;
+    absl::InlinedVector<xla::DExpr, 4UL> end_expr;
     absl::InlinedVector<int64_t, 4UL> strides;
 
     Tensor* old_lhs = nullptr;

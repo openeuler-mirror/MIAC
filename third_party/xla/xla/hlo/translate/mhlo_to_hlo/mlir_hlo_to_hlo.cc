@@ -2733,7 +2733,7 @@ LogicalResult ExportXlaOp(DynamicReshapeOp op, OpLoweringContext ctx) {
   SmallVector<xla::XlaOp> dimSizes;
   SmallVector<int64_t> newSizeBounds;
   std::vector<bool> dimsAreDynamic;
-  std::vector<xla::DynExpr*> dimExpressions;
+  std::vector<xla::DExpr> dimExpressions;
 
   for (auto i = 0; i < resultType.getRank(); ++i) {
     auto runtimeSizeX1 = xla::Slice(outputShape, {i}, {i + 1}, {1});
@@ -2745,7 +2745,7 @@ LogicalResult ExportXlaOp(DynamicReshapeOp op, OpLoweringContext ctx) {
       return op->emitOpError() << "unbounded dynamism is not supported";
     newSizeBounds.push_back(hlo::isStaticDimSize(dimSize) ? dimSize : dimBound);
     dimsAreDynamic.push_back(!hlo::isStaticDimSize(dimSize));
-    dimExpressions.push_back(xla::DynExpr::_(-40)); // Don't know.
+    dimExpressions.push_back(xla::DExpr::Unknown(40));
   }
   value_map[op] = xla::DynamicReshape(operand, dimSizes, newSizeBounds,
                                       dimsAreDynamic, dimExpressions);
@@ -3068,7 +3068,7 @@ LogicalResult ExportXlaOp(DynamicReshapeOp op, OpLoweringContext ctx) {
   SmallVector<xla::XlaOp> dimSizes;
   SmallVector<int64_t> newSizeBounds;
   std::vector<bool> dimsAreDynamic;
-  std::vector<xla::DynExpr*> dimExpressions;
+  std::vector<xla::DExpr> dimExpressions;
   for (auto i = 0; i < resultType.getRank(); ++i) {
     auto runtimeSizeX1 = xla::Slice(outputShape, {i}, {i + 1}, {1});
     dimSizes.push_back(xla::Reshape(runtimeSizeX1, {}));
@@ -3079,7 +3079,7 @@ LogicalResult ExportXlaOp(DynamicReshapeOp op, OpLoweringContext ctx) {
       return op->emitOpError() << "unbounded dynamism is not supported";
     newSizeBounds.push_back(hlo::isStaticDimSize(dimSize) ? dimSize : dimBound);
     dimsAreDynamic.push_back(!hlo::isStaticDimSize(dimSize));
-    dimExpressions.push_back(xla::DynExpr::_(-50)); // Don't know
+    dimExpressions.push_back(xla::DExpr::Unknown(50));
   }
   value_map[op] =
       xla::DynamicReshape(operand, dimSizes, newSizeBounds, dimsAreDynamic,

@@ -66,17 +66,17 @@ class SliceOp : public XlaOpKernel {
         ctx->ConstantInputAsIntVector(2, &size).ok();
     if (all_begins_are_constant && all_sizes_are_constant) {
       std::vector<int64_t> wrapped_size(size.size());
-      std::vector<xla::DynExpr*> wrapped_size_exprs(size.size());
+      std::vector<xla::DExpr> wrapped_size_exprs(size.size());
       // `begin` is a compile-time constant.
       for (int i = 0; i < input_dims; ++i) {
         if (size[i] == -1) {
           // A size[i] of -1 means "all elements from begin[i] to dim_size(i)".
           wrapped_size[i] = input_shape.dim_size(i) - begin[i];
           wrapped_size_exprs[i] =
-              (*input_shape.get_filled_expression(i) - begin[i])->s();
+              (input_shape.get_filled_expression(i) - begin[i]).simplify();
         } else {
           wrapped_size[i] = size[i];
-          wrapped_size_exprs[i] = xla::DynExpr::_(size[i]);
+          wrapped_size_exprs[i] = xla::DExpr::Const(size[i]);
         }
       }
 
@@ -101,17 +101,17 @@ class SliceOp : public XlaOpKernel {
         }
       }
 
-      std::vector<xla::DynExpr*> begin_exprs;
+      std::vector<xla::DExpr> begin_exprs;
       for (int d : begin){
-        begin_exprs.push_back(xla::DynExpr::_(d));
+        begin_exprs.push_back(xla::DExpr::Const(d));
       }
       std::vector<int64_t> limits;
-      std::vector<xla::DynExpr*> exprs;
+      std::vector<xla::DExpr> exprs;
       limits.reserve(begin.size());
       exprs.reserve(begin.size());
       for (int i = 0; i < begin.size(); ++i) {
         limits.push_back(begin[i] + wrapped_size[i]);
-        exprs.push_back((*begin_exprs[i] + *wrapped_size_exprs[i])->s());
+        exprs.push_back((begin_exprs[i] + wrapped_size_exprs[i]).simplify());
       }
       std::vector<int64_t> strides(begin.size(), 1);
       auto slice =
@@ -127,8 +127,8 @@ class SliceOp : public XlaOpKernel {
             // If there is a dynamic dimension, properly set dimension size of
             // the slice.
             auto dynamic_size = xla::Reshape(
-                xla::Slice(ctx->Input(2), {i}, {i + 1}, {xla::DynExpr::_(i)},
-                           {xla::DynExpr::_(i + 1)}, {1}),
+                xla::Slice(ctx->Input(2), {i}, {i + 1}, {xla::DExpr::Const(i)},
+                           {xla::DExpr::Const(i + 1)}, {1}),
                 {});
 
             slice = xla::SetDimensionSize(slice, dynamic_size, i);
@@ -167,13 +167,14 @@ class SliceOp : public XlaOpKernel {
       }
       if (all_sizes_are_constant && !constant_size_is_minus_one) {
         xla::XlaOp input = ctx->Input(0);
-        std::vector<xla::DynExpr*> output_exprs;
+        std::vector<xla::DExpr> output_exprs;
         output_exprs.reserve(size.size());
         for (int64_t d : size) {
-          output_exprs.push_back(xla::DynExpr::_(d));
+          output_exprs.push_back(xla::DExpr::Const(d));
         }
-        ctx->SetOutput(
-            0, xla::DynamicSlice(input, begin_indices, size, output_exprs));
+        ctx->SetOutput(0,
+                       xla::DynamicSlice(input, begin_indices, size,
+                                         output_exprs));
       } else {
         // Size is not constant, use input size as upperbound and then set
         // dimension size on it.

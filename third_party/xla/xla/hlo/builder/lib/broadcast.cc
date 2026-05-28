@@ -33,7 +33,7 @@ namespace xla {
 
 absl::StatusOr<XlaOp> BroadcastTo(
     XlaOp input, absl::Span<int64_t const> output_dims,
-    absl::Span<xla::DynExpr* const> output_exprs) {
+    absl::Span<const xla::DExpr> output_exprs) {
   XlaBuilder* builder = input.builder();
   TF_ASSIGN_OR_RETURN(Shape input_shape, builder->GetShape(input));
   absl::Span<int64_t const> input_dims = input_shape.dimensions();
@@ -47,12 +47,6 @@ absl::StatusOr<XlaOp> BroadcastTo(
         "Input shape (", ShapeUtil::HumanString(input_shape),
         ") must have rank less than or equal to the output shape [",
         absl::StrJoin(output_dims, ","), "]");
-  }
-  
-  if (!output_exprs.empty() && output_exprs.size() != output_dims.size()) {
-  return tsl::errors::InvalidArgument(
-      "output_exprs must be empty or have the same rank as output_dims: ",
-      output_exprs.size(), " vs ", output_dims.size());
   }
 
   std::vector<int64_t> broadcast_dims;
@@ -85,23 +79,20 @@ absl::StatusOr<XlaOp> BroadcastTo(
     }
   }
   TF_RET_CHECK(input_it == input_dims.rend());
-  absl::Span<DynExpr* const> input_exprs = input_shape.expressions();
-  std::vector<DynExpr*> broadcast_exprs;
-  auto input_dim_et = input_dims.rbegin();
+
+  absl::Span<const DExpr> input_exprs = input_shape.expressions();
+  std::vector<DExpr> broadcast_exprs;
   auto input_et = input_exprs.rbegin();
-  auto output_dim_et = output_dims.rbegin();
   for (auto output_et = output_exprs.rbegin(); output_et != output_exprs.rend();
-       ++output_et, ++output_dim_et) {
+       ++output_et) {
     if (input_et != input_exprs.rend()) {
-      if (*output_dim_et == *input_dim_et || *input_dim_et == 1 ||
-          *(*output_et) == *(*input_et) ||
-          (*input_et)->is_constant() && (*input_et)->get_val() == 1) {
+      if (**output_et == **input_et ||
+          (input_et->get()->is_constant() && input_et->get()->get_val() == 1)) {
         broadcast_exprs.push_back(*output_et);
-      } else if (!(*(*output_et) == *(*input_et))) {
+      } else if (!(**output_et == **input_et)) {
         broadcast_exprs.push_back(*input_et);
-        broadcast_exprs.push_back((**output_et / **input_et)->s());
+        broadcast_exprs.push_back((*output_et / *input_et).simplify());
       }
-      ++input_dim_et;
       ++input_et;
     } else {
       broadcast_exprs.push_back(*output_et);

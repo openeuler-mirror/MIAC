@@ -81,16 +81,16 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
   int64_t lhs_contracting_size = 1;
   bool lhs_contracting_dynamic = false;
   int64_t lhs_contracting_multiplier_accu = 1;
-  DynExpr* lhs_contracting_expression = DynExpr::one;
+  DExpr lhs_contracting_expression = DExpr::Const(1);
   int64_t lhs_non_contracting_size = 1;
   bool lhs_non_contracting_dynamic = false;
   int64_t lhs_non_contracting_multiplier_accu = 1;
-  DynExpr* lhs_non_contracting_expression = DynExpr::one;
+  DExpr lhs_non_contracting_expression = DExpr::Const(1);
   std::vector<int64_t> batch_dim_sizes;
   batch_dim_sizes.reserve(num_batch_dims);
   std::vector<bool> batch_dynamic_dims;
   batch_dynamic_dims.reserve(num_batch_dims);
-  std::vector<DynExpr*> batch_expressions;
+  std::vector<DExpr> batch_expressions;
   batch_expressions.reserve(num_batch_dims);
 
   bool lhs_contracting_is_static = true;
@@ -101,7 +101,7 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
       lhs_contracting_size *= lhs_shape.dimensions(i);
       lhs_contracting_dynamic |= lhs_shape.is_dynamic_dimension(i);
       lhs_contracting_expression =
-          (*lhs_contracting_expression) * (*lhs_shape.expressions(i));
+          lhs_contracting_expression * lhs_shape.expressions(i);
     } else if (absl::c_linear_search(original_dnums.lhs_batch_dimensions(),
                                      i)) {
       batch_dim_sizes.push_back(lhs_shape.dimensions(i));
@@ -112,7 +112,7 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
       lhs_non_contracting_size *= lhs_shape.dimensions(i);
       lhs_non_contracting_dynamic |= lhs_shape.is_dynamic_dimension(i);
       lhs_non_contracting_expression =
-          (*lhs_non_contracting_expression) * (*lhs_shape.expressions(i));
+          lhs_non_contracting_expression * lhs_shape.expressions(i);
     }
   }
 
@@ -139,15 +139,15 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
 
   std::vector<int64_t> lhs_reshape_dims = batch_dim_sizes;
   std::vector<bool> lhs_reshape_dynamic_dims = batch_dynamic_dims;
-  std::vector<DynExpr*> lhs_reshape_expressions = batch_expressions;
+  std::vector<DExpr> lhs_reshape_expressions = batch_expressions;
   if (lhs_non_contracting_size > 1) {
     lhs_reshape_dims.push_back(lhs_non_contracting_size);
     lhs_reshape_dynamic_dims.push_back(lhs_non_contracting_dynamic);
-    lhs_reshape_expressions.push_back(lhs_non_contracting_expression->s());
+    lhs_reshape_expressions.push_back(lhs_non_contracting_expression.simplify());
   }
   lhs_reshape_dims.push_back(lhs_contracting_size);
   lhs_reshape_dynamic_dims.push_back(lhs_contracting_dynamic);
-  lhs_reshape_expressions.push_back(lhs_contracting_expression->s());
+  lhs_reshape_expressions.push_back(lhs_contracting_expression.simplify());
   // Reshape the contracting and non-contracting dimensions together.
   auto sh_lhs = ShapeUtil::MakeShape(lhs_shape.element_type(), lhs_reshape_dims,
                                      lhs_reshape_dynamic_dims,
@@ -165,11 +165,11 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
   int64_t rhs_non_contracting_size = 1;
   bool rhs_non_contracting_dynamic = false;
   int64_t rhs_non_contracting_multiplier_accu = 1;
-  DynExpr* rhs_non_contracting_expression = DynExpr::one;
+  DExpr rhs_non_contracting_expression = DExpr::Const(1);
   int64_t rhs_contracting_size = 1;
   bool rhs_contracting_dynamic = false;
   int64_t rhs_contracting_multiplier_accu = 1;
-  DynExpr* rhs_contracting_expression = DynExpr::one;
+  DExpr rhs_contracting_expression = DExpr::Const(1);
 
   bool rhs_contracting_is_static = true;
   bool rhs_non_contracting_is_static = true;
@@ -179,14 +179,14 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
       rhs_contracting_size *= rhs_shape.dimensions(i);
       rhs_contracting_dynamic |= rhs_shape.is_dynamic_dimension(i);
       rhs_contracting_expression =
-          (*rhs_contracting_expression) * (*rhs_shape.expressions(i));
+          rhs_contracting_expression * rhs_shape.expressions(i);
     } else if (!absl::c_linear_search(original_dnums.rhs_batch_dimensions(),
                                       i)) {
       rhs_non_contracting_dims.push_back(i);
       rhs_non_contracting_size *= rhs_shape.dimensions(i);
       rhs_non_contracting_dynamic |= rhs_shape.is_dynamic_dimension(i);
       rhs_non_contracting_expression =
-          (*rhs_non_contracting_expression) * (*rhs_shape.expressions(i));
+          rhs_non_contracting_expression * rhs_shape.expressions(i);
     }
   }
 
@@ -215,12 +215,12 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
   rhs_reshape_dims.push_back(rhs_contracting_size);
   std::vector<bool> rhs_reshape_dynamic_dims = batch_dynamic_dims;
   rhs_reshape_dynamic_dims.push_back(rhs_contracting_dynamic);
-  std::vector<DynExpr*> rhs_reshape_expressions = batch_expressions;
-  rhs_reshape_expressions.push_back(rhs_contracting_expression->s());
+  std::vector<DExpr> rhs_reshape_expressions = batch_expressions;
+  rhs_reshape_expressions.push_back(rhs_contracting_expression.simplify());
   if (rhs_non_contracting_size > 1) {
     rhs_reshape_dims.push_back(rhs_non_contracting_size);
     rhs_reshape_dynamic_dims.push_back(rhs_non_contracting_dynamic);
-    rhs_reshape_expressions.push_back(rhs_non_contracting_expression->s());
+    rhs_reshape_expressions.push_back(rhs_non_contracting_expression.simplify());
   }
   // Reshape the contracting and non-contracting dimensions together.
   auto sh_rhs = ShapeUtil::MakeShape(rhs_shape.element_type(), rhs_reshape_dims,
@@ -234,16 +234,16 @@ absl::Status CanonicalizeDot(HloDotInstruction* original_dot) {
 
   std::vector<int64_t> dot_dims = batch_dim_sizes;
   std::vector<bool> dot_dynamic_dims = batch_dynamic_dims;
-  std::vector<DynExpr*> dot_expressions = batch_expressions;
+  std::vector<DExpr> dot_expressions = batch_expressions;
   if (lhs_non_contracting_size > 1) {
     dot_dims.push_back(lhs_non_contracting_size);
     dot_dynamic_dims.push_back(lhs_non_contracting_dynamic);
-    dot_expressions.push_back(lhs_non_contracting_expression->s());
+    dot_expressions.push_back(lhs_non_contracting_expression.simplify());
   }
   if (rhs_non_contracting_size > 1) {
     dot_dims.push_back(rhs_non_contracting_size);
     dot_dynamic_dims.push_back(rhs_non_contracting_dynamic);
-    dot_expressions.push_back(rhs_non_contracting_expression->s());
+    dot_expressions.push_back(rhs_non_contracting_expression.simplify());
   }
 
   DotDimensionNumbers dot_dnums;

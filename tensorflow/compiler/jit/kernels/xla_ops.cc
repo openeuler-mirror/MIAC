@@ -419,34 +419,33 @@ std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
   }
 }
 
-static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
+static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   switch (e->kind()) {
     case DimExpr::Kind::kConstant: {
       auto* ac = static_cast<const Constant*>(e);
-      return xla::DynExpr::_(ac->value());
+      return xla::DExpr::Const(ac->value());
     }
     case DimExpr::Kind::kVariable: {
-      auto* av = static_cast<const Variable*>(e);
-      return xla::DynExpr::V(1);
+      return xla::DExpr::Var(1);
     }
     case DimExpr::Kind::kAdd: {
       auto* ee = static_cast<const ExprAdd*>(e);
-      return *DimExprToDynExpr(ee->lhs()) + *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
     }
     case DimExpr::Kind::kSub: {
       auto* ee = static_cast<const ExprSub*>(e);
-      return *DimExprToDynExpr(ee->lhs()) - *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
     }
     case DimExpr::Kind::kMul: {
       auto* ee = static_cast<const ExprMul*>(e);
-      return *DimExprToDynExpr(ee->lhs()) * *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
     }
     case DimExpr::Kind::kDiv: {
       auto* ee = static_cast<const ExprDiv*>(e);
-      return *DimExprToDynExpr(ee->lhs()) / *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
     }
   }
-  return nullptr;
+  return xla::DExpr::Unknown();
 }
 
 
@@ -511,12 +510,12 @@ absl::Status CompileToLocalExecutable(
     int64_t dynamic_dim_value = 0;
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
-    xla::DynExpr* dynamic_dim_expr = nullptr;
-    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DynExpr* expr) {
+    std::optional<xla::DExpr> dynamic_dim_expr;
+    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DExpr expr) {
       if (!saw_dynamic_dim_value) {
         saw_dynamic_dim_value = true;
         dynamic_dim_value = dim_size;
-        dynamic_dim_expr = expr;
+        dynamic_dim_expr = std::move(expr);
         return;
       }
       if (dynamic_dim_value != dim_size) {
@@ -545,18 +544,18 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DynExpr::V(1));
+            record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
             }
 
-            std::vector<xla::DynExpr*> dyn_exprs;
+            std::vector<xla::DExpr> dyn_exprs;
             for (int d : shp.dim_sizes()) {
-              dyn_exprs.push_back(xla::DynExpr::_(d));
+              dyn_exprs.push_back(xla::DExpr::Const(d));
             }
-            dyn_exprs[idx] = xla::DynExpr::V(1);
-            shp.set_expressions(dyn_exprs);
+            dyn_exprs[idx] = xla::DExpr::Var(1);
+            shp.set_expressions(std::move(dyn_exprs));
             continue;
           }
           auto it = attr_map.find(kXlaInferredOutputShapesAttrName);
@@ -570,7 +569,7 @@ absl::Status CompileToLocalExecutable(
             for (int idx = 0; idx < exp.size(); ++idx) {
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.
-              auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
+              auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
               if (e->is_dynamic()) {
                 std::optional<int64_t> solved_value =
                     e->solve(shp.dim_size(idx));
@@ -595,17 +594,17 @@ absl::Status CompileToLocalExecutable(
             }
           }
 
-          std::vector<xla::DynExpr*> dyn_exprs;
+          std::vector<xla::DExpr> dyn_exprs;
           for (int d : shp.dim_sizes()) {
-            dyn_exprs.push_back(xla::DynExpr::_(d));
+            dyn_exprs.push_back(xla::DExpr::Const(d));
           }
           for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDynExpr(ExprFromProto(exp[j]).get())->s();
+            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get()).simplify();
             if (e->is_dynamic()) {
               dyn_exprs[j] = e;
             }
           }
-          shp.set_expressions(dyn_exprs);
+          shp.set_expressions(std::move(dyn_exprs));
         }
       }
     }
@@ -691,8 +690,8 @@ absl::Status CompileToLocalExecutable(
           if (e->is_dynamic()) {
             int old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
-            xla::DynExpr* padded_expr = xla::DynExpr::_(filled_batch);
-            xla::DynExpr* subst_expr = e->substitute(1, padded_expr)->s();
+            xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
+            xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
             int64_t new_dim = subst_expr->get_val();
             if (new_dim >= 0) {
               shp.set_dim(j, new_dim);
@@ -1266,7 +1265,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
 
       for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
-        xla::DynExpr* expr = xla_shape.expressions(dim);
+        const auto& expr = xla_shape.expressions(dim);
         if (expr && expr->is_dynamic()) {
           int input_idx = comp_result->input_mapping[i] - num_constant_args;
           if (input_idx < 0 || input_idx >= ctx->num_inputs()) {

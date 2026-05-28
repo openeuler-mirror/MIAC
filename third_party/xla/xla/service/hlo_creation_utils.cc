@@ -184,7 +184,8 @@ absl::StatusOr<HloInstruction*> MakeDynamicSliceHlo(
   TF_ASSIGN_OR_RETURN(
       Shape dynamic_slice_shape,
       ShapeInference::InferDynamicSliceShape(
-          operand->shape(), scalar_start_indices_shapes, slice_sizes));
+          operand->shape(), scalar_start_indices_shapes, slice_sizes,
+          operand->shape().expressions()));
   return computation->AddInstruction(
       HloInstruction::CreateDynamicSlice(dynamic_slice_shape, operand,
                                          start_indices, slice_sizes),
@@ -655,12 +656,12 @@ absl::StatusOr<HloInstruction*> CollapseFirstNDims(HloInstruction* operand,
   CHECK_GE(static_cast<int64_t>(operand_shape.dimensions().size()), n);
   int64_t new_shape_leading_bound = 1;
   bool new_shape_leading_is_dynamic = false;
-  DynExpr* new_shape_leading_expression = DynExpr::one;
+  DExpr new_shape_leading_expression = DExpr::Const(1);
   for (int64_t i = 0; i < n; i++) {
     new_shape_leading_bound *= operand_shape.dimensions(i);
     new_shape_leading_is_dynamic |= operand_shape.is_dynamic_dimension(i);
     new_shape_leading_expression =
-        (*new_shape_leading_expression) * (*operand_shape.expressions(i));
+        new_shape_leading_expression * operand_shape.expressions(i);
   }
 
   std::vector<int64_t> new_shape_dims;
@@ -678,9 +679,9 @@ absl::StatusOr<HloInstruction*> CollapseFirstNDims(HloInstruction* operand,
             operand_shape.dynamic_dimensions().end(),
             std::back_inserter(new_shape_dynamic_dims));
 
-  std::vector<DynExpr*> new_shape_expressions;
+  std::vector<DExpr> new_shape_expressions;
   new_shape_expressions.reserve(operand_shape.dimensions_size() - n + 1);
-  new_shape_expressions.push_back(new_shape_leading_expression->s());
+  new_shape_expressions.push_back(new_shape_leading_expression.simplify());
   auto exprs = operand_shape.expressions();
   std::copy(exprs.begin() + n, exprs.end(),
             std::back_inserter(new_shape_expressions));

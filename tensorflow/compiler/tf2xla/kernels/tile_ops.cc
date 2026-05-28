@@ -67,7 +67,7 @@ class TileOp : public XlaOpKernel {
                             xla::ValueInferenceMode::kUpperBound));
 
     std::vector<int64_t> output_dims(input_shape.dims());
-    std::vector<xla::DynExpr*> output_exprs(input_shape.dims());
+    std::vector<xla::DExpr> output_exprs(input_shape.dims());
 
     auto expr_sizes = input_shape.get_filled_expressions();
 
@@ -77,7 +77,7 @@ class TileOp : public XlaOpKernel {
                                           "] >= 0, but got ", output_dims[i]));
       output_dims[i] = input_shape.dim_size(i) * multiples_bounds[i];
       output_exprs[i] =
-          (*expr_sizes[i] * *xla::DynExpr::_(multiples_bounds[i]))->s();
+          (expr_sizes[i] * xla::DExpr::Const(multiples_bounds[i])).simplify();
     }
 
     std::vector<bool> multiples_are_dynamic;

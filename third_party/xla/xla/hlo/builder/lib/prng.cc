@@ -42,7 +42,7 @@ xla::XlaOp ConcatScalars(xla::XlaBuilder* builder,
                          absl::Span<const xla::XlaOp> scalars) {
   std::vector<xla::XlaOp> vectors;
   absl::c_transform(scalars, std::back_inserter(vectors), [](xla::XlaOp x) {
-    return xla::Reshape(x, {1}, {xla::DynExpr::one});
+    return xla::Reshape(x, {1}, {xla::DExpr::Const(1)});
   });
   return ConcatInDim(builder, vectors, 0);
 }
@@ -247,11 +247,11 @@ XlaOp CombineShapePair(absl::Span<const XlaOp> pair,
       original_shape.dimensions(shape_pair.split_dim);
   std::vector<int64_t> reshape_dims(original_shape.dimensions().begin(),
                                     original_shape.dimensions().end());
-  std::vector<DynExpr*> reshape_exprs(original_shape.expressions().begin(),
-                                     original_shape.expressions().end());
+  std::vector<DExpr> reshape_exprs(original_shape.expressions().begin(),
+                                   original_shape.expressions().end());
   reshape_dims[shape_pair.split_dim] = RoundUpTo<int64_t>(pre_split_size, 2);
   reshape_exprs[shape_pair.split_dim] =
-      DynExpr::_(RoundUpTo<int64_t>(pre_split_size, 2));
+      DExpr::Const(RoundUpTo<int64_t>(pre_split_size, 2));
   result = Reshape(result, reshape_dims, reshape_exprs);
   if (reshape_dims[shape_pair.split_dim] != pre_split_size) {
     result = Slice(result,

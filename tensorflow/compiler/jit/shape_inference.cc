@@ -51,7 +51,7 @@ absl::Status ShapeHandleToTensorShape(
 
   std::vector<int64_t> dims(context->Rank(handle));
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
-  std::vector<xla::DynExpr*> dyn_exprs;
+  std::vector<xla::DExpr> dyn_exprs;
   if (flags->tf_xla_enable_dynamic_sizes) {
     dyn_exprs.resize(context->Rank(handle));
   }
@@ -59,14 +59,14 @@ absl::Status ShapeHandleToTensorShape(
     dims[i] = context->Value(context->Dim(handle, i));
     if (flags->tf_xla_enable_dynamic_sizes) {
       auto ratio = context->DynamicRatio(context->Dim(handle, i));
-      dyn_exprs[i] = ratio > 0 ? (ratio * *xla::DynExpr::V(1))->s()
-                               : xla::DynExpr::_(dims[i]);
+      dyn_exprs[i] = ratio > 0 ? xla::DExpr::Const(ratio) * xla::DExpr::Var(1)
+                               : xla::DExpr::Const(dims[i]);
     }
   }
   auto status =
       PartialTensorShape::MakePartialShape(dims.data(), dims.size(), shape);
   if (flags->tf_xla_enable_dynamic_sizes) {
-    shape->set_expressions(dyn_exprs);
+    shape->set_expressions(std::move(dyn_exprs));
   }
   return status;
 }

@@ -84,7 +84,7 @@ class UniqueOpBase : public XlaOpKernel {
   // This is implemented as an hlo while loop.
   xla::XlaOp RollingSelectR1(XlaOpKernelContext* ctx, xla::XlaOp data,
                              xla::XlaOp mask, int64_t size,
-                             xla::DynExpr* expr) {
+                             const xla::DExpr& expr) {
     xla::XlaComputation cond, body;
     xla::Shape r1_shape = xla::ShapeUtil::MakeShape(xla::S32, {size});
     r1_shape.set_expression(0, expr);
@@ -158,12 +158,12 @@ class UniqueOpBase : public XlaOpKernel {
     int64_t leading_size = aux_shape.dimensions(0);
     auto leading_expr = aux_shape.expressions(0);
     int64_t product = 1;
-    auto product_expr = xla::DynExpr::one;
+    auto product_expr = xla::DExpr::Const(1);
     for (int64_t i = 1; i < aux_shape.dimensions().size(); ++i) {
       product *= aux_shape.dimensions(i);
-      product_expr = *(product_expr) * *(aux_shape.expressions(i));
+      product_expr = product_expr * aux_shape.expressions(i);
     }
-    product_expr = product_expr->s();
+    product_expr = product_expr.simplify();
     aux = xla::Reshape(aux, {leading_size, product},
                        {leading_expr, product_expr});
     if (leading_size == 0) {
@@ -215,10 +215,12 @@ class UniqueOpBase : public XlaOpKernel {
     auto permuted = xla::Gather(aux, perm, gather_dim_numbers, {1, product});
     // Tail is everything except for first element.
     auto tail = xla::SliceInDim(permuted, 1, leading_size,
-                                xla::DynExpr::one, leading_expr, 1, 0);
+                                xla::DExpr::Const(1), leading_expr, 1, 0);
     // Init is everything except for last element.
     auto init = xla::SliceInDim(permuted, 0, leading_size - 1,
-                                xla::DynExpr::zero, *leading_expr - 1, 1, 0);
+                                xla::DExpr::Const(0),
+                                (leading_expr - xla::DExpr::Const(1)).simplify(),
+                                1, 0);
     auto ne = xla::Compare(tail, init, xla::ComparisonDirection::kNe);
     auto reduce =
         xla::Reduce(ne, xla::ConstantR0(ctx->builder(), false),

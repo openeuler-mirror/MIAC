@@ -57,8 +57,8 @@ struct StridedSliceDenseSpec {
   bool end_valid;
   absl::InlinedVector<int64_t, 4UL>& begin;
   absl::InlinedVector<int64_t, 4UL>& end;
-  absl::InlinedVector<xla::DynExpr*, 4UL>& begin_expr;
-  absl::InlinedVector<xla::DynExpr*, 4UL>& end_expr;
+  absl::InlinedVector<xla::DExpr, 4UL>& begin_expr;
+  absl::InlinedVector<xla::DExpr, 4UL>& end_expr;
   absl::InlinedVector<int64_t, 4UL>& strides;
   // This vector helps construct the final shape of the slice.
   // The final tensor is reduced in rank whenever a single index e.g. foo[3]
@@ -134,7 +134,7 @@ static absl::Status BuildDenseSpec(const StridedSliceSparseSpec& sparse,
           // new_axis' aren't real axis so you have to skip
           dense->begin[full_index] = dense->end[full_index] = 0;
           dense->begin_expr[full_index] = dense->end_expr[full_index] =
-              xla::DynExpr::zero;
+              xla::DExpr::Const(0);
           dense->strides[full_index] = 1;
           dense->begin_mask |= (1 << full_index);
           dense->end_mask |= (1 << full_index);
@@ -159,12 +159,12 @@ static absl::Status BuildDenseSpec(const StridedSliceSparseSpec& sparse,
         if (begin_flat != nullptr) {
           dense->begin[full_index] = internal::SubtleMustCopy<T>(begin_flat[i]);
           dense->begin_expr[full_index] =
-              xla::DynExpr::_(dense->begin[full_index]);
+              xla::DExpr::Const(dense->begin[full_index]);
         }
         if (end_flat != nullptr) {
           dense->end[full_index] = internal::SubtleMustCopy<T>(end_flat[i]);
           dense->end_expr[full_index] =
-              xla::DynExpr::_(dense->end[full_index]);
+              xla::DExpr::Const(dense->end[full_index]);
         }
         dense->strides[full_index] =
             internal::SubtleMustCopy<T>(strides_flat[i]);
@@ -205,22 +205,22 @@ absl::Status ValidateStridedSliceOp(
     absl::InlinedVector<int64_t, 4UL>* begin,
     absl::InlinedVector<int64_t, 4UL>* end,
     absl::InlinedVector<int64_t, 4UL>* strides,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* begin_expr,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* end_expr,
+    absl::InlinedVector<xla::DExpr, 4UL>* begin_expr,
+    absl::InlinedVector<xla::DExpr, 4UL>* end_expr,
     StridedSliceShapeSpec* shape_spec) {
-  absl::InlinedVector<xla::DynExpr*, 4UL> b;
-  absl::InlinedVector<xla::DynExpr*, 4UL> e;
+  absl::InlinedVector<xla::DExpr, 4UL> b;
+  absl::InlinedVector<xla::DExpr, 4UL> e;
 
   // HACK
   if (begin_expr == nullptr) {
     for (int i : *begin) {
-      b.push_back(xla::DynExpr::_(i));
+      b.push_back(xla::DExpr::Const(i));
     }
     begin_expr = &b;
   }
   if (end_expr == nullptr) {
     for (int i : *end) {
-      e.push_back(xla::DynExpr::_(i));
+      e.push_back(xla::DExpr::Const(i));
     }
     end_expr = &e;
   }
@@ -337,8 +337,8 @@ absl::Status ValidateStridedSliceOp(
     int64_t& stride_i = (*strides)[i];
     int64_t dim_i = input_shape.dim_size(i);
 
-    xla::DynExpr* dim_i_expr =
-        i < dim_exprs.size() ? dim_exprs[i] : xla::DynExpr::_(dim_i);
+    xla::DExpr dim_i_expr =
+        i < dim_exprs.size() ? dim_exprs[i] : xla::DExpr::Const(dim_i);
 
     if (stride_i == 0) {
       return errors::InvalidArgument("strides[", i, "] must be non-zero");
@@ -346,8 +346,8 @@ absl::Status ValidateStridedSliceOp(
     bool shrink_i = (dense_spec.shrink_axis_mask & (1 << i));
     if (dim_i == -1) {
       processing_shape->AddDim(shrink_i ? 1 : -1);
-      processing_shape->AddExpression(shrink_i ? xla::DynExpr::_(1)
-                                               : xla::DynExpr::_(-1));
+      processing_shape->AddExpression(shrink_i ? xla::DExpr::Const(1)
+                                               : xla::DExpr::Const(-1));
       continue;
     }
 
@@ -356,9 +356,10 @@ absl::Status ValidateStridedSliceOp(
     const std::array<int64_t, 2> valid_range = {
         {stride_i > 0 ? 0 : -1, stride_i > 0 ? dim_i : dim_i - 1}};
 
-    const std::array<xla::DynExpr*, 2> valid_range_expr = {
-        {stride_i > 0 ? xla::DynExpr::zero : xla::DynExpr::_(-1),
-         stride_i > 0 ? dim_i_expr : (*dim_i_expr - *xla::DynExpr::one)->s()}};
+    const std::array<xla::DExpr, 2> valid_range_expr = {
+        {stride_i > 0 ? xla::DExpr::Const(0) : xla::DExpr::Const(-1),
+         stride_i > 0 ? dim_i_expr
+                       : (dim_i_expr - xla::DExpr::Const(1)).simplify()}};
 
     auto canonical = [stride_i, dim_i, masks, valid_range](int64_t x, int c) {
       if (masks[c]) {
@@ -379,9 +380,9 @@ absl::Status ValidateStridedSliceOp(
       } else {
         int64_t x_fwd =
             x < 0 ? dim_i + x : x;  // make negative indices positive
-        xla::DynExpr* x_expr = xla::DynExpr::_(x);
-        xla::DynExpr* x_fwd_expr =
-            x < 0 ? (*dim_i_expr + *x_expr)
+        xla::DExpr x_expr = xla::DExpr::Const(x);
+        xla::DExpr x_fwd_expr =
+            x < 0 ? (dim_i_expr + x_expr)
                   : x_expr;  // make negative indices positive
         return x_fwd < valid_range[0]   ? valid_range_expr[0]
                : x_fwd > valid_range[1] ? valid_range_expr[1]
@@ -403,14 +404,14 @@ absl::Status ValidateStridedSliceOp(
         // and canonical puts these to n-1 and 0, which implies a degenerate
         // interval. Fortunately, it is now safe to re-create end as begin+1.
         int64_t x_fwd = begin_i < 0 ? dim_i + begin_i : begin_i;
-        xla::DynExpr* x_fwd_expr = begin_i < 0
-                                       ? (*dim_i_expr + *(*begin_expr)[i])->s()
-                                       : (*begin_expr)[i];
+        xla::DExpr x_fwd_expr = begin_i < 0
+                                    ? (dim_i_expr + (*begin_expr)[i]).simplify()
+                                    : (*begin_expr)[i];
         begin_i = x_fwd;
         end_i = begin_i + 1;
 
         (*begin_expr)[i] = x_fwd_expr;
-        (*end_expr)[i] = (*(*begin_expr)[i] + *xla::DynExpr::one)->s();
+        (*end_expr)[i] = ((*begin_expr)[i] + xla::DExpr::Const(1)).simplify();
 
         if (x_fwd < 0 || x_fwd >= dim_i) {
           return errors::InvalidArgument(
@@ -422,10 +423,10 @@ absl::Status ValidateStridedSliceOp(
         begin_i = canonical(begin_raw, 0);
         end_i = canonical(end_raw, 1);
         if (begin_expr) {
-          (*begin_expr)[i] = canonical_expr(begin_raw, 0)->s();
+          (*begin_expr)[i] = canonical_expr(begin_raw, 0).simplify();
         }
         if (end_expr) {
-          (*end_expr)[i] = canonical_expr(end_raw, 1)->s();
+          (*end_expr)[i] = canonical_expr(end_raw, 1).simplify();
         }
       }
       // Update optimization values
@@ -439,17 +440,17 @@ absl::Status ValidateStridedSliceOp(
     }
     // Compute the processing shape (the intermediate Eigen will produce)
     int64_t interval_length;
-    xla::DynExpr* interval_length_expr;
+    xla::DExpr interval_length_expr;
     bool known_interval = false;
     if (dense_spec.begin_valid && dense_spec.end_valid) {
       interval_length = end_i - begin_i;
-      interval_length_expr = (*(*end_expr)[i] - *(*begin_expr)[i])->s();
+      interval_length_expr = ((*end_expr)[i] - (*begin_expr)[i]).simplify();
       known_interval = true;
     } else if (shrink_i) {
       // The dimension is still known as 1 for the processing_shape, but will be
       // discarded for the final shape.
       interval_length = 1;
-      interval_length_expr = xla::DynExpr::one;
+      interval_length_expr = xla::DExpr::Const(1);
       known_interval = true;
     } else if (begin_and_end_masked) {
       // Even if we don't have values for begin or end, we do know that this
@@ -458,7 +459,7 @@ absl::Status ValidateStridedSliceOp(
       if (dim_i >= 0) {
         if (stride_i < 0) {
           interval_length = -dim_i;
-          interval_length_expr = (-1 * (*dim_i_expr))->s();
+          interval_length_expr = (xla::DExpr::Const(-1) * dim_i_expr).simplify();
         } else {
           interval_length = dim_i;
           interval_length_expr = dim_i_expr;
@@ -468,24 +469,25 @@ absl::Status ValidateStridedSliceOp(
     }
     if (known_interval) {
       int64_t size_i;
-      xla::DynExpr* size_i_expr;
+      xla::DExpr size_i_expr;
       // Hold zero if the interval is degenerate, otherwise account for
       // remainder
       if (interval_length == 0 || ((interval_length < 0) != (stride_i < 0))) {
         size_i = 0;
-        size_i_expr = xla::DynExpr::zero;
+        size_i_expr = xla::DExpr::Const(0);
       } else {
         size_i = interval_length / stride_i +
                  (interval_length % stride_i != 0 ? 1 : 0);
-        size_i_expr = *(*interval_length_expr / stride_i) +
-                      *(interval_length % stride_i != 0 ? xla::DynExpr::one
-                                                        : xla::DynExpr::zero);
+        size_i_expr =
+            (interval_length_expr / xla::DExpr::Const(stride_i)) +
+            (interval_length % stride_i != 0 ? xla::DExpr::Const(1)
+                                             : xla::DExpr::Const(0));
       }
       processing_shape->AddDim(size_i);
-      processing_shape->AddExpression(size_i_expr->s());
+      processing_shape->AddExpression(size_i_expr.simplify());
     } else {
       processing_shape->AddDim(-1);
-      processing_shape->AddExpression(xla::DynExpr::_(-1));
+      processing_shape->AddExpression(xla::DExpr::Const(-1));
     }
   }
 
@@ -522,7 +524,7 @@ absl::Status ValidateStridedSliceOp(
       }
     } else if (gather_index == kNewAxis) {
       final_shape->AddDim(1);
-      final_shape->AddExpression(xla::DynExpr::one);
+      final_shape->AddExpression(xla::DExpr::Const(1));
       if (shape_spec != nullptr) {
         shape_spec->output_to_sparse_mapping.push_back(-1);
         shape_spec->output_to_processing_mapping.push_back(-1);
@@ -532,6 +534,7 @@ absl::Status ValidateStridedSliceOp(
 
   return absl::OkStatus();
 }
+
 
 absl::Status ValidateStridedSliceOp(
     const Tensor* begin_tensor, const Tensor* end_tensor,
@@ -543,10 +546,9 @@ absl::Status ValidateStridedSliceOp(
     absl::InlinedVector<int64_t, 4UL>* begin,
     absl::InlinedVector<int64_t, 4UL>* end,
     absl::InlinedVector<int64_t, 4UL>* strides,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* begin_expr,
-    absl::InlinedVector<xla::DynExpr*, 4UL>* end_expr,
+    absl::InlinedVector<xla::DExpr, 4UL>* begin_expr,
+    absl::InlinedVector<xla::DExpr, 4UL>* end_expr,
     StridedSliceShapeSpec* shape_spec) {
-  // Validate with PartialTensorShape output
   PartialTensorShape partial_processing_shape, partial_final_shape;
   TF_RETURN_IF_ERROR(ValidateStridedSliceOp(
       begin_tensor, end_tensor, strides_tensor, input_shape, begin_mask_spec,
@@ -554,8 +556,6 @@ absl::Status ValidateStridedSliceOp(
       &partial_processing_shape, &partial_final_shape, is_identity,
       is_simple_slice, slice_dim0, begin, end, strides, begin_expr, end_expr,
       shape_spec));
-
-  // Verify that the output shapes are fully known
   if (!partial_processing_shape.AsTensorShape(processing_shape) ||
       !partial_final_shape.AsTensorShape(final_shape)) {
     return errors::Internal("ValidateStridedSliceOp returned partial shapes ",

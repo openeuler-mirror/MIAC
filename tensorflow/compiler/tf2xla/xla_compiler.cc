@@ -511,11 +511,16 @@ std::vector<int64_t> XlaCompiler::Argument::DimensionSizes() const {
   }
 }
 
-std::vector<xla::DynExpr*> XlaCompiler::Argument::DimensionExpressions() const {
+std::vector<xla::DExpr> XlaCompiler::Argument::DimensionExpressions() const {
   if (absl::holds_alternative<TensorShape>(shape)) {
     return std::get<TensorShape>(shape).get_filled_expressions();
   } else {
-    return xla::SpanToVector(std::get<xla::Shape>(shape).expressions());
+    std::vector<xla::DExpr> expressions;
+    expressions.reserve(std::get<xla::Shape>(shape).expressions().size());
+    for (const auto& expr : std::get<xla::Shape>(shape).expressions()) {
+      expressions.push_back(expr);
+    }
+    return expressions;
   }
 }
 
@@ -1121,7 +1126,9 @@ absl::Status XlaCompiler::BuildArguments(
         arg_expression = XlaExpression::Constant(arg.constant_value);
         if (arg.dynamic_constant_index >= 0) {
           arg_expression.set_dynamic_constant_index(arg.dynamic_constant_index);
-          arg_expression.set_dynamic_constant_expr(arg.dynamic_constant_expr);
+          if (arg.dynamic_constant_expr.has_value()) {
+            arg_expression.set_dynamic_constant_expr(*arg.dynamic_constant_expr);
+          }
         }
         break;
       case XlaCompiler::Argument::kInvalid:

@@ -225,8 +225,8 @@ class Shape {
   bool has_dynamic_expr() const {
     if (auto* const state = if_array_state()) {
       return absl::c_any_of(state->expressions,
-                            [](DynExpr* e) {
-                              return e != nullptr && e->is_dynamic();
+                            [](const DExpr& e) {
+                              return e && e->is_dynamic();
                             });
     }
     if (auto* const state = if_tuple_state()) {
@@ -237,12 +237,12 @@ class Shape {
     return false;
   }
 
-  DynExpr* expressions(int dimension) const {
-    if (dimension < 0) return DynExpr::_(-999);
+  const DExpr& expressions(int dimension) const {
+    if (dimension < 0) return MissingExpression();
     const auto& exprs = array_state().expressions;
     const size_t dim = static_cast<size_t>(dimension);
-    if (dim >= exprs.size()) return DynExpr::_(-999);
-    return exprs[dim] != nullptr ? exprs[dim] : DynExpr::_(-999);
+    if (dim >= exprs.size()) return MissingExpression();
+    return exprs[dim] ? exprs[dim] : MissingExpression();
   }
 
   // Returns true if the given dimension is statically-sized.
@@ -259,9 +259,9 @@ class Shape {
   //   - The dimension's size is valid for the given dynamic-ness.
   void set_dynamic_dimension(int dimension, bool is_dynamic);
 
-  void set_expression(int dimension, DynExpr* e);
+  void set_expression(int dimension, DExpr e);
 
-  void set_expressions(std::vector<DynExpr*> exprs);
+  void set_expressions(std::vector<DExpr> exprs);
 
   // Returns a span to indicate whether each dimension is dynamic.
   // Precondition: this is an array shape.
@@ -269,9 +269,7 @@ class Shape {
     return array_state_maybe_underneath_buffer().dynamic_dimensions;
   }
 
-  absl::Span<DynExpr* const> expressions() const {
-    return array_state().expressions;
-  }
+  absl::Span<const DExpr> expressions() const { return array_state().expressions; }
 
   // Removes the given dimension from the shape. Layout, if it exists, is
   // adjusted to match the modified shape.
@@ -359,7 +357,7 @@ class Shape {
   //   - Either `value` is >= 0, or `is_dynamic` is true and `value` is
   //     kUnboundedSize.
   void add_dimensions(int64_t value, bool is_dynamic = false,
-                      xla::DynExpr* expr = nullptr);
+                      DExpr expr = DExpr());
 
   // Clears all dimensions (i.e. makes this shape a scalar).
   // Precondition: this is an array shape.
@@ -621,10 +619,27 @@ class Shape {
     // respective dimension is dynamically sized.
     absl::InlinedVector<bool, InlineRank()> dynamic_dimensions;
 
-    absl::InlinedVector<DynExpr*, InlineRank()> expressions;
+    absl::InlinedVector<DExpr, InlineRank()> expressions;
 
     // The layout of the shape.
     std::optional<Layout> layout;
+
+    ArrayState() = default;
+    ArrayState(const ArrayState& other)
+        : dimensions(other.dimensions),
+          dynamic_dimensions(other.dynamic_dimensions),
+          expressions(other.expressions),
+          layout(other.layout) {}
+    ArrayState& operator=(const ArrayState& other) {
+      if (this == &other) return *this;
+      dimensions = other.dimensions;
+      dynamic_dimensions = other.dynamic_dimensions;
+      expressions = other.expressions;
+      layout = other.layout;
+      return *this;
+    }
+    ArrayState(ArrayState&&) noexcept = default;
+    ArrayState& operator=(ArrayState&&) noexcept = default;
   };
   struct TupleState {
     // The tuple element subshapes.
@@ -647,13 +662,13 @@ class Shape {
 
   // CHECKs that the dimension size is valid.
   void CheckDimensionSize(int dim_index, int64_t size, bool is_dynamic);
+  static const DExpr& MissingExpression();
 
   // Like add_dimensions(), but does not CHECK that the arguments are valid.
   // Instead, we rely on validation down the road to catch invalid shapes.
   // This is useful for code that should not crash, such as constructing a
   // Shape from an unvalidated proto.
-  void UnsafeAddDimension(int64_t value, bool is_dynamic,
-                          DynExpr* exp = nullptr);
+  void UnsafeAddDimension(int64_t value, bool is_dynamic, DExpr exp);
 
   // Convenience accessors for the state_ variant. Each if_*_state() accessor
   // returns a pointer to the corresponding state struct, or nullptr if the

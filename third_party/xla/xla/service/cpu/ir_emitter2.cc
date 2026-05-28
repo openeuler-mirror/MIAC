@@ -74,6 +74,7 @@ limitations under the License.
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/service/llvm_ir/loop_emitter.h"
+#include "xla/printer.h"
 #include "xla/shape.h"
 #include "xla/shape_partition.h"
 #include "xla/stream_executor/launch_dim.h"
@@ -203,7 +204,7 @@ IrEmitter2::EmitGetExpressionValueHostKernel(const HloInstruction* getBatch) {
                       EmitKernelPrototype(getBatch));
   llvm_ir::IrArray operand_array = kernel_prototype.arguments[0];
   llvm_ir::IrArray output_array = kernel_prototype.results[0];
-  xla::DynExpr* expr = getBatch->operand(0)->shape().expressions(0);
+  const auto& expr = getBatch->operand(0)->shape().expressions(0);
   llvm::IRBuilder<> b(module_->getContext());
   b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
   llvm::Value* bdim_value = llvm_ir::EmitExpression(&b, expr);

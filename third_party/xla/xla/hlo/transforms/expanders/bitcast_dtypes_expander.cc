@@ -80,9 +80,9 @@ absl::StatusOr<HloInstruction*> BitcastDtypesExpander::ExpandInstruction(
       broadcasted_input_shape.push_back(input_bit_width / output_bit_width);
       reshaped_input_shape.push_back(1);
       int64_t output_bit_width_mask = (int64_t{1} << output_bit_width) - 1;
-      std::vector<DynExpr*> reshaped_input_exprs(
+      std::vector<DExpr> reshaped_input_exprs(
           from_shape.expressions().begin(), from_shape.expressions().end());
-      reshaped_input_exprs.push_back(DynExpr::_(1));
+      reshaped_input_exprs.push_back(DExpr::Const(1));
       TF_ASSIGN_OR_RETURN(
           input, BroadcastTo(
                      Reshape(input, reshaped_input_shape, reshaped_input_exprs),

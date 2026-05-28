@@ -597,11 +597,11 @@ class XlaBuilder {
   virtual XlaOp ConstantLiteral(const LiteralSlice& literal);
 
   XlaOp Broadcast(XlaOp operand, absl::Span<const int64_t> broadcast_sizes,
-                  absl::Span<DynExpr* const> broadcast_exprs = {});
+                  absl::Span<const DExpr> broadcast_exprs = {});
 
   XlaOp BroadcastInDim(XlaOp operand, absl::Span<const int64_t> out_dim_size,
                        absl::Span<const int64_t> broadcast_dimensions,
-                       absl::Span<DynExpr* const> out_dim_exp = {});
+                       absl::Span<const DExpr> out_dim_exp = {});
 
   // This is an experimental API for creating the mhlo.dynamic_broadcast_in_dim
   // op from the XlaBuilder. This is only intended for export to MHLO or
@@ -625,7 +625,7 @@ class XlaBuilder {
                 int64_t inferred_dimension = -1);
 
   XlaOp Reshape(XlaOp operand, absl::Span<const int64_t> dimensions,
-                absl::Span<DynExpr* const> expressions,
+                absl::Span<const DExpr> expressions,
                 int64_t inferred_dimension = -1);
 
   XlaOp Reshape(const Shape& shape, XlaOp operand,
@@ -634,7 +634,7 @@ class XlaBuilder {
   XlaOp DynamicReshape(XlaOp operand, absl::Span<const XlaOp> dim_sizes,
                        absl::Span<const int64_t> new_size_bounds,
                        const std::vector<bool>& dims_are_dynamic,
-                       absl::Span<DynExpr* const> expressions = {});
+                       absl::Span<const DExpr> expressions = {});
 
   XlaOp MhloDynamicReshape(XlaOp operand, XlaOp output_shape,
                            const Shape& shape);
@@ -647,8 +647,8 @@ class XlaBuilder {
 
   XlaOp Slice(XlaOp operand, absl::Span<const int64_t> start_indices,
               absl::Span<const int64_t> limit_indices,
-              absl::Span<DynExpr* const> start_exprs,
-              absl::Span<DynExpr* const> limit_exprs,
+              absl::Span<const DExpr> start_exprs,
+              absl::Span<const DExpr> limit_exprs,
               absl::Span<const int64_t> strides);
 
   virtual absl::StatusOr<XlaOp> SliceInternal(
@@ -660,12 +660,13 @@ class XlaBuilder {
                            int64_t limit_index, int64_t stride, int64_t dimno);
 
   virtual XlaOp SliceInDim(XlaOp operand, int64_t start_index,
-                           int64_t limit_index, DynExpr* start_expr,
-                           DynExpr* limit_expr, int64_t stride, int64_t dimno);
+                           int64_t limit_index, const DExpr& start_expr,
+                           const DExpr& limit_expr, int64_t stride,
+                           int64_t dimno);
 
   XlaOp DynamicSlice(XlaOp operand, absl::Span<const XlaOp> start_indices,
                      absl::Span<const int64_t> slice_sizes,
-                     absl::Span<DynExpr* const> slice_exprs = {});
+                     absl::Span<const DExpr> slice_exprs = {});
   virtual absl::StatusOr<XlaOp> DynamicSliceInternal(
       const Shape& shape, XlaOp operand, absl::Span<const XlaOp> start_indices,
       absl::Span<const int64_t> slice_sizes);
@@ -1345,12 +1346,12 @@ class XlaBuilder {
 
   friend XlaOp Broadcast(XlaOp operand,
                          absl::Span<const int64_t> broadcast_sizes,
-                         absl::Span<DynExpr* const> broadcast_expressions);
+                         absl::Span<const DExpr> broadcast_expressions);
 
   friend XlaOp BroadcastInDim(XlaOp operand,
                               absl::Span<const int64_t> out_dim_size,
                               absl::Span<const int64_t> broadcast_dimensions,
-                              absl::Span<DynExpr* const> out_dim_exp);
+                              absl::Span<const DExpr> out_dim_exp);
 
   friend XlaOp MhloDynamicBroadcastInDim(
       XlaOp operand, XlaOp output_dimensions,
@@ -1368,21 +1369,21 @@ class XlaBuilder {
   friend XlaOp Reshape(XlaOp operand, absl::Span<const int64_t> dimensions);
 
   friend XlaOp Reshape(XlaOp operand, absl::Span<const int64_t> dimensions,
-                       absl::Span<DynExpr* const> expressions);
+                       absl::Span<const DExpr> expressions);
 
   friend XlaOp Reshape(const Shape& shape, XlaOp operand);
 
   friend XlaOp DynamicReshape(XlaOp operand, absl::Span<const XlaOp> dim_sizes,
                               absl::Span<const int64_t> new_size_bounds,
                               const std::vector<bool>& dims_are_dynamic,
-                              absl::Span<DynExpr* const> expressions);
+                              absl::Span<const DExpr> expressions);
 
   friend XlaOp MhloDynamicReshape(XlaOp operand, XlaOp output_shape,
                                   const Shape& shape);
 
   friend XlaOp ReshapeWithInferredDimension(
       XlaOp operand, absl::Span<const int64_t> new_sizes,
-      absl::Span<DynExpr* const> new_exprs, int64_t inferred_dimension);
+      absl::Span<const DExpr> new_exprs, int64_t inferred_dimension);
 
   friend XlaOp Collapse(XlaOp operand, absl::Span<const int64_t> dimensions);
 
@@ -1392,21 +1393,22 @@ class XlaBuilder {
 
   friend XlaOp Slice(XlaOp operand, absl::Span<const int64_t> start_indices,
                      absl::Span<const int64_t> limit_indices,
-                     absl::Span<DynExpr* const> start_exprs,
-                     absl::Span<DynExpr* const> limit_exprs,
+                     absl::Span<const DExpr> start_exprs,
+                     absl::Span<const DExpr> limit_exprs,
                      absl::Span<const int64_t> strides);
 
   friend XlaOp SliceInDim(XlaOp operand, int64_t start_index,
                           int64_t limit_index, int64_t stride, int64_t dimno);
 
   friend XlaOp SliceInDim(XlaOp operand, int64_t start_index,
-                          int64_t limit_index, DynExpr* start_expr,
-                          DynExpr* limit_expr, int64_t stride, int64_t dimno);
+                          int64_t limit_index, const DExpr& start_expr,
+                          const DExpr& limit_expr, int64_t stride,
+                          int64_t dimno);
 
   friend XlaOp DynamicSlice(XlaOp operand,
                             absl::Span<const XlaOp> start_indices,
                             absl::Span<const int64_t> slice_sizes,
-                            absl::Span<DynExpr* const> slice_exprs);
+                            absl::Span<const DExpr> slice_exprs);
 
   friend XlaOp DynamicUpdateSlice(XlaOp operand, XlaOp update,
                                   absl::Span<const XlaOp> start_indices);
@@ -2098,7 +2100,7 @@ XlaOp ConstantR1(XlaBuilder* builder, int64_t length, NativeT value);
 //
 //   output[i0, ..., iN, j0, ..., jM] = operand[j0, ..., jM]
 XlaOp Broadcast(XlaOp operand, absl::Span<const int64_t> broadcast_sizes,
-                absl::Span<DynExpr* const> broadcast_exprs = {});
+                absl::Span<const DExpr> broadcast_exprs = {});
 
 // This op broadcasts the `operand` to an output with the given `shape`.
 // `broadcast_dimensions` are the dimensions to be broadcasting into, i.e., the
@@ -2117,7 +2119,7 @@ XlaOp Broadcast(XlaOp operand, absl::Span<const int64_t> broadcast_sizes,
 //    {2 , 2}}
 XlaOp BroadcastInDim(XlaOp operand, absl::Span<const int64_t> out_dim_size,
                      absl::Span<const int64_t> broadcast_dimensions,
-                     absl::Span<DynExpr* const> out_dim_exp = {});
+                     absl::Span<const DExpr> out_dim_exp = {});
 
 // This is an experimental API for creating the mhlo.dynamic_broadcast_in_dim
 // op from the XlaBuilder. This is only intended for export to MHLO or
@@ -2163,7 +2165,7 @@ XlaOp PadInDim(XlaOp operand, XlaOp padding_value, int64_t dimno,
 XlaOp DynamicReshape(XlaOp operand, absl::Span<const XlaOp> dim_sizes,
                      absl::Span<const int64_t> new_size_bounds,
                      const std::vector<bool>& dims_are_dynamic,
-                     absl::Span<DynExpr* const> expressions);
+                     absl::Span<const DExpr> expressions = {});
 
 // This is an experimental API for creating the mhlo.dynamic_reshape op from the
 // XlaBuilder. This is only intended for export to MHLO or StableHLO, and cannot
@@ -2176,7 +2178,7 @@ XlaOp MhloDynamicReshape(XlaOp operand, XlaOp output_shape, const Shape& shape);
 XlaOp Reshape(XlaOp operand, absl::Span<const int64_t> dimensions);
 
 XlaOp Reshape(XlaOp operand, absl::Span<const int64_t> dimensions,
-              absl::Span<DynExpr* const> expressions);
+              absl::Span<const DExpr> expressions);
 
 // Enqueues a Reshape op that uses an explicit target shape.
 XlaOp Reshape(const Shape& shape, XlaOp operand);
@@ -2187,7 +2189,7 @@ XlaOp Reshape(const Shape& shape, XlaOp operand);
 // is a dynamic dimension in the output, it must be the inferred dimension.
 XlaOp ReshapeWithInferredDimension(XlaOp operand,
                                    absl::Span<const int64_t> new_sizes,
-                                   absl::Span<DynExpr* const> new_exprs,
+                                   absl::Span<const DExpr> new_exprs,
                                    int64_t inferred_dimension);
 
 // Wrapper for Reshape.
@@ -2227,8 +2229,8 @@ XlaOp Slice(XlaOp operand, absl::Span<const int64_t> start_indices,
 
 XlaOp Slice(XlaOp operand, absl::Span<const int64_t> start_indices,
             absl::Span<const int64_t> limit_indices,
-            absl::Span<DynExpr* const> start_exprs,
-            absl::Span<DynExpr* const> limit_exprs,
+            absl::Span<const DExpr> start_exprs,
+            absl::Span<const DExpr> limit_exprs,
             absl::Span<const int64_t> strides);
 
 // Enqueues a slice operation in a given dimension, taking all other
@@ -2241,7 +2243,7 @@ XlaOp SliceInDim(XlaOp operand, int64_t start_index, int64_t limit_index,
                  int64_t stride, int64_t dimno);
 
 XlaOp SliceInDim(XlaOp operand, int64_t start_index, int64_t limit_index,
-                 DynExpr* start_expr, DynExpr* limit_expr,
+                 const DExpr& start_expr, const DExpr& limit_expr,
                  int64_t stride, int64_t dimno);
 
 // Enqueues a slice operation onto the computation that slices the 'operand'
@@ -2256,7 +2258,7 @@ XlaOp SliceInDim(XlaOp operand, int64_t start_index, int64_t limit_index,
 // prevent dynamic start indices from generating out-of-bound array accesses.
 XlaOp DynamicSlice(XlaOp operand, absl::Span<const XlaOp> start_indices,
                    absl::Span<const int64_t> slice_sizes,
-                   absl::Span<DynExpr* const> slice_exprs = {});
+                   absl::Span<const DExpr> slice_exprs = {});
 
 // Enqueues a dynamic update slice operation onto the computation, which
 // updates a slice of 'operand' with 'update' at dynamic 'start_indices'.

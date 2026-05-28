@@ -75,25 +75,25 @@ class TensorShapeRep {
   std::string DebugString() const;
   static std::string DebugString(const TensorShapeProto& proto);
 
-  void set_expression(int d, xla::DynExpr* expr);
+  void set_expression(int d, xla::DExpr expr);
 
-  void AddExpression(xla::DynExpr* expr);
+  void AddExpression(xla::DExpr expr);
 
   // Set the array of dynamic multipliers.
-  void set_expressions(std::vector<xla::DynExpr*> exprs);
+  void set_expressions(std::vector<xla::DExpr> exprs);
 
   // Get the array of dynamic multipliers.
-  std::vector<xla::DynExpr*> get_expressions() const {
+  absl::Span<const xla::DExpr> get_expressions() const {
     return expressions_;
   }
 
   // Get the array of dynamic multipliers, filling missing entries with
   // constant expressions derived from the concrete dimensions.
-  std::vector<xla::DynExpr*> get_filled_expressions() const {
+  std::vector<xla::DExpr> get_filled_expressions() const {
     if (ndims_byte() == kUnknownRank) {
       return {};
     }
-    std::vector<xla::DynExpr*> exprs(ndims_byte());
+    std::vector<xla::DExpr> exprs(ndims_byte());
     for (int i = 0; i < ndims_byte(); ++i) {
       exprs[i] = get_filled_expression(i);
     }
@@ -102,33 +102,32 @@ class TensorShapeRep {
 
   // Return the multiplier for a specific dynamic dimension.
   // -1 if the dimension is not dynamic.
-  xla::DynExpr* get_expression(int64_t dimension) const {
-    if (dimension < 0) return missing_expression();
+  const xla::DExpr& get_expression(int64_t dimension) const {
+    static const xla::DExpr kMissingExpression = xla::DExpr::Unknown();
+    if (dimension < 0) return kMissingExpression;
     const size_t dim = static_cast<size_t>(dimension);
     if (dim >= expressions_.size()) {
-      return missing_expression();
+      return kMissingExpression;
     }
-    return expressions_[dim] != nullptr ? expressions_[dim]
-                                        : missing_expression();
+    return expressions_[dim];
   }
 
-  // Return the multiplier for a specific dynamic dimension, materializing a
-  // constant expression for concrete dimensions without a stored expression.
-  xla::DynExpr* get_filled_expression(int64_t dimension) const {
-    if (dimension < 0) return missing_expression();
+  xla::DExpr get_filled_expression(int64_t dimension) const {
+    if (dimension < 0) return xla::DExpr::Unknown();
     const size_t dim = static_cast<size_t>(dimension);
-    if (dim < expressions_.size() && expressions_[dim] != nullptr) {
+    if (dim < expressions_.size() && expressions_[dim]) {
       return expressions_[dim];
     }
 
     if (ndims_byte() == kUnknownRank || dim >= ndims_byte()) {
-      return missing_expression();
+      return xla::DExpr::Unknown();
     }
+
     return constant_expression_for_dim(dim);
   }
 
  protected:
-  std::vector<xla::DynExpr*> expressions_;
+  std::vector<xla::DExpr> expressions_;
 
   // Constructable only via TensorShapeBase
   TensorShapeRep() = default;
@@ -199,12 +198,7 @@ class TensorShapeRep {
   void set_num_elements(int64_t n) { num_elements_ = n; }
 
  private:
-  static xla::DynExpr* missing_expression() {
-    static xla::DynExpr* const missing = xla::DynExpr::_(-999);
-    return missing;
-  }
-
-  xla::DynExpr* constant_expression_for_dim(size_t dim) const {
+  xla::DExpr constant_expression_for_dim(size_t dim) const {
     int64_t dim_value = -1;
     if (tag() == REP16) {
       uint16 raw_dim = as16()->dims_[dim];
@@ -215,7 +209,7 @@ class TensorShapeRep {
     } else {
       dim_value = (*as64()->dims_)[dim];
     }
-    return xla::DynExpr::_(dim_value);
+    return xla::DExpr::Const(dim_value);
   }
 
   void DestructorOutOfLine();

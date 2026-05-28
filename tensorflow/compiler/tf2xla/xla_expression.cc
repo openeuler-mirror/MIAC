@@ -99,7 +99,7 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
         TF_RETURN_IF_ERROR(
             HostTensorToBorrowingLiteral(*constant_value_, &literal));
         if (!dynamic_constant_index_.has_value() ||
-            dynamic_constant_expr_ == nullptr) {
+            !dynamic_constant_expr_.has_value()) {
           return xla::ConstantLiteral(builder, literal);
         }
 

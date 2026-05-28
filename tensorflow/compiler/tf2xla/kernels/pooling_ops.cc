@@ -264,11 +264,11 @@ class MaxPoolOp : public PoolingOp {
 
       absl::InlinedVector<int64, 5> new_dims(result_shape->dimensions().begin(),
                                              result_shape->dimensions().end());
-      absl::InlinedVector<xla::DynExpr*, 5> new_exprs(
+      absl::InlinedVector<xla::DExpr, 5> new_exprs(
           result_shape->expressions().begin(),
           result_shape->expressions().end());
       new_dims[1] /= *vect_width;
-      new_exprs[1] = *new_exprs[1] / *vect_width;
+      new_exprs[1] = (new_exprs[1] / xla::DExpr::Const(*vect_width)).simplify();
       new_dims.insert(new_dims.begin() + 2, *vect_width);
       pooling = xla::Transpose(xla::Reshape(pooling, new_dims, new_exprs),
                                {0, 1, 3, 4, 2});

@@ -504,8 +504,8 @@ class TensorListConcatOp : public XlaOpKernel {
     xla::Shape element_shape = std::move(shape_or).value();
     std::vector<int64_t> element_dims =
         xla::SpanToVector(element_shape.dimensions());
-    std::vector<xla::DynExpr*> element_exprs =
-        xla::SpanToVector(element_shape.expressions());
+    std::vector<xla::DExpr> element_exprs(element_shape.expressions().begin(),
+                                          element_shape.expressions().end());
     OP_REQUIRES(
         ctx, element_dims.size() > 1,
         errors::Unimplemented("TensorList of scalars is not supported"));
@@ -513,8 +513,8 @@ class TensorListConcatOp : public XlaOpKernel {
     int64_t tensor_lengths = element_dims[1];
 
     std::vector<int64_t> new_dims = {num_elements * tensor_lengths};
-    std::vector<xla::DynExpr*> new_exprs = {
-        xla::DynExpr::_(num_elements * tensor_lengths)};
+    std::vector<xla::DExpr> new_exprs = {
+        xla::DExpr::Const(num_elements * tensor_lengths)};
 
     for (int i = 2; i < element_dims.size(); i++) {
       new_dims.push_back(element_dims[i]);
@@ -556,8 +556,8 @@ class TensorListSplitOp : public XlaOpKernel {
     xla::Shape element_shape = std::move(shape_or).value();
     std::vector<int64_t> element_dims =
         xla::SpanToVector(element_shape.dimensions());
-    std::vector<xla::DynExpr*> element_exprs =
-        xla::SpanToVector(element_shape.expressions());
+    std::vector<xla::DExpr> element_exprs(element_shape.expressions().begin(),
+                                          element_shape.expressions().end());
     OP_REQUIRES(
         ctx, !element_dims.empty(),
         errors::Unimplemented("Element dimensions have to be non-empty"));
@@ -577,8 +577,8 @@ class TensorListSplitOp : public XlaOpKernel {
         ctx, element_dims[0] % length == 0,
         errors::Unimplemented("Buffer size has to be a multiple of length"));
     std::vector<int64_t> new_dims = {element_dims[0] / length, length};
-    std::vector<xla::DynExpr*> new_exprs = {*element_exprs[0] / length,
-                                            xla::DynExpr::_(length)};
+    std::vector<xla::DExpr> new_exprs = {element_exprs[0] / xla::DExpr::Const(length),
+                                         xla::DExpr::Const(length)};
     for (int i = 1; i < element_dims.size(); i++) {
       new_dims.push_back(element_dims[i]);
     }

@@ -146,7 +146,7 @@ class ConstOp : public XlaOpKernel {
     if (has_dynamic) {
       std::vector<xla::XlaOp> dimension_constants;
       for (int i = 0; i < shape.dims(); ++i) {
-        if (shape.get_expression(i)->is_dynamic()) {
+        if (shape.get_expression(i) && shape.get_expression(i)->is_dynamic()) {
           int32_t dim_val = static_cast<int32_t>(shape.dim_size(i));
           xla::XlaOp scalar_const = xla::ConstantR0<int32_t>(b, dim_val);
           xla::ExpressionProto expr_proto;

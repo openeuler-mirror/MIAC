@@ -347,11 +347,11 @@ llvm::Value* createDynamicGEP(llvm::IRBuilderBase* builder,
                               llvm::Value* base_ptr,
                               const std::vector<llvm::Value*>& indices,
                               absl::Span<const int64_t> dims,
-                              absl::Span<DynExpr* const> expressions,
+                              absl::Span<const DExpr> expressions,
                               llvm::Type* elem_type,
                               const llvm::Twine& name = "");
 
-llvm::Value* EmitExpression(llvm::IRBuilderBase* b, DynExpr* expr);
+llvm::Value* EmitExpression(llvm::IRBuilderBase* b, const DExpr& expr);
 
 }  // namespace llvm_ir
 }  // namespace xla

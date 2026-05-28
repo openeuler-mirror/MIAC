@@ -149,7 +149,7 @@ Shape TypeToShape(mlir::Type type) {
 
     llvm::SmallVector<int64_t, 4> shape(rank, mlir::ShapedType::kDynamic);
     std::vector<bool> is_dynamic(rank, false);
-    std::vector<DynExpr*> expressions(rank, DynExpr::_(-60));
+    std::vector<DExpr> expressions(rank, DExpr::Unknown(60));
     for (int64_t dim = 0; dim < rank; ++dim) {
       int64_t size = t.getDimSize(dim);
       if (size == ShapedType::kDynamic) {

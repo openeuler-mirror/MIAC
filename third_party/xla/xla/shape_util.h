@@ -340,7 +340,8 @@ class ShapeUtil {
 
   // Extracts the shape's expressions at dimension number
   // GetDimensionNumber(dimension_number).
-  static DynExpr* GetExpression(const Shape& shape, int64_t dimension_number);
+  static const DExpr& GetExpression(const Shape& shape,
+                                    int64_t dimension_number);
 
   // Resolves a dimension number, supporting negative indexing.
   //
@@ -452,7 +453,7 @@ class ShapeUtil {
   // dimensions.
   static Shape MakeShape(PrimitiveType element_type,
                          absl::Span<const int64_t> dimensions, 
-                         absl::Span<DynExpr* const> expressions = {}){
+                         absl::Span<const DExpr> expressions = {}){
     return MakeValidatedShape(element_type, dimensions, expressions).value();
   }
 
@@ -474,14 +475,14 @@ class ShapeUtil {
   static Shape MakeShape(PrimitiveType element_type,
                          absl::Span<const int64_t> dimensions,
                          const std::vector<bool>& dynamic_dimensions,
-                        absl::Span<DynExpr* const> expressions){
+                         absl::Span<const DExpr> expressions){
     return MakeValidatedShape(element_type, dimensions, dynamic_dimensions, expressions).value();
   }
   // Constructs a new buffer shape with the given element type, and sequence of
   // dimensions.
   static absl::StatusOr<Shape> MakeValidatedBufferShape(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
-      absl::Span<DynExpr* const> expressions = {});
+      absl::Span<const DExpr> expressions = {});
 
   // Creates a buffer shape. `element_shape` must be a valid array shape.
   static absl::StatusOr<Shape> MakeValidatedBufferShape(Shape element_shape);
@@ -492,12 +493,12 @@ class ShapeUtil {
   // marked static.
   static absl::StatusOr<Shape> MakeValidatedShape(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
-      absl::Span<DynExpr* const> expressions = {});
+      absl::Span<const DExpr> expressions = {});
 
   static absl::StatusOr<Shape> MakeValidatedShape(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
       const std::vector<bool>& dynamic_dimensions,
-      absl::Span<DynExpr* const> expressions = {});
+      absl::Span<const DExpr> expressions = {});
 
   // Creates a Shape with element type corresponding to T and the given
   // dimensions
@@ -558,12 +559,12 @@ class ShapeUtil {
   // Crashes if the result is invalid.
   static Shape MakeShapeWithDescendingLayout(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions, 
-      absl::Span<DynExpr* const> expressions = {}){
+      absl::Span<const DExpr> expressions = {}){
       return MakeValidatedShapeWithDescendingLayout(element_type, dimensions, expressions).value();
   }
 
   static absl::StatusOr<Shape> MakeValidatedShapeWithDescendingLayout(
-    PrimitiveType element_type, absl::Span<const int64_t> dimensions, absl::Span<DynExpr* const> expressions);
+    PrimitiveType element_type, absl::Span<const int64_t> dimensions, absl::Span<const DExpr> expressions);
 
   // Returns a new Shape based on the given Shape with low-dimension-major
   // layout (i.e. {n, n-1, ..., 0}, like Fortran), and with the dimensions

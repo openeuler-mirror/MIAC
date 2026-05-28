@@ -169,20 +169,17 @@ bool HasDynamicMatmulDims(const DotInfo& dot_info) {
   const Shape& rhs_shape = dot_info.rhs_shape;
   const DotDimensionNumbers& dim_nums = dot_info.dim_nums;
 
-  DynExpr* m_expr = lhs_shape.dimensions().size() <= 1
-                        ? DynExpr::one
-                        : lhs_shape.expressions(
-                              1LL - dim_nums.lhs_contracting_dimensions(0));
-  DynExpr* k_expr =
-      lhs_shape.expressions(dim_nums.lhs_contracting_dimensions(0));
-  DynExpr* n_expr = rhs_shape.dimensions().size() <= 1
-                        ? DynExpr::one
-                        : rhs_shape.expressions(
-                              1LL - dim_nums.rhs_contracting_dimensions(0));
+  DExpr m_expr = lhs_shape.dimensions().size() <= 1
+                     ? DExpr::Const(1)
+                     : lhs_shape.expressions(
+                           1LL - dim_nums.lhs_contracting_dimensions(0));
+  DExpr k_expr = lhs_shape.expressions(dim_nums.lhs_contracting_dimensions(0));
+  DExpr n_expr = rhs_shape.dimensions().size() <= 1
+                     ? DExpr::Const(1)
+                     : rhs_shape.expressions(
+                           1LL - dim_nums.rhs_contracting_dimensions(0));
 
-  return (m_expr != nullptr && m_expr->is_dynamic()) ||
-         (k_expr != nullptr && k_expr->is_dynamic()) ||
-         (n_expr != nullptr && n_expr->is_dynamic());
+  return m_expr->is_dynamic() || k_expr->is_dynamic() || n_expr->is_dynamic();
 }
 
 // Returns dot implementation strategy for non-batch dot operations.
@@ -281,11 +278,11 @@ class DotOpEmitter {
     // The number of columns on the RHS.
     int64_t n;
 
-    DynExpr* m_expr;
+    DExpr m_expr;
 
-    DynExpr* k_expr;
+    DExpr k_expr;
 
-    DynExpr* n_expr;
+    DExpr n_expr;
 
     // True if the LHS matrix is column major.
     bool lhs_column_major;
@@ -931,9 +928,12 @@ absl::Status DotOpEmitter::EmitCallToRuntime() {
     std::swap(transpose_lhs, transpose_rhs);
   }
 
-  llvm::Value* m_val = xla::llvm_ir::EmitExpression(b_, mat_mult_dims.m_expr);
-  llvm::Value* n_val = xla::llvm_ir::EmitExpression(b_, mat_mult_dims.n_expr);
-  llvm::Value* k_val = xla::llvm_ir::EmitExpression(b_, mat_mult_dims.k_expr);
+  llvm::Value* m_val =
+      xla::llvm_ir::EmitExpression(b_, mat_mult_dims.m_expr);
+  llvm::Value* n_val =
+      xla::llvm_ir::EmitExpression(b_, mat_mult_dims.n_expr);
+  llvm::Value* k_val =
+      xla::llvm_ir::EmitExpression(b_, mat_mult_dims.k_expr);
 
   b_->CreateCall(
       matmul_func,
@@ -1019,13 +1019,15 @@ absl::Status DotOpEmitter::EmitCallToBatchRuntime() {
     std::swap(transpose_lhs, transpose_rhs);
   }
 
-  llvm::Value* m_val = xla::llvm_ir::EmitExpression(b_, mat_mult_dims.m_expr);
-  llvm::Value* n_val = xla::llvm_ir::EmitExpression(b_, mat_mult_dims.n_expr);
-  llvm::Value* k_val = xla::llvm_ir::EmitExpression(b_, mat_mult_dims.k_expr);
-  DynExpr* batch_size_expr = lhs_shape.expressions(0);
-  if (batch_size_expr == nullptr) {
-    batch_size_expr = DynExpr::_(lhs_shape.dimensions(0));
-  }
+  llvm::Value* m_val =
+      xla::llvm_ir::EmitExpression(b_, mat_mult_dims.m_expr);
+  llvm::Value* n_val =
+      xla::llvm_ir::EmitExpression(b_, mat_mult_dims.n_expr);
+  llvm::Value* k_val =
+      xla::llvm_ir::EmitExpression(b_, mat_mult_dims.k_expr);
+  DExpr batch_size_expr =
+      lhs_shape.expressions(0) ? lhs_shape.expressions(0)
+                               : DExpr::Const(lhs_shape.dimensions(0));
   llvm::Value* batch_size_val =
       xla::llvm_ir::EmitExpression(b_, batch_size_expr);
 
@@ -1066,12 +1068,12 @@ DotOpEmitter::MatMultDims DotOpEmitter::GetMatMultDims() const {
           ? 1LL
           : rhs_shape.dimensions(1LL - dim_nums.rhs_contracting_dimensions(0)),
       /*m_expr=*/lhs_shape.dimensions().size() <= 1
-          ? DynExpr::one
+          ? DExpr::Const(1)
           : lhs_shape.expressions(1LL - dim_nums.lhs_contracting_dimensions(0)),
       /*k_expr=*/
       lhs_shape.expressions(dim_nums.lhs_contracting_dimensions(0)),
       /*n_expr=*/rhs_shape.dimensions().size() <= 1
-          ? DynExpr::one
+          ? DExpr::Const(1)
           : rhs_shape.expressions(1LL - dim_nums.rhs_contracting_dimensions(0)),
       /*lhs_column_major=*/is_column_major(lhs_shape),
       /*lhs_canonical=*/lhs_shape.dimensions().size() <= 1 ||
@@ -1105,12 +1107,12 @@ DotOpEmitter::MatMultDims DotOpEmitter::GetBatchMatMultDims() const {
           ? 1LL
           : rhs_shape.dimensions(2LL - dim_nums.rhs_contracting_dimensions(0)),
       /*m_expr=*/lhs_shape.dimensions().size() <= 1
-          ? DynExpr::one
+          ? DExpr::Const(1)
           : lhs_shape.expressions(2LL - dim_nums.lhs_contracting_dimensions(0)),
       /*k_expr=*/
       lhs_shape.expressions(1LL + dim_nums.lhs_contracting_dimensions(0)),
       /*n_expr=*/rhs_shape.dimensions().size() <= 1
-          ? DynExpr::one
+          ? DExpr::Const(1)
           : rhs_shape.expressions(2LL - dim_nums.rhs_contracting_dimensions(0)),
       /*lhs_column_major=*/is_column_major(lhs_shape),
       /*lhs_canonical=*/lhs_shape.dimensions().size() <= 1 ||
@@ -1194,7 +1196,7 @@ absl::StatusOr<DotOpWorkGroupDim> EmitNonBatchDotOperation(
 
 Shape DropFirstDim(const Shape& shape) {
   absl::Span<int64_t const> array_shape_dims(shape.dimensions());
-  absl::Span<DynExpr* const> array_shape_exprs(shape.expressions());
+  absl::Span<const DExpr> array_shape_exprs(shape.expressions());
   array_shape_dims.remove_prefix(1);
   array_shape_exprs.remove_prefix(1);
   return ShapeUtil::MakeShapeWithDescendingLayout(
@@ -1203,19 +1205,19 @@ Shape DropFirstDim(const Shape& shape) {
 
 Shape CollapseFirstNDims(const Shape& shape, int64_t n) {
   absl::Span<int64_t const> input_shape_dims(shape.dimensions());
-  absl::Span<DynExpr* const> input_expressions(shape.expressions());
+  absl::Span<const DExpr> input_expressions(shape.expressions());
   int64_t prefix_dim =
       std::accumulate(input_shape_dims.begin(), input_shape_dims.begin() + n,
                       1ll, std::multiplies<int64_t>());
 
-  DynExpr* prefix_expression = std::accumulate(
-      input_expressions.begin(), input_expressions.begin() + n, DynExpr::one,
-      [](DynExpr* acc, DynExpr* v) { return (*acc) * (*v); });
+  DExpr prefix_expression = std::accumulate(
+      input_expressions.begin(), input_expressions.begin() + n, DExpr::Const(1),
+      [](DExpr acc, const DExpr& v) { return acc * v; });
 
   DimensionVector result_dims;
-  std::vector<DynExpr*> result_expressions;
+  std::vector<DExpr> result_expressions;
   result_dims.push_back(prefix_dim);
-  result_expressions.push_back(prefix_expression->s());
+  result_expressions.push_back(prefix_expression.simplify());
   std::copy(input_shape_dims.begin() + n, input_shape_dims.end(),
             std::back_inserter(result_dims));
   std::copy(input_expressions.begin() + n, input_expressions.end(),

@@ -26,6 +26,37 @@ bool TensorShapeExpressionsEnabled() {
   return enabled;
 }
 
+bool IsDynamicDimExpr(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return IsDynamicDimExpr(proto.add_node().lhs()) ||
+             IsDynamicDimExpr(proto.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return IsDynamicDimExpr(proto.sub_node().lhs()) ||
+             IsDynamicDimExpr(proto.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return IsDynamicDimExpr(proto.mul_node().lhs()) ||
+             IsDynamicDimExpr(proto.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return IsDynamicDimExpr(proto.div_node().lhs()) ||
+             IsDynamicDimExpr(proto.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
+
+bool HasDynamicDimExprs(const TensorShapeProto& proto) {
+  for (const auto& expr : proto.expressions()) {
+    if (IsDynamicDimExpr(expr)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::unique_ptr<DimExpr> DimExpr::Cons(int64_t val) {
   return std::make_unique<Constant>(val);
 }

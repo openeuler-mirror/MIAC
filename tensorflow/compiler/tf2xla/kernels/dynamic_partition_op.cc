@@ -43,23 +43,22 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-std::vector<xla::DynExpr*> GetFilledExpressions(const xla::Shape& shape) {
-  std::vector<xla::DynExpr*> expressions;
+std::vector<xla::DExpr> GetFilledExpressions(const xla::Shape& shape) {
+  std::vector<xla::DExpr> expressions;
   expressions.reserve(shape.dimensions_size());
   auto shape_expressions = shape.expressions();
   for (int64_t i = 0; i < shape.dimensions_size(); ++i) {
-    expressions.push_back(
-        i < shape_expressions.size() && shape_expressions[i] != nullptr
-            ? shape_expressions[i]
-            : xla::DynExpr::_(shape.dimensions(i)));
+    expressions.push_back(i < shape_expressions.size() && shape_expressions[i]
+                              ? shape_expressions[i]
+                              : xla::DExpr::Const(shape.dimensions(i)));
   }
   return expressions;
 }
 
-xla::DynExpr* CollapseExpressions(absl::Span<xla::DynExpr* const> expressions) {
-  xla::DynExpr* collapsed = xla::DynExpr::one;
-  for (xla::DynExpr* expression : expressions) {
-    collapsed = (*collapsed * *expression)->s();
+xla::DExpr CollapseExpressions(absl::Span<const xla::DExpr> expressions) {
+  xla::DExpr collapsed = xla::DExpr::Const(1);
+  for (const xla::DExpr& expression : expressions) {
+    collapsed = (collapsed * expression).simplify();
   }
   return collapsed;
 }
@@ -88,19 +87,7 @@ class DynamicPartitionOp : public XlaOpKernel {
                      xla::XlaOp partitions_1d, const xla::Shape& data_1d_shape,
                      const xla::Shape& partition_1d_shape) {
     int64_t input_count = data_1d_shape.dimensions(0);
-    VLOG(1) << "data_1d_shape="
-          << xla::ShapeUtil::HumanString(data_1d_shape)
-          << " partition_1d_shape="
-          << xla::ShapeUtil::HumanString(partition_1d_shape)
-          << " input_count=" << input_count
-          << " num_partitions=" << num_partitions_;
-    // TODO: Use the smaller runtime size to mask off padded tail elements when one
-    // input loses dynamic shape information and falls back to its static bound.
-    // For valid DynamicPartition inputs the true prefix sizes should match, so
-    // this keeps us from treating padding on either side as real elements.
-    xla::XlaOp dynamic_input_count = xla::Min(
-        xla::GetDimensionSize(data_1d, 0),
-        xla::GetDimensionSize(partitions_1d, 0));
+    xla::XlaOp dynamic_input_count = xla::GetDimensionSize(data_1d, 0);
     xla::XlaOp input_index = xla::Iota(ctx->builder(), xla::S32, input_count);
     xla::XlaOp valid_element = xla::Lt(input_index, dynamic_input_count);
     xla::XlaOp invalid_partition =
@@ -212,16 +199,18 @@ class DynamicPartitionOp : public XlaOpKernel {
     auto partitions_1d = xla::Reshape(
       partitions, {input_count},
       {CollapseExpressions(flattened_partition_exprs)});
-    xla::Shape data_1d_shape =
-        xla::ShapeUtil::MakeShape(data_shape.element_type(), {input_count});
+    xla::Shape data_1d_shape = xla::ShapeUtil::MakeShape(
+        data_shape.element_type(), {input_count},
+        {xla::DExpr::Const(input_count)});
 
     xla::Shape partitions_1d_shape = xla::ShapeUtil::MakeShape(
-        partition_shape.element_type(), {input_count});
+        partition_shape.element_type(), {input_count},
+        {xla::DExpr::Const(input_count)});
 
     std::vector<xla::XlaOp> output, partition_length;
     std::tie(output, partition_length) = DynamicPartition1D(
         ctx, data_1d, partitions_1d, data_1d_shape, partitions_1d_shape);
-    std::vector<xla::DynExpr*> output_exprs;
+    std::vector<xla::DExpr> output_exprs;
     output_exprs.reserve(data_shape.dimensions().size() -
                          partition_shape.dimensions().size() + 1);
     output_exprs.push_back(CollapseExpressions(absl::MakeConstSpan(
@@ -232,8 +221,9 @@ class DynamicPartitionOp : public XlaOpKernel {
       output_exprs.push_back(data_exprs[i]);
     }
     for (int64_t i = 0; i < num_partitions_; ++i) {
-      auto reshape =
-          xla::Reshape(output[i], output_shape_bound_dims, output_exprs);
+      xla::Shape output_shape = xla::ShapeUtil::MakeShape(
+          data_shape.element_type(), output_shape_bound_dims, output_exprs);
+      auto reshape = xla::Reshape(output_shape, output[i]);
       if (partitions_are_static) {
         int64_t size = absl::c_count(partitions_static, i);
         ctx->SetOutput(i, xla::SliceInDim(reshape, 0, size, 1, 0));

@@ -29,7 +29,7 @@ namespace xla {
 // rules. Supports broadcasting a dimension of size x to size x*y, i.e., tiling.
 absl::StatusOr<XlaOp> BroadcastTo(
     XlaOp input, absl::Span<int64_t const> output_dims,
-    absl::Span<xla::DynExpr* const> output_exprs = {});
+    absl::Span<const xla::DExpr> output_exprs = {});
 
 }  // namespace xla
 

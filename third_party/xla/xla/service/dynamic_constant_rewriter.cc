@@ -25,34 +25,6 @@
 namespace xla {
 namespace {
 
-DynExpr* DynExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DynExpr::_(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DynExpr::V(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      const auto& add = proto.add_node();
-      return new Add(DynExprFromProto(add.lhs()), DynExprFromProto(add.rhs()));
-    }
-    case ExpressionProto::kSubNode: {
-      const auto& sub = proto.sub_node();
-      return new Sub(DynExprFromProto(sub.lhs()), DynExprFromProto(sub.rhs()));
-    }
-    case ExpressionProto::kMulNode: {
-      const auto& mul = proto.mul_node();
-      return new Mul(DynExprFromProto(mul.lhs()), DynExprFromProto(mul.rhs()));
-    }
-    case ExpressionProto::kDivNode: {
-      const auto& div = proto.div_node();
-      return new Div(DynExprFromProto(div.lhs()), DynExprFromProto(div.rhs()));
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
 absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
     HloInstruction* constant_instr) {
   TF_RET_CHECK(constant_instr->opcode() == HloOpcode::kConstant);
@@ -72,8 +44,8 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
   TF_RET_CHECK(tsl::protobuf::TextFormat::ParseFromString(expr_it->second,
                                                           &expr_proto))
       << "Failed to parse dynamic_constant_expr=" << expr_it->second;
-  DynExpr* expr = DynExprFromProto(expr_proto);
-  TF_RET_CHECK(expr != nullptr);
+  DExpr expr = DExprFromProto(expr_proto);
+  TF_RET_CHECK(expr);
 
   const Shape& shape = constant_instr->shape();
   TF_RET_CHECK(shape.IsArray());
@@ -103,7 +75,7 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
 
   HloComputation* computation = constant_instr->parent();
   Shape carrier_shape = ShapeUtil::MakeShape(S32, {1});
-  carrier_shape.set_expression(0, expr);
+  carrier_shape.set_expression(0, std::move(expr));
   HloInstruction* carrier = computation->AddInstruction(
       HloInstruction::CreateConstant(
           LiteralUtil::CreateR1<int32_t>(

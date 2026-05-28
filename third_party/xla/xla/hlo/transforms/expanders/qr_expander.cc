@@ -58,9 +58,9 @@ std::vector<int64_t> ConcatVectors(absl::Span<const int64_t> xs,
   return output;
 }
 
-std::vector<DynExpr*> ConcatEVectors(absl::Span<DynExpr* const> xs,
-                                     absl::Span<DynExpr* const> ys) {
-  std::vector<DynExpr*> output;
+std::vector<DExpr> ConcatEVectors(absl::Span<const DExpr> xs,
+                                  absl::Span<const DExpr> ys) {
+  std::vector<DExpr> output;
   output.reserve(xs.size() + ys.size());
   std::copy(xs.begin(), xs.end(), std::back_inserter(output));
   std::copy(ys.begin(), ys.end(), std::back_inserter(output));
@@ -229,12 +229,12 @@ absl::StatusOr<QrDecomposition> QrExpander::QrBlock(
 
   const int64_t m = ShapeUtil::GetDimension(a_shape, -2);
   const int64_t n = ShapeUtil::GetDimension(a_shape, -1);
-  DynExpr* m_exp = ShapeUtil::GetExpression(a_shape, -2);
-  DynExpr* n_exp = ShapeUtil::GetExpression(a_shape, -1);
+  const DExpr& m_exp = ShapeUtil::GetExpression(a_shape, -2);
+  const DExpr& n_exp = ShapeUtil::GetExpression(a_shape, -1);
 
   const int64_t num_batch_dims = num_dims - 2;
   std::vector<int64_t> batch_dims(num_batch_dims);
-  std::vector<DynExpr*> batch_exprs(num_batch_dims);
+  std::vector<DExpr> batch_exprs(num_batch_dims);
   for (int i = 0; i < num_batch_dims; ++i) {
     batch_dims[i] = ShapeUtil::GetDimension(a_shape, i);
     batch_exprs[i] = ShapeUtil::GetExpression(a_shape, i);
@@ -261,10 +261,10 @@ absl::StatusOr<QrDecomposition> QrExpander::QrBlock(
         minor_dim + 1);
 
     std::vector<int64_t> shape = batch_dims;
-    std::vector<DynExpr*> exprs = batch_exprs;
+    std::vector<DExpr> exprs = batch_exprs;
     shape.push_back(1);
     shape.push_back(m);
-    exprs.push_back(DynExpr::one);
+    exprs.push_back(DExpr::Const(1));
     exprs.push_back(m_exp);
     auto v_broadcast = Reshape(v, shape, exprs);
     // a[:, j+1:] -= np.conj(tau) * (v[:, np.newaxis] @
@@ -280,7 +280,7 @@ absl::StatusOr<QrDecomposition> QrExpander::QrBlock(
     // a[j, j] = beta
     // a[j+1:,j] = v[j+1:]
     auto iota =
-        Reshape(Iota(a.builder(), S32, m), {m, 1}, {m_exp, DynExpr::one});
+        Reshape(Iota(a.builder(), S32, m), {m, 1}, {m_exp, DExpr::Const(1)});
     auto predecessor_mask = ConvertElementType(Lt(iota, j), type);
     auto mask = Broadcast(ConvertElementType(Eq(iota, j), type),
                           std::vector<int64_t>(batch_dims.size(), 1));

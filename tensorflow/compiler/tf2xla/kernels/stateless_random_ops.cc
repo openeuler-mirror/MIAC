@@ -51,7 +51,7 @@ xla::BitGeneratorTy GetBitGeneratorForDevice(
       std::tie(state, key) = xla::ScramblePhiloxKey(key);
       xla::XlaOp philox_state = xla::ConcatInDim(
           key.builder(),
-          {xla::Reshape(key, {1}, {xla::DynExpr::one}), state}, 0);
+          {xla::Reshape(key, {1}, {xla::DExpr::Const(1)}), state}, 0);
       xla::XlaOp result = xla::RngBitGenerator(xla::RandomAlgorithm::RNG_PHILOX,
                                                philox_state, shape);
       return xla::RngOutput{/*value=*/xla::GetTupleElement(result, 1),
@@ -421,7 +421,6 @@ class StatelessParameterizedTruncatedNormalOp : public XlaOpKernel {
     auto rng_dtype = MaybeConvertBF16ToF32(dtype_);
     xla::Shape xla_shape;
     OP_REQUIRES_OK(ctx, TensorShapeToXLAShape(rng_dtype, shape, &xla_shape));
-
     auto bcasted_means =
         BroadcastTo(ctx->Input(2), shape.dim_sizes(), shape.get_filled_expressions());
     OP_REQUIRES_OK(ctx, bcasted_means.status());

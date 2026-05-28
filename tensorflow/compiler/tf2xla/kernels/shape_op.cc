@@ -300,9 +300,10 @@ class ExpandDimsOp : public XlaOpKernel {
     }
 
     const int existing_exprs_size = static_cast<int>(existing_exprs.size());
-    std::vector<xla::DynExpr*> new_exprs(existing_exprs_size);
-    for (size_t i = 0; i < new_exprs.size(); ++i) {
-      new_exprs[i] = existing_exprs[i];
+    std::vector<xla::DExpr> new_exprs;
+    new_exprs.reserve(existing_exprs_size);
+    for (size_t i = 0; i < existing_exprs.size(); ++i) {
+      new_exprs.push_back(existing_exprs[i]);
     }
 
     // We emulate numpy's interpretation of the dim axis when
@@ -314,8 +315,7 @@ class ExpandDimsOp : public XlaOpKernel {
     // Clamp to the end if needed.
     dim = std::min<int32_t>(dim, existing_dims_size);
     new_shape.emplace(new_shape.begin() + dim, 1);
-    new_exprs.emplace(new_exprs.begin() + dim, xla::DynExpr::one);
-
+    new_exprs.emplace(new_exprs.begin() + dim, xla::DExpr::Const(1));
     ctx->SetOutput(0, xla::Reshape(ctx->Input("input"), new_shape, new_exprs));
   }
 };
@@ -340,7 +340,7 @@ class SqueezeOp : public XlaOpKernel {
     absl::flat_hash_set<int32_t> wrapped_squeeze_dims;
     wrapped_squeeze_dims.reserve(squeeze_dims_.size());
     std::vector<int64_t> new_shape;
-    std::vector<xla::DynExpr*> new_exprs;
+    std::vector<xla::DExpr> new_exprs;
     // Validate squeeze dims against the input.
     for (int32_t dim : squeeze_dims_) {
       OP_REQUIRES(

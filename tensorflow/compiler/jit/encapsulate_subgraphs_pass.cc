@@ -494,31 +494,6 @@ Node* Encapsulator::Subgraph::MakeNodeImage(const Graph* graph_in, Node* node) {
 
 Graph* Encapsulator::Subgraph::GetGraph() const { return graph_.get(); }
 
-void ExprToProto(xla::DynExpr* expr, ExpressionProto* proto) {
-  auto e = expr->s();
-  if (xla::Constant* c = dynamic_cast<xla::Constant*>(e)) {
-    proto->set_constant_value(c->get_val());
-  } else if (xla::Variable* v = dynamic_cast<xla::Variable*>(e)) {
-    proto->set_variable_id(v->get_id());
-  } else if (xla::Add* a = dynamic_cast<xla::Add*>(e)) {
-    auto* add_msg = proto->mutable_add_node();
-    ExprToProto(a->get_lhs(), add_msg->mutable_lhs());
-    ExprToProto(a->get_rhs(), add_msg->mutable_rhs());
-  } else if (xla::Mul* m = dynamic_cast<xla::Mul*>(e)) {
-    auto* mul_msg = proto->mutable_mul_node();
-    ExprToProto(m->get_lhs(), mul_msg->mutable_lhs());
-    ExprToProto(m->get_rhs(), mul_msg->mutable_rhs());
-  } else if (xla::Sub* s = dynamic_cast<xla::Sub*>(e)) {
-    auto* sub_msg = proto->mutable_sub_node();
-    ExprToProto(s->get_lhs(), sub_msg->mutable_lhs());
-    ExprToProto(s->get_rhs(), sub_msg->mutable_rhs());
-  } else if (xla::Div* d = dynamic_cast<xla::Div*>(e)) {
-    auto* div_msg = proto->mutable_div_node();
-    ExprToProto(d->get_lhs(), div_msg->mutable_lhs());
-    ExprToProto(d->get_rhs(), div_msg->mutable_rhs());
-  }
-}
-
 absl::Status Encapsulator::Subgraph::RecordArg(
     const Edge* edge,
     const absl::flat_hash_map<const Node*, Node*>& node_images,

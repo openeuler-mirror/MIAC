@@ -269,12 +269,12 @@ static std::vector<bool> MakeDynamicDimensions(
   return dynamic_dimensions;
 }
 
-static std::vector<DynExpr*> MakeExpressions(
+static std::vector<DExpr> MakeExpressions(
     absl::Span<const int64_t> dimensions) {
-  std::vector<DynExpr*> expressions;
+  std::vector<DExpr> expressions;
   expressions.reserve(dimensions.size());
   for (int64_t d : dimensions) {
-    expressions.push_back(DynExpr::_(d));
+    expressions.push_back(DExpr::Const(d));
   }
   return expressions;
 }
@@ -289,10 +289,15 @@ static std::vector<DynExpr*> MakeExpressions(
 }
 
 /* static */ absl::StatusOr<Shape> ShapeUtil::MakeValidatedBufferShape(
-    PrimitiveType element_type, absl::Span<const int64_t> dimensions,absl::Span<DynExpr* const> expressions) {
+    PrimitiveType element_type, absl::Span<const int64_t> dimensions,absl::Span<const DExpr> expressions) {
   TF_ASSIGN_OR_RETURN(Shape shape,
                       ShapeUtil::MakeValidatedShape(element_type, dimensions, expressions));
   return ShapeUtil::MakeValidatedBufferShape(shape);
+}
+
+/* static */ Shape ShapeUtil::MakeBufferShape(
+    PrimitiveType element_type, absl::Span<const int64_t> dimensions) {
+  return Shape::MakeBufferShape(MakeShape(element_type, dimensions));
 }
 
 /* static */ Shape ShapeUtil::MakeShapeWithStaticDimensions(
@@ -304,16 +309,26 @@ static std::vector<DynExpr*> MakeExpressions(
 
 /* static */ absl::StatusOr<Shape> ShapeUtil::MakeValidatedShape(
     PrimitiveType element_type, absl::Span<const int64_t> dimensions,
-    absl::Span<xla::DynExpr* const> expressions) {
+    absl::Span<const DExpr> expressions) {
+  if (expressions.empty() && !dimensions.empty()) {
+    std::vector<DExpr> filled_expressions = MakeExpressions(dimensions);
+    return MakeValidatedShape(element_type, dimensions,
+                              MakeDynamicDimensions(dimensions),
+                              filled_expressions);
+  }
   return MakeValidatedShape(
-      element_type, dimensions, MakeDynamicDimensions(dimensions),
-      expressions.empty() ? MakeExpressions(dimensions) : expressions);
+      element_type, dimensions, MakeDynamicDimensions(dimensions), expressions);
 }
 
 /* static */ absl::StatusOr<Shape> ShapeUtil::MakeValidatedShape(
     PrimitiveType element_type, absl::Span<const int64_t> dimensions,
     const std::vector<bool>& dynamic_dimensions,
-    absl::Span<xla::DynExpr* const> expressions) {
+    absl::Span<const DExpr> expressions) {
+  std::vector<DExpr> filled_expressions;
+  if (expressions.empty() && !dimensions.empty()) {
+    filled_expressions = MakeExpressions(dimensions);
+    expressions = filled_expressions;
+  }
   if (dynamic_dimensions.size() != dimensions.size()) {
     return InvalidArgument(
         "dynamic dimensions size %d did not match number of dimensions %d",
@@ -342,7 +357,7 @@ static std::vector<DynExpr*> MakeExpressions(
   for (int i = 0; i < ndims; i++) {
     const int64_t d = dimensions[i];
     const bool is_dynamic = dynamic_dimensions[i];
-    DynExpr* expression = expressions[i];
+    const DExpr& expression = expressions[i];
     if (!Shape::IsValidDimensionSize(d, is_dynamic)) {
       return InvalidArgument("Invalid dimension size %d, is_dynamic=%s", d,
                              is_dynamic ? "true" : "false");
@@ -419,14 +434,14 @@ ShapeUtil::MakeValidatedShapeWithSparseLayout(
   return ret;
 }
 
-/* static */ absl::StatusOr<Shape>
-ShapeUtil::MakeValidatedShapeWithDescendingLayout(
-    PrimitiveType element_type, absl::Span<const int64_t> dimensions, absl::Span<DynExpr* const> expressions = {}) {
-  std::vector<int64_t> layout(dimensions.size());
-  std::iota(layout.rbegin(), layout.rend(), static_cast<int64_t>(0));
-  TF_ASSIGN_OR_RETURN(Shape shape,
-                      MakeValidatedShapeWithDenseLayout(element_type, dimensions, layout));
-  std::vector<DynExpr*> exprs(expressions.begin(), expressions.end());
+/* static */ Shape ShapeUtil::MakeShapeWithDescendingLayout(
+    PrimitiveType element_type, absl::Span<const int64_t> dimensions,
+    absl::Span<const DExpr> expressions) {
+  auto shape = MakeShapeWithDenseLayout(element_type, dimensions,
+                                        LayoutUtil::MakeDescendingLayout(
+                                            dimensions.size())
+                                            .minor_to_major());
+  std::vector<DExpr> exprs(expressions.begin(), expressions.end());
   shape.set_expressions(exprs);
   return shape;
 }
@@ -804,8 +819,8 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
     } else {
       // Only print constant expression if it is different than the dimension
       // (i.e. it is wrong!)
-      DynExpr* expr = shape.expressions(i);
-      bool is_wrong = expr != nullptr && expr->is_constant() &&
+      const DExpr& expr = shape.expressions(i);
+      bool is_wrong = expr && expr->is_constant() &&
                       expr->get_val() != shape.dimensions(i);
       printer->Append(shape.dimensions(i));
       if (is_wrong) {
@@ -818,7 +833,7 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
         expr->print(printer);
         printer->Append("!>");
       }
-      if (expr != nullptr && expr->is_dynamic()) {
+      if (expr && expr->is_dynamic()) {
         printer->Append("<");
         expr->print(printer);
         printer->Append(">");
@@ -974,8 +989,8 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
   return shape.dimensions(GetDimensionNumber(shape, dimension_number));
 }
 
-/* static */ DynExpr* ShapeUtil::GetExpression(const Shape& shape,
-                                               int64_t dimension_number) {
+/* static */ const DExpr& ShapeUtil::GetExpression(
+    const Shape& shape, int64_t dimension_number) {
   return shape.expressions(GetDimensionNumber(shape, dimension_number));
 }
 

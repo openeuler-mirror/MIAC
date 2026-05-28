@@ -34,7 +34,7 @@ namespace tensorflow {
 
 absl::StatusOr<xla::XlaOp> BroadcastTo(
     xla::XlaOp input, absl::Span<int64_t const> output_dims,
-    absl::Span<xla::DynExpr* const> output_exprs) {
+    absl::Span<const xla::DExpr> output_exprs) {
   return xla::BroadcastTo(input, output_dims, output_exprs);
 }
 

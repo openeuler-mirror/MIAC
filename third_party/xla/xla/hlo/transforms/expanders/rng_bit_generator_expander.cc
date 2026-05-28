@@ -84,7 +84,7 @@ RngBitGeneratorExpander::GetGeneratorComputation(const Shape& data_shape,
   }
 
   XlaOp final_state = ConcatInDim(
-      &builder, {Reshape(key_op, {1}, {DynExpr::one}), output.state}, 0);
+      &builder, {Reshape(key_op, {1}, {DExpr::Const(1)}), output.state}, 0);
   Tuple(&builder, {final_state, output.value});
   TF_ASSIGN_OR_RETURN(XlaComputation xla_computation, builder.Build());
   TF_ASSIGN_OR_RETURN(HloComputation * new_computation,

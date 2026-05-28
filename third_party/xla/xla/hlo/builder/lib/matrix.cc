@@ -342,7 +342,7 @@ xla::XlaOp EinsumInverseDiagonal(XlaOp x, absl::Span<const int64_t> config) {
     }
     TF_ASSIGN_OR_RETURN(Shape x_shape, builder->GetShape(x));
     std::vector<int64_t> broadcast_sizes;
-    std::vector<DynExpr*> broadcast_exprs;
+    std::vector<DExpr> broadcast_exprs;
     int64_t x_dim = 0;
     for (auto label = config.begin(); label != config.end(); ++label) {
       auto first_label = absl::c_find(config, *label);
@@ -573,14 +573,14 @@ xla::XlaOp Einsum(xla::XlaOp x, absl::Span<const int64_t> x_config,
 
     int64_t dot_dim = 0;
     std::vector<int64_t> new_dims;
-    std::vector<DynExpr*> new_exprs;
+    std::vector<DExpr> new_exprs;
     new_dims.reserve(output_rank);
     new_exprs.reserve(output_rank);
     TF_ASSIGN_OR_RETURN(Shape dot_shape, builder->GetShape(dot));
     for (auto d : output_config) {
       if (is_output_only(d)) {
         new_dims.push_back(1);
-        new_exprs.push_back(DynExpr::one);
+        new_exprs.push_back(DExpr::Const(1));
       } else {
         new_dims.push_back(dot_shape.dimensions(dot_dim));
         new_exprs.push_back(dot_shape.expressions(dot_dim));

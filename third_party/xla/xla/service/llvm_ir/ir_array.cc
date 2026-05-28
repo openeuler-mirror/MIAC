@@ -281,8 +281,8 @@ IrArray::Index IrArray::Index::SourceIndexOfReshape(
       // linear index by each dimension size.
       for (int64_t i = common_factors[k + 1].first - 1;
            i >= common_factors[k].first; --i) {
-        xla::DynExpr* input_expr = input_shape.expressions(i);
-        bool is_dynamic = input_expr != nullptr && input_expr->is_dynamic();
+        const auto& input_expr = input_shape.expressions(i);
+        bool is_dynamic = input_expr->is_dynamic();
         llvm::Value* divisor =
             is_dynamic ? llvm_ir::EmitExpression(builder, input_expr)
                        : GetConstantWithIndexType(input_shape.dimensions(i));
@@ -567,7 +567,7 @@ llvm::Value* IrArray::EmitArrayElementAddress(const IrArray::Index& index,
   // it's always indiced with 0 (i.e. the dynamic dimension has no impact on the
   // address computation).
   std::vector<int64_t> gep_dims;
-  std::vector<DynExpr*> gep_expressions;
+  std::vector<DExpr> gep_expressions;
   gep_dims.reserve(shape_.dimensions().size());
   gep_expressions.reserve(shape_.dimensions().size());
   for (int64_t i = 0; i < shape_.dimensions().size(); ++i) {
@@ -578,7 +578,7 @@ llvm::Value* IrArray::EmitArrayElementAddress(const IrArray::Index& index,
   bool dynamic_first_dim =
       gep_expressions[0]->is_dynamic() &&
       std::all_of(gep_expressions.begin() + 1, gep_expressions.end(),
-                  [](DynExpr* e) { return e->is_constant(); });
+                  [](const DExpr& e) { return e->is_constant(); });
   if (!dynamic_first_dim && shape_.has_dynamic_expr()) {
     llvm::Type* element_type =
         PrimitiveTypeToIrType(shape_.element_type(), b->getContext());

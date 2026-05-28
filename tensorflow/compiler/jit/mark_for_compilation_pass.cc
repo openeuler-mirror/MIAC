@@ -753,34 +753,34 @@ std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
   }
 }
 
-static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
+static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   switch (e->kind()) {
     case DimExpr::Kind::kConstant: {
       auto* ac = static_cast<const Constant*>(e);
-      return xla::DynExpr::_(ac->value());
+      return xla::DExpr::Const(ac->value());
     }
     case DimExpr::Kind::kVariable: {
       auto* av = static_cast<const Variable*>(e);
-      return xla::DynExpr::V(av->id());  // Use 1 all the time for now
+      return xla::DExpr::Var(av->id());  // Use 1 all the time for now
     }
     case DimExpr::Kind::kAdd: {
       auto* ee = static_cast<const ExprAdd*>(e);
-      return *DimExprToDynExpr(ee->lhs()) + *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
     }
     case DimExpr::Kind::kSub: {
       auto* ee = static_cast<const ExprSub*>(e);
-      return *DimExprToDynExpr(ee->lhs()) - *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
     }
     case DimExpr::Kind::kMul: {
       auto* ee = static_cast<const ExprMul*>(e);
-      return *DimExprToDynExpr(ee->lhs()) * *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
     }
     case DimExpr::Kind::kDiv: {
       auto* ee = static_cast<const ExprDiv*>(e);
-      return *DimExprToDynExpr(ee->lhs()) / *DimExprToDynExpr(ee->rhs());
+      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
     }
   }
-  return nullptr;
+  return xla::DExpr();
 }
 
 // Runs Grappler static inference and logs any ExpressionProto found in output
@@ -1879,7 +1879,7 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
       }
       for (auto& pDim: (it->second)[output_index]) {
         DimExpr * d= pDim.get();
-        xla::DynExpr * dyn = DimExprToDynExpr(d);
+        xla::DExpr dyn = DimExprToDExpr(d);
         auto new_ids = dyn->get_all_ids();
         for (auto id : new_ids) {
           cluster->add_dim_var(id);

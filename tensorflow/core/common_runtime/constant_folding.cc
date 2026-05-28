@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
@@ -453,11 +454,13 @@ bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
       if (GetNodeAttr(input_node->def(), "_output_shapes", &shapes)
               .ok() &&
           !shapes.empty()) {
-        for (auto expression : TensorShape(shapes[0]).get_expressions()) {
-          if (expression->is_dynamic()) {
-            *out_shape = shapes[0];
-            return true;
-          }
+        // Stay on the proto here instead of rebuilding a TensorShape. These
+        // inferred shapes may still contain unknown (-1) dimensions, and the
+        // proto expressions are enough for deciding whether the value is
+        // dynamically derived.
+        if (HasDynamicDimExprs(shapes[0])) {
+          *out_shape = shapes[0];
+          return true;
         }
       }
     }

@@ -175,7 +175,7 @@ class DynamicStitchOp : public XlaOpKernel {
       // first reshaped dimension is the number of indices for this input.
       new_shape.AddDim(indices[input_num].shape().dimensions(0));
       new_shape.AddExpression(
-          xla::DynExpr::_(indices[input_num].shape().dimensions(0)));
+          xla::DExpr::Const(indices[input_num].shape().dimensions(0)));
       // Then the rest are the common extra shape.
       for (int d = indices0_shape.dims(); d < data0_shape.dims(); d++) {
         new_shape.AddDim(data0_shape.dim_size(d));

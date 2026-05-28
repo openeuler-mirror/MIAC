@@ -3227,8 +3227,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalConcatenate(
     cases.emplace_back(current_offset, operand);
     llvm::Value* cdim = source_index.GetConstantWithIndexType(
         operand->shape().dimensions(concat_dim));
-    xla::DynExpr* concat_expr = operand->shape().expressions(concat_dim);
-    if (concat_expr != nullptr && concat_expr->is_dynamic()) {
+    const auto& concat_expr = operand->shape().expressions(concat_dim);
+    if (concat_expr->is_dynamic()) {
       cdim = llvm_ir::EmitExpression(b_, concat_expr);
     }
     current_offset = b_->CreateAdd(current_offset, cdim, "current_offset");
@@ -3564,8 +3564,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalPad(
     int64_t shape_dim = hlo->operand(0)->shape().dimensions(i);
     llvm::Value* bound = index_typed_const(shape_dim);
 
-    xla::DynExpr* operand_expr = hlo->operand(0)->shape().expressions(i);
-    if (operand_expr != nullptr && operand_expr->is_dynamic()) {
+    const auto& operand_expr = hlo->operand(0)->shape().expressions(i);
+    if (operand_expr->is_dynamic()) {
       bound = llvm_ir::EmitExpression(b_, operand_expr);
     }
 
@@ -3843,8 +3843,8 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
         const HloInstruction* operand = hlo->operand(0);
         std::vector<llvm::Value*> source_multi_index = target_index.multidim();
         for (int64_t dim : hlo->dimensions()) {
-          xla::DynExpr* dim_expr = hlo->shape().expressions(dim);
-          if (dim_expr != nullptr && dim_expr->is_dynamic()) {
+          const auto& dim_expr = hlo->shape().expressions(dim);
+          if (dim_expr->is_dynamic()) {
             llvm::Value* one = target_index.GetConstantWithIndexType(1);
             llvm::Value* expr_value = llvm_ir::EmitExpression(b_, dim_expr);
             source_multi_index[dim] =
@@ -4208,9 +4208,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalReduceWindow(
     int64_t dim_bound = reduce_window->inputs()[0]->shape().dimensions(i);
     llvm::Value* shape_bound = index_typed_const(dim_bound);
 
-    xla::DynExpr* window_expr =
+    const auto& window_expr =
         reduce_window->inputs()[0]->shape().expressions(i);
-    if (window_expr != nullptr && window_expr->is_dynamic()) {
+    if (window_expr->is_dynamic()) {
       llvm::Value* expr_value = llvm_ir::EmitExpression(b_, window_expr);
       shape_bound = expr_value;
     }

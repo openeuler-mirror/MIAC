@@ -89,14 +89,14 @@ class ReverseSequenceOp : public XlaOpKernel {
         xla::ShapeUtil::MakeShape(seq_lens_type, {batch_size, max_seq_len, 1},
                                   {input_shape.get_filled_expression(batch_dim_),
                                    input_shape.get_filled_expression(seq_dim_),
-                                   xla::DynExpr::one}),
+                                   xla::DExpr::Const(1)}),
         /*iota_dimension=*/0);
     xla::XlaOp forward_idx = xla::Iota(
         builder,
         xla::ShapeUtil::MakeShape(seq_lens_type, {batch_size, max_seq_len, 1},
                                   {input_shape.get_filled_expression(batch_dim_),
                                    input_shape.get_filled_expression(seq_dim_),
-                                   xla::DynExpr::one}),
+                                   xla::DExpr::Const(1)}),
         /*iota_dimension=*/1);
     xla::XlaOp reverse_idx = xla::Sub(back, forward_idx, {0});
     reverse_idx = xla::Select(xla::Lt(reverse_idx, xla::ZerosLike(reverse_idx)),

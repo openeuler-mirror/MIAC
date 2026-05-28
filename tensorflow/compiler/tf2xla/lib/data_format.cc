@@ -53,9 +53,10 @@ absl::StatusOr<xla::XlaOp> Contract(xla::XlaOp input, int64_t dim) {
                                         input_shape.dimensions().end() - 1);
   contracted_shape[dim] *= 4;
 
-  std::vector<xla::DynExpr*> contracted_exprs(
+  std::vector<xla::DExpr> contracted_exprs(
       input_shape.expressions().begin(), input_shape.expressions().end() - 1);
-  contracted_exprs[dim] = (*(contracted_exprs[dim]) * *xla::DynExpr::_(4))->s();
+  contracted_exprs[dim] =
+      (contracted_exprs[dim] * xla::DExpr::Const(4)).simplify();
 
   return xla::Reshape(xla::Transpose(input, permutation), contracted_shape,
                       contracted_exprs);

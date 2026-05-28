@@ -42,82 +42,72 @@ limitations under the License.
 
 namespace xla {
 
-DynExpr* ExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DynExpr::_(proto.constant_value());
-
-    case ExpressionProto::kVariableId:
-      return DynExpr::V(proto.variable_id());
-
-    case ExpressionProto::kAddNode: {
-      const auto& add = proto.add_node();
-      return *ExprFromProto(add.lhs()) + *ExprFromProto(add.rhs());
-    }
-
-    case ExpressionProto::kSubNode: {
-      const auto& sub = proto.sub_node();
-      return *ExprFromProto(sub.lhs()) - *ExprFromProto(sub.rhs());
-    }
-
-    case ExpressionProto::kMulNode: {
-      const auto& mul = proto.mul_node();
-      return *ExprFromProto(mul.lhs()) * *ExprFromProto(mul.rhs());
-    }
-
-    case ExpressionProto::kDivNode: {
-      const auto& div = proto.div_node();
-      return *ExprFromProto(div.lhs()) / *ExprFromProto(div.rhs());
-    }
-
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
+const DExpr& Shape::MissingExpression() {
+  static const DExpr missing = DExpr::Unknown();
+  return missing;
 }
 
-DynExpr* operator*(DynExpr& lhs, DynExpr& rhs) { return new Mul(&lhs, &rhs); }
+DynExpr* operator*(DynExpr& lhs, DynExpr& rhs) {
+  return new Mul(lhs.clone().release(), rhs.clone().release());
+}
 DynExpr* operator*(int64_t k, DynExpr& rhs) {
-  return new Mul(DynExpr::_(k), &rhs);
+  return new Mul(DynExpr::_(k), rhs.clone().release());
 }
-DynExpr* operator/(DynExpr& lhs, DynExpr& rhs) { return new Div(&lhs, &rhs); }
+DynExpr* operator/(DynExpr& lhs, DynExpr& rhs) {
+  return new Div(lhs.clone().release(), rhs.clone().release());
+}
 DynExpr* operator/(DynExpr& lhs, int64_t d) {
-  return new Div(&lhs, DynExpr::_(d));
+  return new Div(lhs.clone().release(), DynExpr::_(d));
 }
-DynExpr* operator+(DynExpr& lhs, DynExpr& rhs) { return new Add(&lhs, &rhs); }
+DynExpr* operator+(DynExpr& lhs, DynExpr& rhs) {
+  return new Add(lhs.clone().release(), rhs.clone().release());
+}
 DynExpr* operator+(DynExpr& lhs, int64_t d) {
-  return new Add(&lhs, DynExpr::_(d));
+  return new Add(lhs.clone().release(), DynExpr::_(d));
 }
-DynExpr* operator-(DynExpr& lhs, DynExpr& rhs) { return new Sub(&lhs, &rhs); }
+DynExpr* operator-(DynExpr& lhs, DynExpr& rhs) {
+  return new Sub(lhs.clone().release(), rhs.clone().release());
+}
 DynExpr* operator-(DynExpr& lhs, int64_t d) {
-  return new Sub(&lhs, DynExpr::_(d));
+  return new Sub(lhs.clone().release(), DynExpr::_(d));
 }
 bool operator==(DynExpr& lhs, DynExpr& rhs) {
   return DynExpr::equal(&lhs, &rhs);
 }
 bool operator==(DynExpr& lhs, int64_t d) {
-  return DynExpr::equal(&lhs, DynExpr::_(d));
+  auto rhs = std::unique_ptr<DynExpr>(DynExpr::_(d));
+  return DynExpr::equal(&lhs, rhs.get());
 }
 bool operator<(DynExpr& lhs, int64_t d) {
   return lhs.is_constant() && lhs.get_val() < d;
 }
 
 bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
-  auto e1 = expr1->s();
-  auto e2 = expr2->s();
+  auto e1 = std::unique_ptr<DynExpr>(expr1->s());
+  auto e2 = std::unique_ptr<DynExpr>(expr2->s());
   if (e1 == nullptr || e2 == nullptr) return false;
-  Constant* c1 = dynamic_cast<Constant*>(e1);
-  Constant* c2 = dynamic_cast<Constant*>(e2);
-  if (c1 && c2) return c1->get_val() == c2->get_val();
+  if (e1->kind() == DExpr::Kind::kConstant &&
+      e2->kind() == DExpr::Kind::kConstant) {
+    return static_cast<Constant*>(e1.get())->get_val() ==
+           static_cast<Constant*>(e2.get())->get_val();
+  }
   // Var x = Var y <=> x = y
-  if (Variable* varx = dynamic_cast<Variable*>(e1),
-      *vary = dynamic_cast<Variable*>(e2);
-      varx && vary) {
-    return varx->get_id() == vary->get_id();
+  if (e1->kind() == DExpr::Kind::kVariable &&
+      e2->kind() == DExpr::Kind::kVariable) {
+    return static_cast<Variable*>(e1.get())->get_id() ==
+           static_cast<Variable*>(e2.get())->get_id();
+  }
+  if (e1->kind() == DExpr::Kind::kUnknown &&
+      e2->kind() == DExpr::Kind::kUnknown) {
+    int lhs_id = static_cast<UnknownExpr*>(e1.get())->get_id();
+    int rhs_id = static_cast<UnknownExpr*>(e2.get())->get_id();
+    return lhs_id != 0 && lhs_id == rhs_id;
   }
   // a * b = c * d <=> (a = c /\ b = d) \/ (a = d /\ b = c)
-  if (Mul* ab = dynamic_cast<Mul*>(e1), *cd = dynamic_cast<Mul*>(e2);
-      ab && cd) {
+  if (e1->kind() == DExpr::Kind::kMul &&
+      e2->kind() == DExpr::Kind::kMul) {
+    auto* ab = static_cast<Mul*>(e1.get());
+    auto* cd = static_cast<Mul*>(e2.get());
     auto a = ab->get_lhs();
     auto b = ab->get_rhs();
     auto c = cd->get_lhs();
@@ -125,8 +115,10 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
     return (*a == *c && *b == *d) || (*a == *d && *b == *c);
   }
   // a / b = c / d <=> (a = c /\ b = d)
-  if (Div* ab = dynamic_cast<Div*>(e1), *cd = dynamic_cast<Div*>(e2);
-      ab && cd) {
+  if (e1->kind() == DExpr::Kind::kDiv &&
+      e2->kind() == DExpr::Kind::kDiv) {
+    auto* ab = static_cast<Div*>(e1.get());
+    auto* cd = static_cast<Div*>(e2.get());
     auto a = ab->get_lhs();
     auto b = ab->get_rhs();
     auto c = cd->get_lhs();
@@ -134,8 +126,10 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
     return *a == *c && *b == *d;
   }
   // a + b = c + d <=> (a = c /\ b = d) \/ (a = d /\ b = c)
-  if (Add* ab = dynamic_cast<Add*>(e1), *cd = dynamic_cast<Add*>(e2);
-      ab && cd) {
+  if (e1->kind() == DExpr::Kind::kAdd &&
+      e2->kind() == DExpr::Kind::kAdd) {
+    auto* ab = static_cast<Add*>(e1.get());
+    auto* cd = static_cast<Add*>(e2.get());
     auto a = ab->get_lhs();
     auto b = ab->get_rhs();
     auto c = cd->get_lhs();
@@ -143,8 +137,10 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
     return (*a == *c && *b == *d) || (*a == *d && *b == *c);
   }
   // a - b = c - d <=> (a = c /\ b = d)
-  if (Sub* ab = dynamic_cast<Sub*>(e1), *cd = dynamic_cast<Sub*>(e2);
-      ab && cd) {
+  if (e1->kind() == DExpr::Kind::kSub &&
+      e2->kind() == DExpr::Kind::kSub) {
+    auto* ab = static_cast<Sub*>(e1.get());
+    auto* cd = static_cast<Sub*>(e2.get());
     auto* a = ab->get_lhs();
     auto* b = ab->get_rhs();
     auto* c = cd->get_lhs();
@@ -155,176 +151,250 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
 }
 
 // Simplification methods
-DynExpr* Constant::s() { return this; }
+DynExpr* Constant::s() { return clone().release(); }
 
-DynExpr* Variable::s() { return this; }
+DynExpr* Variable::s() { return clone().release(); }
 
 DynExpr* Mul::s() {
-  DynExpr* s_lhs = get_lhs()->s();
-  DynExpr* s_rhs = get_rhs()->s();
-  Constant* l = dynamic_cast<Constant*>(s_lhs);
-  Constant* r = dynamic_cast<Constant*>(s_rhs);
+  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
+  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
+  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
+      s_rhs->kind() == DExpr::Kind::kUnknown) {
+    return DExpr::Unknown().release();
+  }
+  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_lhs.get())
+                    : nullptr;
+  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_rhs.get())
+                    : nullptr;
   // constant * constant
   if (l && r) return DynExpr::_(l->get_val() * r->get_val());
   // 0 * X = 0
-  if (l && l->get_val() == 0) return DynExpr::zero;
+  if (l && l->get_val() == 0) return DynExpr::_(0);
   // 1 * X = X
-  if (l && l->get_val() == 1) return s_rhs;
+  if (l && l->get_val() == 1) return s_rhs.release();
   // X * 1 = X
-  if (r && r->get_val() == 1) return s_lhs;
+  if (r && r->get_val() == 1) return s_lhs.release();
   // X * constant = constant * X
-  if (r && s_lhs->is_dynamic()) return (r->get_val() * *s_lhs)->s();
+  if (r && s_lhs->is_dynamic()) {
+    auto reordered = std::unique_ptr<DynExpr>(r->get_val() * *s_lhs);
+    return reordered->s();
+  }
   // m * (nX) = (m*n) * X
-  if (Mul* nX = dynamic_cast<Mul*>(s_rhs)) {
+  if (s_rhs->kind() == DExpr::Kind::kMul) {
+    auto* nX = static_cast<Mul*>(s_rhs.get());
     DynExpr* X = nX->get_rhs();
-    Constant* n = dynamic_cast<Constant*>(nX->get_lhs());
+    Constant* n = nX->get_lhs()->kind() == DExpr::Kind::kConstant
+                      ? static_cast<Constant*>(nX->get_lhs())
+                      : nullptr;
     if (l && n) {
       auto mn = l->get_val() * n->get_val();
-      return (mn * *X)->s();
+      auto folded = std::unique_ptr<DynExpr>(mn * *X);
+      return folded->s();
     }
   }
   return (*s_lhs) * (*s_rhs);
 }
 
 DynExpr* Add::s() {
-  DynExpr* s_lhs = get_lhs()->s();
-  DynExpr* s_rhs = get_rhs()->s();
-  Constant* l = dynamic_cast<Constant*>(s_lhs);
-  Constant* r = dynamic_cast<Constant*>(s_rhs);
+  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
+  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
+  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
+      s_rhs->kind() == DExpr::Kind::kUnknown) {
+    return DExpr::Unknown().release();
+  }
+  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_lhs.get())
+                    : nullptr;
+  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_rhs.get())
+                    : nullptr;
   // constant + constant
   if (l && r) return DynExpr::_(l->get_val() + r->get_val());
   // 0 + X = X
-  if (l && l->get_val() == 0) return s_rhs;
+  if (l && l->get_val() == 0) return s_rhs.release();
   // X + 0 = X
-  if (r && r->get_val() == 0) return s_lhs;
+  if (r && r->get_val() == 0) return s_lhs.release();
   // m + X = X + m
-  if (l && s_rhs->is_dynamic()) return (*s_rhs + l->get_val())->s();
+  if (l && s_rhs->is_dynamic()) {
+    auto reordered = std::unique_ptr<DynExpr>(*s_rhs + l->get_val());
+    return reordered->s();
+  }
   // X + X = 2 * X
   if (*s_lhs == *s_rhs) {
-    return (2 * (*s_rhs))->s();
+    auto doubled = std::unique_ptr<DynExpr>(2 * (*s_rhs));
+    return doubled->s();
   }
   // nX + X = (n+1) * X
-  if (Mul* nX = dynamic_cast<Mul*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kMul) {
+    auto* nX = static_cast<Mul*>(s_lhs.get());
     DynExpr* n = nX->get_lhs();
     DynExpr* X = nX->get_rhs();
     if (*X == *s_rhs) {
-      return (*(*n + 1) * (*X))->s();
+      auto incremented = std::unique_ptr<DynExpr>(*n + 1);
+      auto combined =
+          std::unique_ptr<DynExpr>(*incremented * (*X));
+      return combined->s();
     }
   }
   // X + nX = (n+1) * X
-  if (Mul* nX = dynamic_cast<Mul*>(s_rhs)) {
+  if (s_rhs->kind() == DExpr::Kind::kMul) {
+    auto* nX = static_cast<Mul*>(s_rhs.get());
     DynExpr* n = nX->get_lhs();
     DynExpr* X = nX->get_rhs();
     if (*X == *s_lhs) {
-      return (*(*n + 1) * (*X))->s();
+      auto incremented = std::unique_ptr<DynExpr>(*n + 1);
+      auto combined =
+          std::unique_ptr<DynExpr>(*incremented * (*X));
+      return combined->s();
     }
   }
   // mX + nX = (m+n) * X
-  if (Mul* mX = dynamic_cast<Mul*>(s_lhs), *nY = dynamic_cast<Mul*>(s_rhs);
-      mX && nY) {
+  if (s_lhs->kind() == DExpr::Kind::kMul &&
+      s_rhs->kind() == DExpr::Kind::kMul) {
+    auto* mX = static_cast<Mul*>(s_lhs.get());
+    auto* nY = static_cast<Mul*>(s_rhs.get());
     DynExpr* m = mX->get_lhs();
     DynExpr* X = mX->get_rhs();
     DynExpr* n = nY->get_lhs();
     DynExpr* Y = nY->get_rhs();
     if (*X == *Y) {
-      return (*(*m + *n) * (*X))->s();
+      auto summed = std::unique_ptr<DynExpr>(*m + *n);
+      auto combined = std::unique_ptr<DynExpr>(*summed * (*X));
+      return combined->s();
     }
   }
   // (X + Y) + Z = X + (Y + Z)
-  if (Add* XY = dynamic_cast<Add*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kAdd) {
+    auto* XY = static_cast<Add*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*X + *(*Y + *s_rhs))->s();
+    auto inner = std::unique_ptr<DynExpr>(*Y + *s_rhs);
+    auto reassoc = std::unique_ptr<DynExpr>(*X + *inner);
+    return reassoc->s();
   }
   // (X - Y) + Z = X - (Y - Z)
-  if (Sub* XY = dynamic_cast<Sub*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kSub) {
+    auto* XY = static_cast<Sub*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*X - *(*Y - *s_rhs))->s();
+    auto inner = std::unique_ptr<DynExpr>(*Y - *s_rhs);
+    auto reassoc = std::unique_ptr<DynExpr>(*X - *inner);
+    return reassoc->s();
   }
   return *s_lhs + *s_rhs;
 }
 
 DynExpr* Sub::s() {
-  if (!get_lhs()){
-    LOG(INFO) << "NO LEFT";
+  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
+  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
+  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
+      s_rhs->kind() == DExpr::Kind::kUnknown) {
+    return DExpr::Unknown().release();
   }
-  
-  if (!get_rhs()){
-    LOG(INFO) << "NO RIGHT";
-  }
-  DynExpr* s_lhs = get_lhs()->s();
-  DynExpr* s_rhs = get_rhs()->s();
-  Constant* l = dynamic_cast<Constant*>(s_lhs);
-  Constant* r = dynamic_cast<Constant*>(s_rhs);
+  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_lhs.get())
+                    : nullptr;
+  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_rhs.get())
+                    : nullptr;
   // constant - constant
   if (l && r) return DynExpr::_(l->get_val() - r->get_val());
   // X - 0 = X
-  if (r && r->get_val() == 0) return s_lhs;
+  if (r && r->get_val() == 0) return s_lhs.release();
   // X - X = 0
   if (*s_lhs == *s_rhs) {
-    return DynExpr::zero;
+    return DynExpr::_(0);
   }
   // mX - nX = (m-n) * X
-  if (Mul* mX = dynamic_cast<Mul*>(s_lhs), *nY = dynamic_cast<Mul*>(s_rhs);
-      mX && nY) {
+  if (s_lhs->kind() == DExpr::Kind::kMul &&
+      s_rhs->kind() == DExpr::Kind::kMul) {
+    auto* mX = static_cast<Mul*>(s_lhs.get());
+    auto* nY = static_cast<Mul*>(s_rhs.get());
     DynExpr* m = mX->get_lhs();
     DynExpr* X = mX->get_rhs();
     DynExpr* n = nY->get_lhs();
     DynExpr* Y = nY->get_rhs();
     if (*X == *Y) {
-      return (*(*m - *n) * (*X))->s();
+      auto diffed = std::unique_ptr<DynExpr>(*m - *n);
+      auto combined = std::unique_ptr<DynExpr>(*diffed * (*X));
+      return combined->s();
     }
   }
   // (X + Y) - X = X + (Y - Z)
-  if (Add* XY = dynamic_cast<Add*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kAdd) {
+    auto* XY = static_cast<Add*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*X + *(*Y - *s_rhs))->s();
+    auto inner = std::unique_ptr<DynExpr>(*Y - *s_rhs);
+    auto reassoc = std::unique_ptr<DynExpr>(*X + *inner);
+    return reassoc->s();
   }
   // (X - Y) - Z = X - (Y + Z)
-  if (Sub* XY = dynamic_cast<Sub*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kSub) {
+    auto* XY = static_cast<Sub*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*X - *(*Y + *s_rhs))->s();
+    auto inner = std::unique_ptr<DynExpr>(*Y + *s_rhs);
+    auto reassoc = std::unique_ptr<DynExpr>(*X - *inner);
+    return reassoc->s();
   }
   return *s_lhs - *s_rhs;
 }
 
 DynExpr* Div::s() {
-  DynExpr* s_lhs = get_lhs()->s();
-  DynExpr* s_rhs = get_rhs()->s();
-  Constant* l = dynamic_cast<Constant*>(s_lhs);
-  Constant* r = dynamic_cast<Constant*>(s_rhs);
+  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
+  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
+  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
+      s_rhs->kind() == DExpr::Kind::kUnknown) {
+    return DExpr::Unknown().release();
+  }
+  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_lhs.get())
+                    : nullptr;
+  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
+                    ? static_cast<Constant*>(s_rhs.get())
+                    : nullptr;
   // constant / constant
   if (l && r) return DynExpr::_(l->get_val() / r->get_val());
   // X / 1 = X
-  if (r && r->get_val() == 1) return s_lhs;
+  if (r && r->get_val() == 1) return s_lhs.release();
   // (X + Y) / Z = (X/Z) + (Y/Z)
-  if (Add* XY = dynamic_cast<Add*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kAdd) {
+    auto* XY = static_cast<Add*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*((*X) / (*s_rhs)) + *((*Y) / (*s_rhs)))->s();
+    auto left = std::unique_ptr<DynExpr>(*X / *s_rhs);
+    auto right = std::unique_ptr<DynExpr>(*Y / *s_rhs);
+    auto distributed = std::unique_ptr<DynExpr>(*left + *right);
+    return distributed->s();
   }
   // (X * Y) / Z = (X/Z) * Y
-  if (Mul* XY = dynamic_cast<Mul*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kMul) {
+    auto* XY = static_cast<Mul*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*(*X / (*s_rhs)) * (*Y))->s();
+    auto left = std::unique_ptr<DynExpr>(*X / *s_rhs);
+    auto distributed = std::unique_ptr<DynExpr>(*left * (*Y));
+    return distributed->s();
   }
   // (X / Y) / Z = X / (Y*Z)
-  if (Div* XY = dynamic_cast<Div*>(s_lhs)) {
+  if (s_lhs->kind() == DExpr::Kind::kDiv) {
+    auto* XY = static_cast<Div*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    return (*X / *(*Y * *s_rhs))->s();
+    auto inner = std::unique_ptr<DynExpr>(*Y * *s_rhs);
+    auto reassoc = std::unique_ptr<DynExpr>(*X / *inner);
+    return reassoc->s();
   }
   return *s_lhs / *s_rhs;
 }
 
 std::ostream& operator<<(std::ostream& os, DynExpr* expr) {
-  ExpressionProto proto;
-  expr->to_proto(&proto);
-  os << proto.ShortDebugString();
+  StringPrinter printer;
+  expr->print(&printer);
+  os << std::move(printer).ToString();
   return os;
 }
 
@@ -408,9 +478,9 @@ absl::StatusOr<Shape> Shape::FromProto(const ShapeProto& shape_proto) {
       // UnsafeAddDimension. We expect that the caller will eventually call a
       // validation routine that will detect the error in case the dimension
       // value is invalid.
-      DynExpr* expression = (i < num_expressions)
-                                ? ExprFromProto(shape_proto.expressions(i))
-                                : DynExpr::_(shape_proto.dimensions(i));
+      DExpr expression =
+          (i < num_expressions) ? DExprFromProto(shape_proto.expressions(i))
+                                : DExpr::Const(shape_proto.dimensions(i));
       shape.UnsafeAddDimension(shape_proto.dimensions(i), is_dynamic,
                                expression);
     }
@@ -454,9 +524,9 @@ ShapeProto Shape::ToProto() const {
     for (const bool dynamic : state->dynamic_dimensions) {
       proto.add_is_dynamic_dimension(dynamic);
     }
-    for (const DynExpr* e : state->expressions) {
+    for (const DExpr& e : state->expressions) {
       ExpressionProto* eproto = proto.add_expressions();
-      CHECK(e != nullptr) << "Missing expression in expression list.";
+      CHECK(e.get() != nullptr) << "Missing expression in expression list.";
       e->to_proto(eproto);
     }
     if (state->layout.has_value()) {
@@ -586,15 +656,16 @@ bool Shape::AreAllLeavesIntegers() const {
   return primitive_util::IsIntegralType(element_type());
 }
 
-void Shape::add_dimensions(int64_t value, bool is_dynamic, DynExpr* expr) {
+void Shape::add_dimensions(int64_t value, bool is_dynamic, DExpr expr) {
   if (value < 0) {
     CHECK(is_dynamic) << "static dimension must have size >= 0 instead of "
                       << value << ".";
     CHECK_EQ(value, kUnboundedSize)
         << "dynamic dimension must have size == kUnboundedSize or >= 0.";
   }
-  UnsafeAddDimension(value, is_dynamic,
-                     expr != nullptr ? expr : DynExpr::_(value));
+  UnsafeAddDimension(
+      value, is_dynamic,
+      expr ? std::move(expr) : DExpr::Const(value));
 }
 
 void Shape::set_dynamic_dimension(int dimension, bool is_dynamic) {
@@ -604,20 +675,23 @@ void Shape::set_dynamic_dimension(int dimension, bool is_dynamic) {
   state.dynamic_dimensions[dimension] = is_dynamic;
 }
 
-void Shape::set_expression(int dimension, DynExpr* e) {
+void Shape::set_expression(int dimension, DExpr e) {
   auto& state = array_state();
   state.expressions[dimension] =
-      e != nullptr ? e : DynExpr::_(state.dimensions[dimension]);
+      e ? std::move(e) : DExpr::Const(state.dimensions[dimension]);
 }
 
-void Shape::set_expressions(std::vector<DynExpr*> exps) {
+void Shape::set_expressions(std::vector<DExpr> exps) {
   auto& state = array_state();
   CHECK_LE(exps.size(), state.dimensions.size());
   state.expressions.resize(state.dimensions.size());
   for (size_t i = 0; i < state.dimensions.size(); ++i) {
-    DynExpr* expr = i < exps.size() ? exps[i] : DynExpr::_(state.dimensions[i]);
-    state.expressions[i] =
-        expr != nullptr ? expr : DynExpr::_(state.dimensions[i]);
+    state.expressions[i] = i < exps.size()
+                               ? std::move(exps[i])
+                               : DExpr::Const(state.dimensions[i]);
+    if (!state.expressions[i]) {
+      state.expressions[i] = DExpr::Const(state.dimensions[i]);
+    }
   }
 }
 
@@ -629,7 +703,7 @@ void Shape::set_dimensions(int index, int64_t size,
   CheckDimensionSize(index, size, dynamic);
   state.dimensions[index] = size;
   state.dynamic_dimensions[index] = dynamic;
-  state.expressions[index] = DynExpr::_(size);
+  state.expressions[index] = DExpr::Const(size);
 }
 
 void Shape::set_dimensions_minor(int index, int64_t size,
@@ -651,7 +725,7 @@ void Shape::CheckDimensionSize(int dim_index, int64_t size, bool is_dynamic) {
   }
 }
 
-void Shape::UnsafeAddDimension(int64_t value, bool is_dynamic, DynExpr* exp) {
+void Shape::UnsafeAddDimension(int64_t value, bool is_dynamic, DExpr exp) {
   auto& state = array_state_maybe_underneath_buffer();
   CHECK_EQ(state.dimensions.size(), state.dynamic_dimensions.size())
       << "where the shape is " << ToString();
@@ -659,7 +733,7 @@ void Shape::UnsafeAddDimension(int64_t value, bool is_dynamic, DynExpr* exp) {
       << "where the shape is " << ToString();
   state.dimensions.push_back(value);
   state.dynamic_dimensions.push_back(is_dynamic);
-  state.expressions.push_back(exp != nullptr ? exp : DynExpr::_(value));
+  state.expressions.push_back(exp ? std::move(exp) : DExpr::Const(value));
 }
 
 bool Shape::is_static() const {

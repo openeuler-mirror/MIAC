@@ -118,9 +118,11 @@ class XlaExpression {
   void set_dynamic_constant_index(int64_t index) {
     dynamic_constant_index_ = index;
   }
-  xla::DynExpr* dynamic_constant_expr() const { return dynamic_constant_expr_; }
-  void set_dynamic_constant_expr(xla::DynExpr* expr) {
-    dynamic_constant_expr_ = expr;
+  const std::optional<xla::DExpr>& dynamic_constant_expr() const {
+    return dynamic_constant_expr_;
+  }
+  void set_dynamic_constant_expr(xla::DExpr expr) {
+    dynamic_constant_expr_ = std::move(expr);
   }
 
   XlaResource* resource() const { return resource_; }
@@ -178,7 +180,7 @@ class XlaExpression {
   // For constant expressions, marks a single element that later passes may
   // reinterpret as coming from a dynamic expression instead of the literal.
   std::optional<int64_t> dynamic_constant_index_;
-  xla::DynExpr* dynamic_constant_expr_ = nullptr;
+  std::optional<xla::DExpr> dynamic_constant_expr_;
 
   // The resource, if kind_ == kResource. Not owned.
   XlaResource* resource_ = nullptr;

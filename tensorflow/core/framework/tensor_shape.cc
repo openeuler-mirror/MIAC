@@ -16,14 +16,15 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_shape.h"
 
 #include "tensorflow/core/framework/bounds_check.h"
-#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/util/overflow.h"
+#include "xla/printer.h"
 
 namespace tensorflow {
 
@@ -31,105 +32,92 @@ namespace {
 
 const bool kTensorShapeExpressionsEnabled = TensorShapeExpressionsEnabled();
 
-}  // namespace
-
-xla::DynExpr* ExprFromProto(const ExpressionProto& proto) {
+xla::DExpr DExprFromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case ExpressionProto::kConstantValue:
-      return xla::DynExpr::_(proto.constant_value());
-
+      return xla::DExpr::Const(proto.constant_value());
     case ExpressionProto::kVariableId:
-      return xla::DynExpr::V(proto.variable_id());
-
+      return xla::DExpr::Var(proto.variable_id());
     case ExpressionProto::kAddNode: {
       const auto& add = proto.add_node();
-      return *ExprFromProto(add.lhs()) + *ExprFromProto(add.rhs());
+      return DExprFromProto(add.lhs()) + DExprFromProto(add.rhs());
     }
-
     case ExpressionProto::kSubNode: {
       const auto& sub = proto.sub_node();
-      return *ExprFromProto(sub.lhs()) - *ExprFromProto(sub.rhs());
+      return DExprFromProto(sub.lhs()) - DExprFromProto(sub.rhs());
     }
-
     case ExpressionProto::kMulNode: {
       const auto& mul = proto.mul_node();
-      return *ExprFromProto(mul.lhs()) * *ExprFromProto(mul.rhs());
+      return DExprFromProto(mul.lhs()) * DExprFromProto(mul.rhs());
     }
-
     case ExpressionProto::kDivNode: {
       const auto& div = proto.div_node();
-      return *ExprFromProto(div.lhs()) / *ExprFromProto(div.rhs());
+      return DExprFromProto(div.lhs()) / DExprFromProto(div.rhs());
     }
-
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
-      return nullptr;
+      return xla::DExpr::Unknown();
   }
 }
 
-void ExprToProto(xla::DynExpr* expr, ExpressionProto* proto) {
-  auto e = expr->s();
-  if (xla::Constant* c = dynamic_cast<xla::Constant*>(e)) {
-    proto->set_constant_value(c->get_val());
-  } else if (xla::Variable* v = dynamic_cast<xla::Variable*>(e)) {
-    proto->set_variable_id(v->get_id());
-  } else if (xla::Add* a = dynamic_cast<xla::Add*>(e)) {
-    auto* add_msg = proto->mutable_add_node();
-    ExprToProto(a->get_lhs(), add_msg->mutable_lhs());
-    ExprToProto(a->get_rhs(), add_msg->mutable_rhs());
-  } else if (xla::Mul* m = dynamic_cast<xla::Mul*>(e)) {
-    auto* mul_msg = proto->mutable_mul_node();
-    ExprToProto(m->get_lhs(), mul_msg->mutable_lhs());
-    ExprToProto(m->get_rhs(), mul_msg->mutable_rhs());
-  } else if (xla::Sub* s = dynamic_cast<xla::Sub*>(e)) {
-    auto* sub_msg = proto->mutable_sub_node();
-    ExprToProto(s->get_lhs(), sub_msg->mutable_lhs());
-    ExprToProto(s->get_rhs(), sub_msg->mutable_rhs());
-  } else if (xla::Div* d = dynamic_cast<xla::Div*>(e)) {
-    auto* div_msg = proto->mutable_div_node();
-    ExprToProto(d->get_lhs(), div_msg->mutable_lhs());
-    ExprToProto(d->get_rhs(), div_msg->mutable_rhs());
+void ExprToProto(const xla::DExpr& expr, ExpressionProto* proto) {
+  if (!expr) return;
+  switch (expr.kind()) {
+    case xla::DExpr::Kind::kUnknown:
+      return;
+    case xla::DExpr::Kind::kConstant:
+      proto->set_constant_value(expr->get_val());
+      return;
+    case xla::DExpr::Kind::kVariable:
+      proto->set_variable_id(
+          static_cast<xla::Variable&>(*expr.get()).get_id());
+      return;
+    case xla::DExpr::Kind::kAdd: {
+      auto* add = proto->mutable_add_node();
+      const auto& node = static_cast<xla::Add&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
+                  add->mutable_lhs());
+      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
+                  add->mutable_rhs());
+      return;
+    }
+    case xla::DExpr::Kind::kSub: {
+      auto* sub = proto->mutable_sub_node();
+      const auto& node = static_cast<xla::Sub&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
+                  sub->mutable_lhs());
+      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
+                  sub->mutable_rhs());
+      return;
+    }
+    case xla::DExpr::Kind::kMul: {
+      auto* mul = proto->mutable_mul_node();
+      const auto& node = static_cast<xla::Mul&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
+                  mul->mutable_lhs());
+      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
+                  mul->mutable_rhs());
+      return;
+    }
+    case xla::DExpr::Kind::kDiv: {
+      auto* div = proto->mutable_div_node();
+      const auto& node = static_cast<xla::Div&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
+                  div->mutable_lhs());
+      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
+                  div->mutable_rhs());
+      return;
+    }
   }
 }
 
-// Independent helper function to handle the recursion
-void BuildExprString(xla::DynExpr* e, std::ostringstream& oss) {
-  if (xla::Constant* c = dynamic_cast<xla::Constant*>(e)) {
-    oss << c->get_val();
-  } else if (xla::Variable* v = dynamic_cast<xla::Variable*>(e)) {
-    char letter = 'A' + (v->get_id() - 1);
-    oss << letter;
-  } else if (xla::Add* a = dynamic_cast<xla::Add*>(e)) {
-    oss << "(";
-    BuildExprString(a->get_lhs(), oss);
-    oss << " + ";
-    BuildExprString(a->get_rhs(), oss);
-    oss << ")";
-  } else if (xla::Mul* m = dynamic_cast<xla::Mul*>(e)) {
-    oss << "(";
-    BuildExprString(m->get_lhs(), oss);
-    oss << " * ";
-    BuildExprString(m->get_rhs(), oss);
-    oss << ")";
-  } else if (xla::Sub* s = dynamic_cast<xla::Sub*>(e)) {
-    oss << "(";
-    BuildExprString(s->get_lhs(), oss);
-    oss << " - ";
-    BuildExprString(s->get_rhs(), oss);
-    oss << ")";
-  } else if (xla::Div* d = dynamic_cast<xla::Div*>(e)) {
-    oss << "(";
-    BuildExprString(d->get_lhs(), oss);
-    oss << " / ";
-    BuildExprString(d->get_rhs(), oss);
-    oss << ")";
-  }
-}
+}  // namespace
 
-std::string ExprToString(xla::DynExpr* e) {
-    std::ostringstream oss;
-    BuildExprString(e, oss);
-    return oss.str();
+std::string ExprToString(const xla::DExpr& e) {
+  if (!e && !e.is_unknown()) return "";
+  xla::StringPrinter printer;
+  e->print(&printer);
+  return std::move(printer).ToString();
 }
 
 // TensorShape and PartialTensorShape should have no fields beyond
@@ -260,7 +248,7 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
     }
     if (kTensorShapeExpressionsEnabled) {
       for (const auto& e : proto.expressions()) {
-        AddExpression(ExprFromProto(e));
+        AddExpression(DExprFromProto(e));
       }
     }
   }
@@ -304,7 +292,7 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
     }
     if (kTensorShapeExpressionsEnabled) {
       for (const auto& e : proto.expressions()) {
-        out->AddExpression(ExprFromProto(e));
+        out->AddExpression(DExprFromProto(e));
       }
     }
   }
@@ -491,41 +479,41 @@ void TensorShapeRep::Clear() {
   set_data_type(DT_INVALID);
 }
 
-void TensorShapeRep::set_expression(int d, xla::DynExpr* expr) {
+void TensorShapeRep::set_expression(int d, xla::DExpr expr) {
   if (!kTensorShapeExpressionsEnabled) {
     expressions_.clear();
     return;
   }
   if (expressions_.size() <= static_cast<size_t>(d)) {
-    expressions_.resize(d + 1, nullptr);
+    expressions_.resize(d + 1, xla::DExpr::Unknown());
   }
-  expressions_[d] = expr;
+  expressions_[d] = expr ? std::move(expr) : xla::DExpr::Unknown();
 }
 
-void TensorShapeRep::AddExpression(xla::DynExpr* expr) {
+void TensorShapeRep::AddExpression(xla::DExpr expr) {
   if (!kTensorShapeExpressionsEnabled) {
     return;
   }
   CHECK_LT(expressions_.size(), ndims_byte());
-  expressions_.push_back(expr);
+  expressions_.push_back(expr ? std::move(expr) : xla::DExpr::Unknown());
 }
 
-void TensorShapeRep::set_expressions(std::vector<xla::DynExpr*> exprs) {
+void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
   if (!kTensorShapeExpressionsEnabled) {
     expressions_.clear();
     return;
   }
-  while (!exprs.empty() && exprs.back() == nullptr) {
-    exprs.pop_back();
+  for (auto& expr : exprs) {
+    if (!expr) expr = xla::DExpr::Unknown();
   }
-  expressions_ = exprs;
+  expressions_ = std::move(exprs);
 }
 
 void TensorShapeRep::ClearAllButDataType() {
-  expressions_.clear();
   if (tag() == REP_OUT_OF_LINE) {
     delete as64()->dims_;
   }
+  expressions_.clear();
   set_tag(REP16);
   set_ndims_byte(0);
   // Leaves data_type alone
@@ -735,9 +723,7 @@ template <class Shape>
 void TensorShapeBase<Shape>::set_dim(int d, int64_t size) {
   CHECK_GE(d, 0);
   CHECK_LT(d, dims());
-  if (d < expressions_.size() && expressions_[d] != nullptr) {
-    set_expression(d, xla::DynExpr::_(size));
-  }
+  if (get_expressions().size() > d) set_expression(d, xla::DExpr::Const(size));
   if (!kIsPartial) {
     CHECK_GE(size, 0);
   }
@@ -799,9 +785,7 @@ absl::Status TensorShapeBase<Shape>::SetDimWithStatus(int d, int64_t size) {
     }
   }
 
-  if (d < expressions_.size() && expressions_[d] != nullptr) {
-    set_expression(d, xla::DynExpr::_(size));
-  }
+  if (get_expressions().size() > d) set_expression(d, xla::DExpr::Const(size));
   return RecomputeNumElements();
 }
 
@@ -817,7 +801,8 @@ void TensorShapeBase<Shape>::RemoveDimRange(int begin, int end) {
   if (begin >= end) return;
   absl::InlinedVector<int64_t, 8UL> vals;
   AppendTo(*this, &vals);
-  std::vector<xla::DynExpr*> new_exprs = get_expressions();
+  std::vector<xla::DExpr> new_exprs(get_expressions().begin(),
+                                    get_expressions().end());
   if (begin < static_cast<int64_t>(new_exprs.size())) {
     int64_t expr_end = end;
     if (expr_end > static_cast<int64_t>(new_exprs.size())) {
@@ -877,7 +862,8 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
   absl::InlinedVector<int64_t, 8UL> vals;
   AppendTo(*this, &vals);
 
-  std::vector<xla::DynExpr*> new_exprs = get_expressions();
+  std::vector<xla::DExpr> new_exprs(get_expressions().begin(),
+                                    get_expressions().end());
 
   if (begin < static_cast<int64_t>(new_exprs.size())) {
     int64_t expr_end = end;
@@ -926,11 +912,9 @@ void TensorShapeBase<Shape>::AsProto(TensorShapeProto* proto) const {
       proto->add_dim()->set_size(dim_size(i));
     }
     if (kTensorShapeExpressionsEnabled) {
-      for (int i = 0; i < expressions_.size(); ++i) {
+      for (int i = 0; i < get_expressions().size(); i++) {
         ExpressionProto* eproto = proto->add_expressions();
-        if (expressions_[i] != nullptr) {
-          ExprToProto(expressions_[i], eproto);
-        }
+        ExprToProto(get_expression(i), eproto);
       }
     }
   }
@@ -966,10 +950,9 @@ string TensorShapeRep::DebugString() const {
     } else {
       strings::StrAppend(&s, dim);
     }
-    if (kTensorShapeExpressionsEnabled && i < expressions_.size() &&
-        expressions_[i] != nullptr) {
+    if (shape.get_expression(i)) {
       strings::StrAppend(&s, "<");
-      strings::StrAppend(&s, ExprToString(expressions_[i]));
+      strings::StrAppend(&s, ExprToString(shape.get_expression(i)));
       strings::StrAppend(&s, ">");
     }
   }
@@ -1000,7 +983,7 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
     first = true;
     for (const auto& e : proto.expressions()) {
       if (!first) strings::StrAppend(&s, ",");
-      auto exp = ExprFromProto(e);
+      auto exp = DExprFromProto(e);
       strings::StrAppend(&s, ExprToString(exp));
       first = false;
     }
@@ -1169,7 +1152,8 @@ absl::Status PartialTensorShape::MergeWith(const PartialTensorShape& shape,
       return s;
     }
   }
-  result->set_expressions(shape.get_expressions());
+  result->set_expressions(std::vector<xla::DExpr>(shape.get_expressions().begin(),
+                                                  shape.get_expressions().end()));
   return absl::OkStatus();
 }
 

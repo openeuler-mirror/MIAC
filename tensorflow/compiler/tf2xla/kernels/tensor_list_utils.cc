@@ -389,10 +389,12 @@ absl::Status ExecuteTensorListPushBack(xla::XlaOp list, xla::XlaOp element,
       std::vector<int64_t> element_part_dims =
           xla::SpanToVector(element_part_shape.dimensions());
       element_part_dims.insert(element_part_dims.begin(), 1);
-      std::vector<xla::DynExpr*> element_part_exprs =
-          xla::SpanToVector(element_part_shape.expressions());
-      element_part_exprs.insert(element_part_exprs.begin(),
-                                xla::DynExpr::one);
+      std::vector<xla::DExpr> element_part_exprs;
+      element_part_exprs.reserve(element_part_shape.expressions().size() + 1);
+      element_part_exprs.push_back(xla::DExpr::Const(1));
+      for (auto expr : element_part_shape.expressions()) {
+        element_part_exprs.push_back(expr);
+      }
       element_part =
           xla::Reshape(element_part, element_part_dims, element_part_exprs);
 
@@ -411,9 +413,12 @@ absl::Status ExecuteTensorListPushBack(xla::XlaOp list, xla::XlaOp element,
     std::vector<int64_t> element_dims =
         xla::SpanToVector(element_shape.dimensions());
     element_dims.insert(element_dims.begin(), 1);
-    std::vector<xla::DynExpr*> element_exprs =
-        xla::SpanToVector(element_shape.expressions());
-    element_exprs.insert(element_exprs.begin(), xla::DynExpr::one);
+    std::vector<xla::DExpr> element_exprs;
+    element_exprs.reserve(element_shape.expressions().size() + 1);
+    element_exprs.push_back(xla::DExpr::Const(1));
+    for (auto expr : element_shape.expressions()) {
+      element_exprs.push_back(expr);
+    }
     xla::XlaOp update = xla::Reshape(element, element_dims, element_exprs);
 
     std::vector<xla::XlaOp> start_indices(element_shape.dimensions().size() + 1,
@@ -463,16 +468,19 @@ absl::Status ExecuteTensorListPopBack(xla::XlaOp list, xla::XlaOp* list_result,
         xla::SpanToVector(list_part_shape.dimensions());
     slice_shape[0] = 1LL;
 
-    std::vector<xla::DynExpr*> slice_exprs =
-        xla::SpanToVector(list_part_shape.expressions());
-    slice_exprs[0] = xla::DynExpr::_(1LL);
+    std::vector<xla::DExpr> slice_exprs;
+    slice_exprs.reserve(list_part_shape.expressions().size());
+    for (auto expr : list_part_shape.expressions()) {
+      slice_exprs.push_back(expr);
+    }
+    slice_exprs[0] = xla::DExpr::Const(1LL);
 
     xla::XlaOp list_part = xla::GetTupleElement(list, i);
     xla::XlaOp read = xla::DynamicSlice(list_part, start_indices, slice_shape);
 
     slice_shape.erase(slice_shape.begin());
-    element_result_parts.push_back(
-        xla::Reshape(read, slice_shape, slice_exprs));
+    slice_exprs.erase(slice_exprs.begin());
+    element_result_parts.push_back(xla::Reshape(read, slice_shape, slice_exprs));
     list_result_parts.push_back(list_part);
   }
   list_result_parts.push_back(push_index);
@@ -506,10 +514,12 @@ absl::Status ExecuteTensorListSetItem(xla::XlaOp list, xla::XlaOp index,
   std::vector<int64_t> element_dims =
       xla::SpanToVector(element_shape.dimensions());
   element_dims.insert(element_dims.begin(), 1);
-  std::vector<xla::DynExpr*> element_exprs =
-      xla::SpanToVector(element_shape.expressions());
-  element_exprs.insert(element_exprs.begin(), xla::DynExpr::one);
-
+  std::vector<xla::DExpr> element_exprs;
+  element_exprs.reserve(element_shape.expressions().size() + 1);
+  element_exprs.push_back(xla::DExpr::Const(1));
+  for (auto expr : element_shape.expressions()) {
+    element_exprs.push_back(expr);
+  }
   xla::XlaOp update = xla::Reshape(element, element_dims, element_exprs);
 
   std::vector<xla::XlaOp> start_indices(element_shape.dimensions().size() + 1,
@@ -574,9 +584,12 @@ absl::Status ExecuteTensorListGetItem(xla::XlaOp list, xla::XlaOp index,
       xla::SpanToVector(buffer_shape.dimensions());
   slice_shape[0] = 1LL;
 
-  std::vector<xla::DynExpr*> slice_exprs =
-      xla::SpanToVector(buffer_shape.expressions());
-  slice_exprs[0] = xla::DynExpr::_(1LL);
+  std::vector<xla::DExpr> slice_exprs;
+  slice_exprs.reserve(buffer_shape.expressions().size());
+  for (auto expr : buffer_shape.expressions()) {
+    slice_exprs.push_back(expr);
+  }
+  slice_exprs[0] = xla::DExpr::Const(1LL);
 
   xla::XlaOp list_part = xla::GetTupleElement(list, 0);
   xla::XlaOp read = xla::DynamicSlice(list_part, start_indices, slice_shape);
