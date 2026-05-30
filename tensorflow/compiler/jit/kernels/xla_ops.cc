@@ -614,7 +614,7 @@ absl::Status CompileToLocalExecutable(
             record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
-                  xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
+                  xla_batch_matcher->get_xla_compile_batch(function.name(), shp.dim_size(idx));
             }
 
             std::vector<xla::DExpr> dyn_exprs;
@@ -654,8 +654,10 @@ absl::Status CompileToLocalExecutable(
                           << shp.dim_size(idx) << " to " << var_value;
                 }
                 record_dynamic_dim_value(var_value, e);
+                VLOG(1) << "Filled batch for function " << function.name()
+                          << " with value " << var_value;
                 filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(var_value);
+                    xla_batch_matcher->get_xla_compile_batch(function.name(), var_value);
                 break;
               }
             }
