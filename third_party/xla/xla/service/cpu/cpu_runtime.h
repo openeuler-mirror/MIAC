@@ -78,6 +78,7 @@ extern const char* const kAcquireOutfeedBufferForPopulationSymbolName;
 extern const char* const kReleaseOutfeedBufferAfterPopulationSymbolName;
 extern const char* const kParallelForkJoinSymbolName;
 extern const char* const kPrintfToStderrSymbolName;
+extern const char* const kReadCycleCounterSymbolName;
 extern const char* const kStatusIsSuccessSymbolName;
 extern const char* const kKeyValueSortSymbolName;
 extern const char* const kTopKF32SymbolName;
@@ -106,5 +107,7 @@ int GetDeviceOrdinal(const xla::ExecutableRunOptions* run_options);
 }  // namespace runtime
 }  // namespace cpu
 }  // namespace xla
+
+extern "C" uint64_t __xla_cpu_runtime_ReadCycleCounter();
 
 #endif  // XLA_SERVICE_CPU_CPU_RUNTIME_H_
