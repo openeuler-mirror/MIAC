@@ -295,11 +295,6 @@ static std::vector<DExpr> MakeExpressions(
   return ShapeUtil::MakeValidatedBufferShape(shape);
 }
 
-/* static */ Shape ShapeUtil::MakeBufferShape(
-    PrimitiveType element_type, absl::Span<const int64_t> dimensions) {
-  return Shape::MakeBufferShape(MakeShape(element_type, dimensions));
-}
-
 /* static */ Shape ShapeUtil::MakeShapeWithStaticDimensions(
     const Shape& shape) {
   Shape output = shape;
@@ -434,9 +429,10 @@ ShapeUtil::MakeValidatedShapeWithSparseLayout(
   return ret;
 }
 
-/* static */ Shape ShapeUtil::MakeShapeWithDescendingLayout(
+/* static */ absl::StatusOr<Shape>
+ShapeUtil::MakeValidatedShapeWithDescendingLayout(
     PrimitiveType element_type, absl::Span<const int64_t> dimensions,
-    absl::Span<const DExpr> expressions) {
+    absl::Span<const DExpr> expressions = {}) {
   auto shape = MakeShapeWithDenseLayout(element_type, dimensions,
                                         LayoutUtil::MakeDescendingLayout(
                                             dimensions.size())

@@ -507,6 +507,11 @@ void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
     expressions_.clear();
     return;
   }
+
+  if (exprs.size() > ndims_byte()) {
+    exprs.resize(ndims_byte());
+  }
+
   for (auto& expr : exprs) {
     if (!expr) expr = xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
   }

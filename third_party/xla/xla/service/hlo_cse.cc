@@ -362,10 +362,6 @@ absl::StatusOr<bool> HloCSE::RunOnComputation(HloComputation* computation) {
       continue;
     }
 
-    if (only_scalars_ && !ShapeUtil::IsScalar(instruction->shape())) {
-      continue;
-    }
-
     // These frontend attrs are semantic, not just decorative, so do not CSE
     // across them.
     if (HasDynamicConstantFrontendAttributes(instruction)) {

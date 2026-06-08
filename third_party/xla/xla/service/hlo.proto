@@ -331,7 +331,7 @@ message HloInstructionProto {
   xla.FrontendAttributes frontend_attributes = 68;
 
   // Structured symbolic contents attached to this instruction.
-  repeated xla.ExpressionProto contents = 92;
+  repeated xla.ExpressionProto contents = 93;
 
   // Specifies if all elements updated are guaranteed to be unique by
   // the caller.

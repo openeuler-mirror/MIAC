@@ -99,17 +99,7 @@ using absl::StrJoin;
 const HloInstruction::Rare* const HloInstruction::kEmptyRare =
     new HloInstruction::Rare;
 
-namespace {
-// Specialization for erasing from PtrVec<T>.
-template <typename T>
-absl::Status EraseElementFromVector(PtrVec<T>* container, T value) {
-  // absl::c_find returns a const_iterator which does not seem to work on
-  // gcc 4.8.4, and this breaks the ubuntu/xla_gpu build bot.
-  auto it = std::find(container->begin(), container->end(), value);
-  TF_RET_CHECK(it != container->end());
-  container->erase(it);
-  return absl::OkStatus();
-}
+HloInstruction::Users::~Users() = default;
 
 DynExpr* DynExprFromProtoForPrint(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
@@ -152,9 +142,6 @@ std::string ContentsExprToString(const ExpressionProto& proto) {
   expr->print(&printer);
   return std::move(printer).ToString();
 }
-}  // namespace
-
-HloInstruction::Users::~Users() = default;
 
 void HloInstruction::Users::Clear() {
   users_.clear();
