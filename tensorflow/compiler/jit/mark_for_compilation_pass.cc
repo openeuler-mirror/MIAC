@@ -1651,11 +1651,6 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   for (const auto& s : cluster_exclude_op_list) {
     if (s == "Where") {
       allow_where_op = false;
-    } else {
-      return errors::InvalidArgument(
-          "The operation '", s,
-          "' passed to --tf_xla_cluster_exclude_ops is not supported by "
-          "XLA.");
     }
   }
 
@@ -1672,7 +1667,8 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     VLOG(4) << "Device type for " << node->name() << ": "
             << device_type.type_string();
 
-    if (CompilationDisallowedByXlaCompileAttr(node)) {
+    if (CompilationDisallowedByXlaCompileAttr(node) ||
+        cluster_exclude_op_list.contains(node->type_string())) {
       VLOG(2) << "Not clustering " << node->name()
               << ": disallowed by _XlaCompile attribute";
       continue;
