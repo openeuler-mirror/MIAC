@@ -28,22 +28,18 @@ limitations under the License.
 #include "tensorflow/cc/saved_model/loader_util.h"
 #include "tensorflow/cc/saved_model/metrics.h"
 #include "tensorflow/cc/saved_model/reader.h"
-#include "tensorflow/cc/saved_model/util.h"
+#include "tensorflow/cc/saved_model/variable_freezing.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph_debug_info.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/tensor.pb.h"
-#include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
 #include "tensorflow/core/lib/monitoring/sampler.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/file_system_helper.h"
-#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/protobuf/saver.pb.h"
 #include "tensorflow/core/public/session.h"
@@ -299,6 +295,8 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
                                     SavedModelBundle* const bundle) {
   TF_RETURN_IF_ERROR(ReadMetaGraphDefFromSavedModel(export_dir, tags,
                                                     &bundle->meta_graph_def));
+  TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
+    export_dir, &bundle->meta_graph_def));
   TF_RETURN_IF_ERROR(
       ReadSavedModelDebugInfoIfPresent(export_dir, &bundle->debug_info));
   TF_RETURN_IF_ERROR(LoadMetagraphIntoSession(
@@ -436,6 +434,8 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
   MetaGraphDef meta_graph_def;
   TF_RETURN_IF_ERROR(
       ReadMetaGraphDefFromSavedModel(export_dir, tags, &meta_graph_def));
+  TF_RETURN_IF_ERROR(
+    internal::FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
   std::unique_ptr<Session> session;
   TF_RETURN_IF_ERROR(LoadGraphDefIntoSession(
       session_options, std::move(*meta_graph_def.mutable_graph_def()),
