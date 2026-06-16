@@ -92,14 +92,36 @@ xla::DExpr BuildRangeSizeExpr(const XlaExpression& start_expr,
   xla::DExpr limit_symbol = GetScalarExpr<T>(limit_expr, limit);
   xla::DExpr delta_symbol = GetScalarExpr<T>(delta_expr, delta);
 
+  // If any of start/limit/delta have an explicit symbolic content,
+  // prefer using that content when building the size expression. This
+  // allows Size/Shape produced DExprs to be propagated through to
+  // Range size computation.
+  const auto& start_contents = start_expr.contents();
+  xla::DExpr effective_start = (!start_contents.empty() && start_contents[0])
+                                    ? start_contents[0]
+                                    : start_symbol;
+
+  const auto& limit_contents = limit_expr.contents();
+  xla::DExpr effective_limit = (!limit_contents.empty() && limit_contents[0])
+                                    ? limit_contents[0]
+                                    : limit_symbol;
+
+  const auto& delta_contents = delta_expr.contents();
+  xla::DExpr effective_delta = (!delta_contents.empty() && delta_contents[0])
+                                    ? delta_contents[0]
+                                    : delta_symbol;
+
+  // Use the delta literal for sign decisions, but use the (possibly)
+  // symbolic effective_delta for arithmetic so symbolic content is
+  // preserved when present.
   if (delta.Get<T>({}) > 0) {
-    xla::DExpr diff = (limit_symbol - start_symbol).simplify();
+    xla::DExpr diff = (effective_limit - effective_start).simplify();
     xla::DExpr adjusted = (diff - 1).simplify();
-    xla::DExpr quotient = (adjusted / delta_symbol).simplify();
+    xla::DExpr quotient = (adjusted / effective_delta).simplify();
     return (quotient + 1).simplify();
   }
-  xla::DExpr step_symbol = (xla::DExpr::Const(0) - delta_symbol).simplify();
-  xla::DExpr diff = (start_symbol - limit_symbol).simplify();
+  xla::DExpr step_symbol = (xla::DExpr::Const(0) - effective_delta).simplify();
+  xla::DExpr diff = (effective_start - effective_limit).simplify();
   xla::DExpr adjusted = (diff - 1).simplify();
   xla::DExpr quotient = (adjusted / step_symbol).simplify();
   return (quotient + 1).simplify();
@@ -188,13 +210,14 @@ class RangeOp : public XlaOpKernel {
                 : (std::abs(limit_value - start_value) - 1) /
                           std::abs(delta_value) +
                       1);
-        xla::DExpr size_expr =
-            HasStaticScalarContent(ctx->InputExpression(2))
-                ? BuildRangeSizeExpr<int32>(ctx->InputExpression(0),
-                                            ctx->InputExpression(1),
-                                            ctx->InputExpression(2), start,
-                                            limit, delta, size)
-                : xla::DExpr::Const(size);
+        xla::DExpr size_expr = xla::DExpr::Const(size);
+        if (HasDynamicContent(ctx->InputExpression(0)) ||
+            HasDynamicContent(ctx->InputExpression(1)) ||
+            HasDynamicContent(ctx->InputExpression(2))) {
+          size_expr = BuildRangeSizeExpr<int32>(
+              ctx->InputExpression(0), ctx->InputExpression(1),
+              ctx->InputExpression(2), start, limit, delta, size);
+        }
         output = CreateRangeTensor<int32>(start, limit, delta, ctx->builder(),
                                           size_expr);
         break;
@@ -209,13 +232,14 @@ class RangeOp : public XlaOpKernel {
                 : (std::abs(limit_value - start_value) - 1) /
                           std::abs(delta_value) +
                       1;
-        xla::DExpr size_expr =
-            HasStaticScalarContent(ctx->InputExpression(2))
-                ? BuildRangeSizeExpr<int64_t>(ctx->InputExpression(0),
-                                              ctx->InputExpression(1),
-                                              ctx->InputExpression(2), start,
-                                              limit, delta, size)
-                : xla::DExpr::Const(size);
+        xla::DExpr size_expr = xla::DExpr::Const(size);
+        if (HasDynamicContent(ctx->InputExpression(0)) ||
+            HasDynamicContent(ctx->InputExpression(1)) ||
+            HasDynamicContent(ctx->InputExpression(2))) {
+          size_expr = BuildRangeSizeExpr<int64_t>(
+              ctx->InputExpression(0), ctx->InputExpression(1),
+              ctx->InputExpression(2), start, limit, delta, size);
+        }
         output = CreateRangeTensor<int64_t>(start, limit, delta, ctx->builder(),
                                             size_expr);
         break;
@@ -257,9 +281,11 @@ class RangeOp : public XlaOpKernel {
 
     const XlaExpression& start_expr = ctx->InputExpression(0);
     const XlaExpression& delta_expr = ctx->InputExpression(2);
+    const XlaExpression& limit_expr = ctx->InputExpression(1);
     const bool symbolic_enabled = SymbolicContentEnabled();
     const bool has_dynamic_content =
-        HasDynamicContent(start_expr) || HasDynamicContent(delta_expr);
+        HasDynamicContent(start_expr) || HasDynamicContent(delta_expr) ||
+        HasDynamicContent(limit_expr);
 
     if (type == DT_INT32) {
       int32 start_value = start.Get<int32>({});

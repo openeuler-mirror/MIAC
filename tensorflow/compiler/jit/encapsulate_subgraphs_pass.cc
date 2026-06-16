@@ -120,30 +120,6 @@ void MarkGuaranteedConstants(
   }
 }
 
-// Helper to convert ExpressionProto to a readable string.
-std::string ExprProtoToString(const ExpressionProto& e) {
-  switch (e.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return std::to_string(e.constant_value());
-    case ExpressionProto::kVariableId:
-      return absl::StrCat("Var(", e.variable_id(), ")");
-    case ExpressionProto::kAddNode:
-      return absl::StrCat("(", ExprProtoToString(e.add_node().lhs()), " + ",
-                         ExprProtoToString(e.add_node().rhs()), ")");
-    case ExpressionProto::kSubNode:
-      return absl::StrCat("(", ExprProtoToString(e.sub_node().lhs()), " - ",
-                         ExprProtoToString(e.sub_node().rhs()), ")");
-    case ExpressionProto::kMulNode:
-      return absl::StrCat("(", ExprProtoToString(e.mul_node().lhs()), " * ",
-                         ExprProtoToString(e.mul_node().rhs()), ")");
-    case ExpressionProto::kDivNode:
-      return absl::StrCat("(", ExprProtoToString(e.div_node().lhs()), " / ",
-                         ExprProtoToString(e.div_node().rhs()), ")");
-    default:
-      return "<none>";
-  }
-}
-
 struct OutputInputTensorPairHasher {
   uint64 operator()(std::pair<OutputTensor, InputTensor> const& s) const {
     return Hash64Combine(OutputTensor::Hash()(s.first),
