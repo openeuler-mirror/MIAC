@@ -48,14 +48,17 @@ namespace {
     explicit NAME##Op(OpKernelConstruction* ctx) : XlaBinaryOp(ctx) {}     \
     xla::XlaOp Computation(                                                \
         XlaOpKernelContext* ctx, const xla::XlaOp& lhs,                    \
-        const absl::Span<const int64_t>& lhs_shape, const xla::XlaOp& rhs, \
+        const absl::Span<const int64_t>& lhs_shape,                        \
+        const xla::XlaOp& rhs,                                             \
         const absl::Span<const int64_t>& rhs_shape,                        \
         const BCast& broadcast_helper,                                     \
+        const absl::Span<const xla::DExpr>& broadcast_output_exprs,        \
         const std::vector<int64_t>& extend_dimensions) override {          \
       xla::XlaBuilder* b = ctx->builder();                                 \
       (void)b;                                                             \
       (void)lhs_shape;                                                     \
       (void)rhs_shape;                                                     \
+      (void)broadcast_output_exprs;                                        \
       (void)extend_dimensions;                                             \
       return HLO;                                                          \
     }                                                                      \
@@ -87,8 +90,12 @@ XLA_MAKE_BINARY(Complex, xla::Complex(lhs, rhs, extend_dimensions), xla::DExpr()
 //   return x / y;
 // }
 static xla::XlaOp DivNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
-                               xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+                               xla::XlaOp y,
+                               const absl::Span<const xla::DExpr>&
+                                   broadcast_output_exprs,
+                               const BCast& broadcast_helper) {
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto y_equals_0 = xla::Eq(y, zero);
   auto zeros = xla::ZerosLike(x);
@@ -96,7 +103,8 @@ static xla::XlaOp DivNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return result;
 }
 XLA_MAKE_BINARY(DivNoNan,
-                DivNoNanImpl(b, input_type(0), lhs, rhs, broadcast_helper),
+                DivNoNanImpl(b, input_type(0), lhs, rhs,
+                             broadcast_output_exprs, broadcast_helper),
                 xla::DExpr());
 
 // Implementation of MulNoNan. Pseudo-code:
@@ -106,8 +114,12 @@ XLA_MAKE_BINARY(DivNoNan,
 //   return x * y;
 // }
 static xla::XlaOp MulNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
-                               xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+                               xla::XlaOp y,
+                               const absl::Span<const xla::DExpr>&
+                                   broadcast_output_exprs,
+                               const BCast& broadcast_helper) {
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto y_equals_0 = xla::Eq(y, zero);
   auto zeros = xla::ZerosLike(x);
@@ -115,7 +127,8 @@ static xla::XlaOp MulNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return result;
 }
 XLA_MAKE_BINARY(MulNoNan,
-                MulNoNanImpl(b, input_type(0), lhs, rhs, broadcast_helper),
+                MulNoNanImpl(b, input_type(0), lhs, rhs,
+                             broadcast_output_exprs, broadcast_helper),
                 xla::DExpr());
 
 // Implementation of FloorDiv.
@@ -129,8 +142,12 @@ XLA_MAKE_BINARY(MulNoNan,
 //   return z;
 // }
 static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
-                               xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+                               xla::XlaOp y,
+                               const absl::Span<const xla::DExpr>&
+                                   broadcast_output_exprs,
+                               const BCast& broadcast_helper) {
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   if (DataTypeIsFloating(dtype)) {
     if (dtype == DataType::DT_BFLOAT16) {
       // The result of a BF16 division may produce the Ceil of what was
@@ -155,45 +172,61 @@ static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return xla::Select(round_down, xla::Sub(x_div_y, one), x_div_y);
 }
 XLA_MAKE_BINARY(FloorDiv,
-                FloorDivImpl(b, input_type(0), lhs, rhs, broadcast_helper),
+                FloorDivImpl(b, input_type(0), lhs, rhs,
+                             broadcast_output_exprs, broadcast_helper),
                 (lhs / rhs).simplify());
 
 xla::XlaOp XlogyImpl(xla::XlaOp x, xla::XlaOp y,
+                     const absl::Span<const xla::DExpr>& broadcast_output_exprs,
                      const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   auto zero = xla::ZerosLike(x);
   auto is_zero = xla::Eq(x, zero);
   return xla::Select(is_zero, zero, xla::Mul(x, xla::Log(y)));
 }
-XLA_MAKE_BINARY(Xlogy, XlogyImpl(lhs, rhs, broadcast_helper), xla::DExpr());
+XLA_MAKE_BINARY(Xlogy,
+                XlogyImpl(lhs, rhs, broadcast_output_exprs, broadcast_helper),
+                xla::DExpr());
 
 xla::XlaOp Xlog1pyImpl(xla::XlaOp x, xla::XlaOp y,
+                       const absl::Span<const xla::DExpr>& broadcast_output_exprs,
                        const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   auto non_zero = xla::Mul(x, xla::Log1p(y));
   auto zero = xla::ZerosLike(non_zero);
   auto x_is_zero = xla::Eq(x, zero);
   return xla::Select(x_is_zero, zero, non_zero);
 }
-XLA_MAKE_BINARY(Xlog1py, Xlog1pyImpl(lhs, rhs, broadcast_helper),
+XLA_MAKE_BINARY(Xlog1py,
+                Xlog1pyImpl(lhs, rhs, broadcast_output_exprs, broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp XdivyImpl(xla::XlaOp x, xla::XlaOp y,
+                     const absl::Span<const xla::DExpr>& broadcast_output_exprs,
                      const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   auto zero = xla::ZerosLike(x);
   auto is_zero = xla::Eq(x, zero);
   return xla::Select(is_zero, zero, xla::Div(x, y));
 }
-XLA_MAKE_BINARY(Xdivy, XdivyImpl(lhs, rhs, broadcast_helper), xla::DExpr());
+XLA_MAKE_BINARY(Xdivy,
+                XdivyImpl(lhs, rhs, broadcast_output_exprs, broadcast_helper),
+                xla::DExpr());
 
 // Implementation of FloorMod. Pseudo-code:
 // T trunc_mod = std::fmod(x, y);
 // return trunc_mod != 0 && (y < 0 != trunc_mod < 0) ? trunc_mod + y
 //                                                   : trunc_mod;
 static xla::XlaOp FloorModImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
-                               xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+                               xla::XlaOp y,
+                               const absl::Span<const xla::DExpr>&
+                                   broadcast_output_exprs,
+                               const BCast& broadcast_helper) {
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto trunc_mod = xla::Rem(x, y);
   auto trunc_mod_not_zero = xla::Ne(trunc_mod, zero);
@@ -202,7 +235,8 @@ static xla::XlaOp FloorModImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return xla::Select(do_plus, xla::Add(trunc_mod, y), trunc_mod);
 }
 XLA_MAKE_BINARY(FloorMod,
-                FloorModImpl(b, input_type(0), lhs, rhs, broadcast_helper),
+                FloorModImpl(b, input_type(0), lhs, rhs,
+                             broadcast_output_exprs, broadcast_helper),
                 xla::DExpr());
 
 XLA_MAKE_BINARY(BitwiseAnd, xla::And(lhs, rhs, extend_dimensions),
@@ -250,9 +284,13 @@ XLA_MAKE_BINARY(
 // For floating-point values, returns trunc(x / y).  For integers, simply
 // returns x / y.
 static xla::XlaOp TruncateDivImpl(xla::XlaBuilder* b, DataType dtype,
-                                  xla::XlaOp x, xla::XlaOp y,
+                                  xla::XlaOp x,
+                                  xla::XlaOp y,
+                                  const absl::Span<const xla::DExpr>&
+                                      broadcast_output_exprs,
                                   const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   if (!DataTypeIsFloating(dtype)) {
     return xla::Div(x, y);
   }
@@ -262,7 +300,8 @@ static xla::XlaOp TruncateDivImpl(xla::XlaBuilder* b, DataType dtype,
   return xla::Select(round_up, xla::Ceil(x_div_y), xla::Floor(x_div_y));
 }
 XLA_MAKE_BINARY(TruncateDiv,
-                TruncateDivImpl(b, input_type(0), lhs, rhs, broadcast_helper),
+                TruncateDivImpl(b, input_type(0), lhs, rhs,
+                                broadcast_output_exprs, broadcast_helper),
                 (lhs / rhs).simplify());
 XLA_MAKE_BINARY(TruncateMod, xla::Rem(lhs, rhs, extend_dimensions),
                 xla::DExpr());
@@ -318,56 +357,82 @@ XLA_MAKE_BINARY(SquaredDifference,
                 xla::DExpr());
 
 xla::XlaOp IgammaImpl(xla::XlaOp x, xla::XlaOp y,
+                      const absl::Span<const xla::DExpr>& broadcast_output_exprs,
                       const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   return xla::Igamma(x, y);
 }
 
-XLA_MAKE_BINARY(Igamma, IgammaImpl(lhs, rhs, broadcast_helper), xla::DExpr());
+XLA_MAKE_BINARY(Igamma,
+                IgammaImpl(lhs, rhs, broadcast_output_exprs, broadcast_helper),
+                xla::DExpr());
 
 xla::XlaOp IgammaGradAImpl(xla::XlaOp x, xla::XlaOp y,
+                           const absl::Span<const xla::DExpr>&
+                               broadcast_output_exprs,
                            const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   return xla::IgammaGradA(x, y);
 }
 
-XLA_MAKE_BINARY(IgammaGradA, IgammaGradAImpl(lhs, rhs, broadcast_helper),
+XLA_MAKE_BINARY(IgammaGradA,
+                IgammaGradAImpl(lhs, rhs, broadcast_output_exprs,
+                                broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp RandomGammaGradImpl(xla::XlaOp x, xla::XlaOp y,
+                               const absl::Span<const xla::DExpr>&
+                                   broadcast_output_exprs,
                                const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   return xla::RandomGammaGrad(x, y);
 }
 
 XLA_MAKE_BINARY(RandomGammaGrad,
-                RandomGammaGradImpl(lhs, rhs, broadcast_helper),
+                RandomGammaGradImpl(lhs, rhs, broadcast_output_exprs,
+                                    broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp IgammacImpl(xla::XlaOp x, xla::XlaOp y,
+                       const absl::Span<const xla::DExpr>& broadcast_output_exprs,
                        const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper,
+                                          broadcast_output_exprs);
   return xla::Igammac(x, y);
 }
 
-XLA_MAKE_BINARY(Igammac, IgammacImpl(lhs, rhs, broadcast_helper),
+XLA_MAKE_BINARY(Igammac,
+                IgammacImpl(lhs, rhs, broadcast_output_exprs, broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp PolygammaImpl(xla::XlaOp n, xla::XlaOp x,
+                         const absl::Span<const xla::DExpr>&
+                             broadcast_output_exprs,
                          const BCast& broadcast_helper) {
-  std::tie(n, x) = XlaBinaryOp::Broadcast(n, x, broadcast_helper);
+  std::tie(n, x) = XlaBinaryOp::Broadcast(n, x, broadcast_helper,
+                                          broadcast_output_exprs);
   return xla::Polygamma(n, x);
 }
 
-XLA_MAKE_BINARY(Polygamma, PolygammaImpl(lhs, rhs, broadcast_helper),
+XLA_MAKE_BINARY(Polygamma,
+                PolygammaImpl(lhs, rhs, broadcast_output_exprs,
+                              broadcast_helper),
                 xla::DExpr());
 
-xla::XlaOp ZetaImpl(xla::XlaOp x, xla::XlaOp q, const BCast& broadcast_helper) {
-  std::tie(x, q) = XlaBinaryOp::Broadcast(x, q, broadcast_helper);
+xla::XlaOp ZetaImpl(xla::XlaOp x, xla::XlaOp q,
+                    const absl::Span<const xla::DExpr>& broadcast_output_exprs,
+                    const BCast& broadcast_helper) {
+  std::tie(x, q) = XlaBinaryOp::Broadcast(x, q, broadcast_helper,
+                                          broadcast_output_exprs);
   return xla::Zeta(x, q);
 }
 
-XLA_MAKE_BINARY(Zeta, ZetaImpl(lhs, rhs, broadcast_helper), xla::DExpr());
+XLA_MAKE_BINARY(Zeta,
+                ZetaImpl(lhs, rhs, broadcast_output_exprs, broadcast_helper),
+                xla::DExpr());
 
 #undef XLA_MAKE_BINARY
 

@@ -65,6 +65,7 @@ class XlaBinaryOp : public XlaOpKernel {
       XlaOpKernelContext* ctx, const xla::XlaOp& lhs,
       const absl::Span<const int64_t>& lhs_shape, const xla::XlaOp& rhs,
       const absl::Span<const int64_t>& rhs_shape, const BCast& broadcast_helper,
+      const absl::Span<const xla::DExpr>& broadcast_output_exprs,
       const std::vector<int64_t>& extend_dimensions) = 0;
 
   // Returns a symbolic expression for one output element when content metadata
@@ -81,7 +82,8 @@ class XlaBinaryOp : public XlaOpKernel {
   // 'broadcast_helper', yielding arguments 'lhs' and 'rhs' that have the same
   // shape.
   static std::pair<xla::XlaOp, xla::XlaOp> Broadcast(
-      xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper);
+      xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper,
+      absl::Span<const xla::DExpr> output_exprs);
 };
 
 }  // namespace tensorflow

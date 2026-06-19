@@ -27,6 +27,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/math_ops.h"
 #include "tensorflow/cc/ops/resource_variable_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/side_effect_util.h"
@@ -61,6 +62,7 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
+#include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
@@ -272,9 +274,9 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
   std::vector<XlaCompiler::Argument> args(2);
   args[0].kind = XlaCompiler::Argument::kParameter;
   args[0].type = DT_INT32;
-  args[0].shape =
-      xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32, /*dimensions=*/{2},
-                                /*dynamic_dimensions=*/{true});
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      /*element_type=*/xla::S32, /*dimensions=*/{2},
+      /*dynamic_dimensions=*/{true}, /*expressions=*/{});
   args[1].kind = XlaCompiler::Argument::kParameter;
   args[1].type = DT_INT32;
   args[1].shape = TensorShape(/*dimensions=*/{2});
@@ -293,6 +295,103 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
                   ->parameter_instruction(0)
                   ->shape()
                   .is_dynamic());
+}
+
+// Tests compilation preserves dynamic shape expressions through scalar
+// broadcasting in standard binary ops.
+TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressionsInAdd) {
+  auto* flags = GetMarkForCompilationPassFlags();
+  bool old_dynamic_sizes = flags->tf_xla_enable_dynamic_sizes;
+  flags->tf_xla_enable_dynamic_sizes = true;
+  auto restore_dynamic_sizes = gtl::MakeCleanup([&] {
+    flags->tf_xla_enable_dynamic_sizes = old_dynamic_sizes;
+  });
+
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto a = ops::_Arg(scope.WithOpName("A"), DT_INT32, 0);
+  auto scalar = ops::Const(scope.WithOpName("Scalar"), 7);
+  auto add = ops::Add(scope.WithOpName("Add"), a, scalar);
+  auto ret = ops::_Retval(scope.WithOpName("Ret"), add, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      /*element_type=*/xla::S32, /*dimensions=*/{2, 1},
+      /*dynamic_dimensions=*/{true, false},
+      /*expressions=*/{xla::DExpr::Var(1), xla::DExpr::Const(1)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompileOptions compile_options;
+  compile_options.always_return_tuple = false;
+  compile_options.is_entry_computation = false;
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(compile_options, "broadcast_add",
+                                     std::move(graph), args, &result));
+
+  auto hlo = result.computation->proto();
+  TF_ASSERT_OK_AND_ASSIGN(auto module, LoadModuleFromHloProto(hlo));
+  EXPECT_EQ(module->computation_count(), 1);
+
+  const xla::Shape& root_shape =
+      module->entry_computation()->root_instruction()->shape();
+  ASSERT_EQ(root_shape.dimensions_size(), 2);
+  ASSERT_EQ(root_shape.expressions().size(), 2);
+  EXPECT_TRUE(root_shape.expressions(0) &&
+              root_shape.expressions(0)->is_dynamic());
+  EXPECT_TRUE(root_shape.expressions(1) &&
+              root_shape.expressions(1)->is_constant());
+}
+
+// Tests compilation preserves dynamic shape expressions through scalar
+// broadcasting in binary ops that use the explicit tf2xla broadcast helper.
+TEST_F(XlaCompilerTest,
+       ScalarBroadcastPreservesDynamicShapeExpressionsInFloorMod) {
+  auto* flags = GetMarkForCompilationPassFlags();
+  bool old_dynamic_sizes = flags->tf_xla_enable_dynamic_sizes;
+  flags->tf_xla_enable_dynamic_sizes = true;
+  auto restore_dynamic_sizes = gtl::MakeCleanup([&] {
+    flags->tf_xla_enable_dynamic_sizes = old_dynamic_sizes;
+  });
+
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto a = ops::_Arg(scope.WithOpName("A"), DT_INT32, 0);
+  auto scalar = ops::Const(scope.WithOpName("Scalar"), 7);
+  auto floormod = ops::FloorMod(scope.WithOpName("FloorMod"), a, scalar);
+  auto ret = ops::_Retval(scope.WithOpName("Ret"), floormod, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      /*element_type=*/xla::S32, /*dimensions=*/{2, 1},
+      /*dynamic_dimensions=*/{true, false},
+      /*expressions=*/{xla::DExpr::Var(1), xla::DExpr::Const(1)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompileOptions compile_options;
+  compile_options.always_return_tuple = false;
+  compile_options.is_entry_computation = false;
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(compile_options, "broadcast_floormod",
+                                     std::move(graph), args, &result));
+
+  auto hlo = result.computation->proto();
+  TF_ASSERT_OK_AND_ASSIGN(auto module, LoadModuleFromHloProto(hlo));
+  EXPECT_EQ(module->computation_count(), 1);
+
+  const xla::Shape& root_shape =
+      module->entry_computation()->root_instruction()->shape();
+  ASSERT_EQ(root_shape.dimensions_size(), 2);
+  ASSERT_EQ(root_shape.expressions().size(), 2);
+  EXPECT_TRUE(root_shape.expressions(0) &&
+              root_shape.expressions(0)->is_dynamic());
+  EXPECT_TRUE(root_shape.expressions(1) &&
+              root_shape.expressions(1)->is_constant());
 }
 
 // Tests compilation of a graph where the _Retval node is not necessarily last
