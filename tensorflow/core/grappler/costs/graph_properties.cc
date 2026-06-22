@@ -39,6 +39,7 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/gtl/flatset.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -55,10 +56,30 @@ using TensorVector = absl::InlinedVector<TensorValue, 4UL>;
 // Some ops treat "-1" specially, different from UnknownDim:
 // e.g., shape input to Reshape op.
 const int64_t kUnknownDimFromConst = INT64_MAX;
+constexpr char kInputArgSharedSymbolIdEnvVar[] =
+    "TF_GRAPPLER_INPUT_ARG_SHARED_SYMBOL_ID";
 
 // Skip const value instantiation if the number of elements in a const tensor
 // is greater than this threshold.
 const int kThresholdToSkipConstTensorInstantiation = 128;
+
+bool IsPlaceholderOp(absl::string_view op_name) {
+  return op_name == "Placeholder" || op_name == "PlaceholderV2" ||
+         op_name == "PlaceholderWithDefault";
+}
+
+int LoadInputArgSharedSymbolId() {
+  int64_t symbol_id = -1;
+  absl::Status status =
+      ReadInt64FromEnvVar(kInputArgSharedSymbolIdEnvVar, -1, &symbol_id);
+  if (!status.ok()) {
+    LOG(WARNING) << "Failed to read " << kInputArgSharedSymbolIdEnvVar
+                 << ": " << status
+                 << ". Falling back to default shared symbol id -1.";
+    return -1;
+  }
+  return static_cast<int>(symbol_id);
+}
 
 template <typename Handle>
 struct HashHandle {
@@ -652,16 +673,25 @@ class SymbolicShapeRefiner {
   explicit SymbolicShapeRefiner(
       const GraphView& graph,
       const absl::flat_hash_map<string, absl::flat_hash_set<int>>& fed_ports,
-      const bool aggressive_shape_inference)
+      const bool aggressive_shape_inference,
+      absl::flat_hash_set<string> top_level_input_placeholders)
       : graph_(graph),
         function_library_(OpRegistry::Global(), graph.graph()->library()),
         fed_ports_(fed_ports),
+        top_level_input_placeholders_(
+            std::move(top_level_input_placeholders)),
+        input_arg_shared_symbol_id_(LoadInputArgSharedSymbolId()),
         aggressive_shape_inference_(aggressive_shape_inference) {
     graph_def_version_ = graph.graph()->versions().producer();
     node_to_context_.reserve(graph.graph()->node_size());
   }
 
   const GraphView& graph() const { return graph_; }
+
+  bool IsInputArg(const NodeDef& node) const {
+    return node.op() == "_Arg" &&
+           top_level_input_placeholders_.contains(node.name());
+  }
 
   struct NodeContext {
     const OpRegistrationData* op_data;
@@ -1415,18 +1445,18 @@ class SymbolicShapeRefiner {
       return it->second;
     }
     InferenceContext* c = GetContext(node);
-    int var_id = GetOrCreateStableVarId(id);
-    DimensionHandle dim;
-    if (node->op() == "_Arg") {
-      var_id *= -1;
-      // var_id would be minus when it's argument.
-      dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
-    } else {
-      dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
-    }
-    VLOG(1) << "[EXPR] GetUnknownOutputDim: node=" << node->name()
-            << " out=" << index << " dim=" << dim_id << " -> Var(" << var_id
-            << ")";
+    int var_id =
+        IsInputArg(*node) ? input_arg_shared_symbol_id_
+                          : GetOrCreateStableVarId(id);
+
+    DimensionHandle dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
+
+    VLOG(1) << "[EXPR] GetUnknownOutputDim: node = " << node->name()
+            << " op = " << node->op()
+            << " out = " << index
+            << " dim = " << dim_id
+            << " -> Var(" << var_id << ")";
+
     // Create an unknown dim with Var(var_id) expression.
     unknown_dims_[id] = dim;
     return dim;
@@ -2370,6 +2400,8 @@ class SymbolicShapeRefiner {
       fun_to_grappler_function_item_;
   FunctionLibraryDefinition function_library_;
   const absl::flat_hash_map<string, absl::flat_hash_set<int>>& fed_ports_;
+  const absl::flat_hash_set<string> top_level_input_placeholders_;
+  const int input_arg_shared_symbol_id_;
   // Store TensorProtos for tensor value propagation. Note that we use deque,
   // not vector, as we use pointers to the TensorProtos in this container.
   // Vector may resize and copy the objects into a new buffer, then the existing
@@ -3067,8 +3099,15 @@ absl::Status GraphProperties::InferStatically(
 
   // Heap-allocate SymbolicShapeRefiner in order to not consume a large amount
   // of stack space.
+  absl::flat_hash_set<string> top_level_input_placeholders;
+  for (const NodeDef& node : item_.graph.node()) {
+    if (IsPlaceholderOp(node.op()) || node.op() == "_Arg") {
+      top_level_input_placeholders.insert(node.name());
+    }
+  }
   auto refiner = std::make_unique<SymbolicShapeRefiner>(
-      graph_view, fed_ports, aggressive_shape_inference);
+      graph_view, fed_ports, aggressive_shape_inference,
+      std::move(top_level_input_placeholders));
 
   TopoQueue new_shapes(topo_order);
   // Also seed the propagation of shapes in the fanout of primary inputs.
