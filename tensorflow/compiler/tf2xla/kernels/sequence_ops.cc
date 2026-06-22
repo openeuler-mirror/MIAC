@@ -92,36 +92,14 @@ xla::DExpr BuildRangeSizeExpr(const XlaExpression& start_expr,
   xla::DExpr limit_symbol = GetScalarExpr<T>(limit_expr, limit);
   xla::DExpr delta_symbol = GetScalarExpr<T>(delta_expr, delta);
 
-  // If any of start/limit/delta have an explicit symbolic content,
-  // prefer using that content when building the size expression. This
-  // allows Size/Shape produced DExprs to be propagated through to
-  // Range size computation.
-  const auto& start_contents = start_expr.contents();
-  xla::DExpr effective_start = (!start_contents.empty() && start_contents[0])
-                                    ? start_contents[0]
-                                    : start_symbol;
-
-  const auto& limit_contents = limit_expr.contents();
-  xla::DExpr effective_limit = (!limit_contents.empty() && limit_contents[0])
-                                    ? limit_contents[0]
-                                    : limit_symbol;
-
-  const auto& delta_contents = delta_expr.contents();
-  xla::DExpr effective_delta = (!delta_contents.empty() && delta_contents[0])
-                                    ? delta_contents[0]
-                                    : delta_symbol;
-
-  // Use the delta literal for sign decisions, but use the (possibly)
-  // symbolic effective_delta for arithmetic so symbolic content is
-  // preserved when present.
   if (delta.Get<T>({}) > 0) {
-    xla::DExpr diff = (effective_limit - effective_start).simplify();
+    xla::DExpr diff = (limit_symbol - start_symbol).simplify();
     xla::DExpr adjusted = (diff - 1).simplify();
-    xla::DExpr quotient = (adjusted / effective_delta).simplify();
+    xla::DExpr quotient = (adjusted / delta_symbol).simplify();
     return (quotient + 1).simplify();
   }
-  xla::DExpr step_symbol = (xla::DExpr::Const(0) - effective_delta).simplify();
-  xla::DExpr diff = (effective_start - effective_limit).simplify();
+  xla::DExpr step_symbol = (xla::DExpr::Const(0) - delta_symbol).simplify();
+  xla::DExpr diff = (start_symbol - limit_symbol).simplify();
   xla::DExpr adjusted = (diff - 1).simplify();
   xla::DExpr quotient = (adjusted / step_symbol).simplify();
   return (quotient + 1).simplify();
@@ -280,8 +258,8 @@ class RangeOp : public XlaOpKernel {
     }
 
     const XlaExpression& start_expr = ctx->InputExpression(0);
-    const XlaExpression& delta_expr = ctx->InputExpression(2);
     const XlaExpression& limit_expr = ctx->InputExpression(1);
+    const XlaExpression& delta_expr = ctx->InputExpression(2);
     const bool symbolic_enabled = SymbolicContentEnabled();
     const bool has_dynamic_content =
         HasDynamicContent(start_expr) || HasDynamicContent(delta_expr) ||

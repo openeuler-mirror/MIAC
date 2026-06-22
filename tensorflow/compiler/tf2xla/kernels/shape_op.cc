@@ -316,8 +316,6 @@ class SizeOp : public XlaOpKernel {
     auto size = xla::One(builder, ctx->output_xla_type(0));
 
     const int rank = input_shape.dims();
-    bool any_dynamic = false;
-    int64_t const_size = 1;
     // Accumulated symbolic content for the running product. Start with 1.
     xla::DExpr prod_expr = xla::DExpr::Const(static_cast<int32>(1));
 
@@ -351,17 +349,12 @@ class SizeOp : public XlaOpKernel {
       // Update running product.
       size = xla::Mul(size, converted);
 
-      // Update const tracking and mark dynamic if needed.
-      if (!this_dynamic) {
-        const_size = const_size * input_shape.dim_size(dim);
-      } else {
-        any_dynamic = true;
-      }
-
       // Update the accumulated symbolic product expression.
       // factor is the symbolic content for the current dimension's size.
-      xla::DExpr factor = (content.size() > 0 && content[0]) ? content[0]
-                                                               : xla::DExpr::Unknown(xla::kUnknownContentSentinel);
+      xla::DExpr factor =
+          (content.size() > 0 && content[0])
+              ? content[0]
+              : xla::DExpr::Unknown(xla::kUnknownContentSentinel);
       if (prod_expr && factor) {
         prod_expr = (prod_expr * factor).simplify();
       } else {
@@ -382,10 +375,6 @@ class SizeOp : public XlaOpKernel {
       // conservative Unknown/Const behavior.
       if (prod_expr) {
         output.set_contents({prod_expr});
-      } else if (any_dynamic) {
-        output.set_contents({xla::DExpr::Unknown(xla::kUnknownContentSentinel)});
-      } else {
-        output.set_contents({xla::DExpr::Const(static_cast<int32>(const_size))});
       }
       ctx->SetOutputExpression(0, output);
     } else {
