@@ -4348,7 +4348,7 @@ class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
   absl::Status TrySimplify(NodeDef* gather_node,
                            string* simplified_node_name) override {
     if (IsInPreserveSet(*gather_node)) return absl::OkStatus();
-    LOG(INFO) << "SimplifyGatherOfConcatStage::TrySimplify: "
+    VLOG(1) << "SimplifyGatherOfConcatStage::TrySimplify: "
               << gather_node->name();
 
     NodeDef* source_node = nullptr;
