@@ -137,10 +137,28 @@ static int64_t GetNextPowerOfTwo(int64_t real_batch) {
   return power;
 }
 
-// Factor-preserving padding: expand by a small integer multiplier.
-// k=10 for tiny batches to reduce recompilation churn; otherwise k=2.
+// Small/large multipliers for padding are configurable via environment variables:
+// TF_XLA_BATCH_SMALL_FACTOR (default 10) and TF_XLA_BATCH_LARGE_FACTOR (default 2).
+static int64_t GetEnvFactorOrDefault(const char* name, int64_t def) {
+  const char* val = std::getenv(name);
+  if (val == nullptr) return def;
+  int64_t parsed = 0;
+  if (!absl::SimpleAtoi(val, &parsed) || parsed <= 0) {
+    LOG(WARNING) << "[XLA_BATCH_WARN] Failed to parse env var " << name
+                 << "=\"" << val << "\", using default: " << def;
+    return def;
+  }
+  return parsed;
+}
+
 static int64_t GetFactorPreservingBatch(int64_t real_batch) {
-  const int64_t k = (real_batch < 10) ? 10 : 2;
+  // Cache env values in function-local statics (thread-safe since C++11).
+  static const int64_t small_factor =
+      GetEnvFactorOrDefault("TF_XLA_BATCH_SMALL_FACTOR", 10);
+  static const int64_t large_factor =
+      GetEnvFactorOrDefault("TF_XLA_BATCH_LARGE_FACTOR", 2);
+
+  const int64_t k = (real_batch < 10) ? small_factor : large_factor;
   // Guard overflow / max range.
   if (real_batch > kMaxBatch / k) {
     LOG(WARNING) << "[XLA_BATCH_ERR] Out of valid range: " << real_batch;
