@@ -206,6 +206,26 @@ cc_library(
     ],
 )
 
+tf_cc_test(
+    name = "variable_freezing_test",
+    srcs = ["variable_freezing_test.cc"],
+    linkstatic = 1,
+    deps = [
+        ":constants",
+        ":variable_freezing",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:tensorflow",
+        "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/platform:tstring",
+        "//tensorflow/core/util/tensor_bundle",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 cc_library(
     name = "loader_util",
     srcs = ["loader_util.cc"],
