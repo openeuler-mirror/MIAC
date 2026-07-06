@@ -118,6 +118,44 @@ TEST_F(CpuDynamicShapeTest, DynamicExpressionConcatDoesNotUseFastPath) {
                                 /*match_optimized_ir=*/false);
 }
 
+TEST_F(CpuDynamicShapeTest, StaticConcatUsesFastPath) {
+  HloComputation::Builder builder(TestName());
+
+  Shape operand_shape = ShapeUtil::MakeShape(F32, {128, 26, 4});
+  Shape concat_shape = ShapeUtil::MakeShape(F32, {128, 26, 8});
+
+  HloInstruction* lhs = builder.AddInstruction(
+      HloInstruction::CreateParameter(0, operand_shape, "lhs"));
+  HloInstruction* rhs = builder.AddInstruction(
+      HloInstruction::CreateParameter(1, operand_shape, "rhs"));
+  HloInstruction* concat = builder.AddInstruction(
+      HloInstruction::CreateConcatenate(concat_shape, {lhs, rhs}, 2));
+
+  builder.AddInstruction(HloInstruction::CreateBinary(
+      concat_shape, HloOpcode::kAdd, concat, concat));
+
+  auto hlo_module = CreateNewVerifiedModule();
+  hlo_module->AddEntryComputation(builder.Build());
+
+  std::string filecheck_pattern = R"(
+; CHECK: llvm.memcpy
+)";
+
+  CpuAotCompilationOptions options{
+      /*triple=*/kTargetTripleForHost, /*cpu_name=*/kTargetCpuForHost,
+      /*features=*/"",
+      /*entry_point_name=*/"entry",
+      /*relocation_model=*/CpuAotCompilationOptions::RelocationModel::Static};
+
+  hlo_module->mutable_config()
+      .mutable_debug_options()
+      .set_xla_cpu_use_thunk_runtime(false);
+
+  CompileAheadOfTimeAndVerifyIr(std::move(hlo_module), options,
+                                filecheck_pattern,
+                                /*match_optimized_ir=*/false);
+}
+
 }  // namespace
 }  // namespace cpu
 }  // namespace xla
