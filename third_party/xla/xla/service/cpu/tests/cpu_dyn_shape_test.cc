@@ -128,11 +128,8 @@ TEST_F(CpuDynamicShapeTest, StaticConcatUsesFastPath) {
       HloInstruction::CreateParameter(0, operand_shape, "lhs"));
   HloInstruction* rhs = builder.AddInstruction(
       HloInstruction::CreateParameter(1, operand_shape, "rhs"));
-  HloInstruction* concat = builder.AddInstruction(
+  builder.AddInstruction(
       HloInstruction::CreateConcatenate(concat_shape, {lhs, rhs}, 2));
-
-  builder.AddInstruction(HloInstruction::CreateBinary(
-      concat_shape, HloOpcode::kAdd, concat, concat));
 
   auto hlo_module = CreateNewVerifiedModule();
   hlo_module->AddEntryComputation(builder.Build());
