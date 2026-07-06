@@ -70,6 +70,54 @@ TEST_F(CpuDynamicShapeTest, DynamicShapeR2) {
                                 /*match_optimized_ir=*/false);
 }
 
+TEST_F(CpuDynamicShapeTest, DynamicExpressionConcatDoesNotUseFastPath) {
+  HloComputation::Builder builder(TestName());
+
+  std::vector<bool> dynamic_dimensions = {true, false, false};
+  std::vector<DExpr> dyn_operand_exprs = {DExpr::Var(0), DExpr::Const(26),
+                                          DExpr::Const(4)};
+  std::vector<DExpr> concat_exprs = {DExpr::Var(0), DExpr::Const(26),
+                                     DExpr::Const(8)};
+  Shape dyn_operand_shape = ShapeUtil::MakeShape(
+      F32, {128, 26, 4}, dynamic_dimensions, dyn_operand_exprs);
+  Shape concat_shape =
+      ShapeUtil::MakeShape(F32, {128, 26, 8}, dynamic_dimensions, concat_exprs);
+
+  HloInstruction* lhs = builder.AddInstruction(
+      HloInstruction::CreateParameter(0, dyn_operand_shape, "lhs"));
+  HloInstruction* rhs = builder.AddInstruction(
+      HloInstruction::CreateParameter(1, dyn_operand_shape, "rhs"));
+  HloInstruction* concat = builder.AddInstruction(
+      HloInstruction::CreateConcatenate(concat_shape, {lhs, rhs}, 2));
+
+  builder.AddInstruction(HloInstruction::CreateBinary(
+      concat_shape, HloOpcode::kAdd, concat, concat));
+
+  auto hlo_module = CreateNewVerifiedModule();
+  hlo_module->AddEntryComputation(builder.Build());
+
+  std::string filecheck_pattern = R"(
+; CHECK-NOT: llvm.memcpy
+; CHECK: %[[dyn_dim_size:.*]] = load i32, ptr
+; CHECK: %[[i64_dyn_dim_size:.*]] = sext i32 %[[dyn_dim_size]] to i64
+; CHECK: icmp uge i64
+)";
+
+  CpuAotCompilationOptions options{
+      /*triple=*/kTargetTripleForHost, /*cpu_name=*/kTargetCpuForHost,
+      /*features=*/"",
+      /*entry_point_name=*/"entry",
+      /*relocation_model=*/CpuAotCompilationOptions::RelocationModel::Static};
+
+  hlo_module->mutable_config()
+      .mutable_debug_options()
+      .set_xla_cpu_use_thunk_runtime(false);
+
+  CompileAheadOfTimeAndVerifyIr(std::move(hlo_module), options,
+                                filecheck_pattern,
+                                /*match_optimized_ir=*/false);
+}
+
 }  // namespace
 }  // namespace cpu
 }  // namespace xla
