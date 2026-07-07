@@ -41,6 +41,7 @@ limitations under the License.
 #include "tensorflow/core/platform/file_system_helper.h"
 #include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
+#include "tensorflow/core/protobuf/rewriter_config.pb.h"
 #include "tensorflow/core/protobuf/saver.pb.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/public/session_options.h"
@@ -295,8 +296,11 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
                                     SavedModelBundle* const bundle) {
   TF_RETURN_IF_ERROR(ReadMetaGraphDefFromSavedModel(export_dir, tags,
                                                     &bundle->meta_graph_def));
-  TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
-    export_dir, &bundle->meta_graph_def));
+  if (session_options.config.graph_options().rewrite_options()
+          .freeze_allowlisted_variables() != RewriterConfig::OFF) {
+    TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
+        export_dir, &bundle->meta_graph_def));
+  }
   TF_RETURN_IF_ERROR(
       ReadSavedModelDebugInfoIfPresent(export_dir, &bundle->debug_info));
   TF_RETURN_IF_ERROR(LoadMetagraphIntoSession(
@@ -434,8 +438,11 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
   MetaGraphDef meta_graph_def;
   TF_RETURN_IF_ERROR(
       ReadMetaGraphDefFromSavedModel(export_dir, tags, &meta_graph_def));
-  TF_RETURN_IF_ERROR(
-    internal::FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
+  if (session_options.config.graph_options().rewrite_options()
+          .freeze_allowlisted_variables() != RewriterConfig::OFF) {
+    TF_RETURN_IF_ERROR(
+        internal::FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
+  }
   std::unique_ptr<Session> session;
   TF_RETURN_IF_ERROR(LoadGraphDefIntoSession(
       session_options, std::move(*meta_graph_def.mutable_graph_def()),

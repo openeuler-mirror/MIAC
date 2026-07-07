@@ -128,6 +128,11 @@ message RewriterConfig {
   bool disable_meta_optimizer = 19;
   // Disable the TFG optimizer (off by default).
   bool disable_tfg_optimizer = 32;
+  // Freeze allowlisted read-only variables into Const nodes at SavedModel
+  // load time (default is ON). This runs before Session::Create, so it is
+  // not part of the grappler meta-optimizer pipeline; it is checked directly
+  // by the SavedModel loader.
+  Toggle freeze_allowlisted_variables = 34;
   // Optimizers registered by plugin (default is ON)
   Toggle use_plugin_optimizers = 28;
   // Conditional code motion (default is ON).
