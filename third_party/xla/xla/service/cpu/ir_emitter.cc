@@ -3478,8 +3478,6 @@ absl::Status IrEmitter::CanDoFastConcatenate(
               "expressions at operand index ",
               i));
     }
-    bool layouts_equal =
-        LayoutUtil::Equal(op->shape().layout(), output_shape.layout());
     if (!LayoutUtil::Equal(op->shape().layout(), output_shape.layout())) {
       return absl::Status(absl::StatusCode::kFailedPrecondition,
                           "Operand has mismatching layouts");
