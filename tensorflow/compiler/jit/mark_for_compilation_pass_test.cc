@@ -53,6 +53,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/test.h"
+#include "xla/shape_expr.h"
 
 using ::tensorflow::testing::FindNodeByName;
 
@@ -115,6 +116,74 @@ absl::flat_hash_map<string, std::vector<string>> GetClusterSets(
     std::sort(cluster_names->begin(), cluster_names->end());
   }
   return cluster_sets;
+}
+
+// Expressions may differ outside the smallest subtree containing all variables.
+TEST(XlaCompilationTest,
+     DynamicExpressionCompatibilityUsesSmallestCoveringSubexpression) {
+  const xla::DExpr shared_core =
+      xla::DExpr::Var(1) + xla::DExpr::Var(2);
+  const std::vector<xla::DExpr> compatible_exprs = {
+      shared_core + 2, shared_core + 3};
+
+  EXPECT_FALSE(
+      testing::CheckDynamicExpressionCompatibilityForTest(compatible_exprs)
+          .has_value());
+
+  const std::vector<xla::DExpr> incompatible_exprs = {
+      shared_core + 2,
+      (xla::DExpr::Var(1) - xla::DExpr::Var(2)) + 3};
+  const std::optional<std::string> incompatibility =
+      testing::CheckDynamicExpressionCompatibilityForTest(incompatible_exprs);
+
+  ASSERT_TRUE(incompatibility.has_value());
+  EXPECT_NE(incompatibility->find("same clusterable core"),
+            std::string::npos);
+}
+
+TEST(XlaCompilationTest,
+     DynamicExpressionCompatibilityRejectsDifferentVariableSets) {
+  const std::vector<xla::DExpr> exprs = {
+      xla::DExpr::Var(1) + xla::DExpr::Var(2),
+      xla::DExpr::Var(1) + xla::DExpr::Var(3)};
+
+  const std::optional<std::string> incompatibility =
+      testing::CheckDynamicExpressionCompatibilityForTest(exprs);
+
+  ASSERT_TRUE(incompatibility.has_value());
+  EXPECT_NE(incompatibility->find("same variable ids"), std::string::npos);
+}
+
+TEST(XlaCompilationTest,
+     DynamicExpressionCompatibilityUsesCompleteRepeatedVariableCore) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  const xla::DExpr b = xla::DExpr::Var(2);
+  const xla::DExpr shared_core = (a + b) * (a - b);
+  const std::vector<xla::DExpr> exprs = {shared_core + 2, shared_core + 3};
+
+  EXPECT_FALSE(
+      testing::CheckDynamicExpressionCompatibilityForTest(exprs).has_value());
+}
+
+TEST(XlaCompilationTest,
+     DynamicExpressionCompatibilityAcceptsSharedCoreWithDifferentScaling) {
+  const xla::DExpr shared_core =
+      xla::DExpr::Var(1) + xla::DExpr::Var(2);
+  const std::vector<xla::DExpr> exprs = {
+      shared_core / 240, shared_core, xla::DExpr::Const(3) * shared_core};
+
+  EXPECT_FALSE(
+      testing::CheckDynamicExpressionCompatibilityForTest(exprs).has_value());
+}
+
+TEST(XlaCompilationTest,
+     DynamicExpressionCompatibilityAcceptsSingleVariableExpressions) {
+  const std::vector<xla::DExpr> exprs = {
+      xla::DExpr::Var(1) + 2,
+      xla::DExpr::Var(1) * xla::DExpr::Const(3)};
+
+  EXPECT_FALSE(
+      testing::CheckDynamicExpressionCompatibilityForTest(exprs).has_value());
 }
 
 TEST(XlaCompilationTest, Chains) {

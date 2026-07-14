@@ -460,7 +460,15 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           has_dynamic = true;
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
-            xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
+            const int64_t runtime_batch_size = run_options->batch_size();
+            if (runtime_batch_size <= 0) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Cannot substitute dynamic output shape for output ", i,
+                  ", dimension ", dim,
+                  ": the XLA runtime batch size was not initialized"));
+            }
+            xla::DExpr batch_size =
+                xla::DExpr::Const(runtime_batch_size);
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             if (!subst_expr->is_constant()) {
               return absl::InvalidArgumentError(absl::StrCat(
@@ -476,7 +484,16 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             ScopedStepContainer* step_container = ctx->step_container();
             TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
-            xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
+            const int64_t runtime_batch_size = bsr->GetBatchSize();
+            if (runtime_batch_size <= 0) {
+              bsr->Unref();
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Cannot substitute dynamic output shape for output ", i,
+                  ", dimension ", dim,
+                  ": the XLA runtime batch size was not initialized"));
+            }
+            xla::DExpr batch_size =
+                xla::DExpr::Const(runtime_batch_size);
             // Just substitute Var(1) for now.
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             if (!subst_expr->is_constant()) {

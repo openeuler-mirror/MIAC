@@ -138,6 +138,45 @@ TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {
   EXPECT_EQ("A", DExprToString(expr.simplify()));
 }
 
+TEST_F(ShapeTest, DExprFindsSmallestSubexpressionCoveringAllVariables) {
+  const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
+  const DExpr expr = (shared_core + 2) * (shared_core + 3);
+
+  EXPECT_EQ(
+      shared_core,
+      expr.find_smallest_subexpression_covering_all_variables());
+}
+
+TEST_F(ShapeTest, DExprFindsCommonCoreAcrossRepeatedBranches) {
+  const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
+
+  EXPECT_EQ(shared_core,
+            (shared_core * shared_core)
+                .find_smallest_subexpression_covering_all_variables());
+  EXPECT_EQ(shared_core,
+            (shared_core * (DExpr::Const(3) + shared_core))
+                .find_smallest_subexpression_covering_all_variables());
+}
+
+TEST_F(ShapeTest, DExprUsesParentWhenChildCoresDiffer) {
+  const DExpr complete_expr =
+      (DExpr::Var(1) + DExpr::Var(2)) *
+      (DExpr::Var(1) - DExpr::Var(2));
+
+  EXPECT_EQ(
+      complete_expr,
+      complete_expr.find_smallest_subexpression_covering_all_variables());
+}
+
+TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
+  const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
+  const DExpr expr = (shared_core + 2) * (shared_core + 3);
+  const DExpr replacement = DExpr::Var(7);
+
+  EXPECT_EQ((replacement + 2) * (replacement + 3),
+            expr.replace_subexpression(shared_core, replacement));
+}
+
 TEST_F(ShapeTest, DeleteDimensions) {
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {5, 3, 2, 7, 9},
                                                     {2, 0, 1, 4, 3});
