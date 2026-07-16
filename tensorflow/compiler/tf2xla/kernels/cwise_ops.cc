@@ -240,6 +240,7 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             lhs = xla::SliceInDim(lhs, 0, rhs_xla_shape.dimensions(i), 1,
                                   /*dimno=*/i);
             lhs_tensor_shape->set_dim(i, rhs_xla_shape.dimensions(i));
+            lhs_tensor_shape->set_expression(i, rhs_xla_shape.expressions(i));
             // Propagate dynamic dimension.
             lhs = xla::SetDimensionSize(lhs, size, i);
           }
@@ -262,6 +263,7 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
                 lhs, xla::Zero(ctx->builder(), lhs_xla_shape.element_type()), i,
                 0, diff);
             lhs_tensor_shape->set_dim(i, rhs_xla_shape.dimensions(i));
+            lhs_tensor_shape->set_expression(i, rhs_xla_shape.expressions(i));
             // Propagate dynamic dimension.
             lhs = xla::SetDimensionSize(lhs, size, i);
           }
@@ -309,6 +311,10 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             lhs = xla::SetDimensionSize(lhs, size, i);
 
             lhs_tensor_shape->set_dim(i, rhs_xla_shape.dimensions(i));
+            lhs_tensor_shape->set_expression(
+                i, (lhs_tensor_shape->get_filled_expression(i) *
+                    rhs_xla_shape.expressions(i))
+                       .simplify());
           }
         }
       }
@@ -333,6 +339,67 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
                      rhs_shape.DebugString())));
     return;
   }
+
+  auto build_broadcast_output_expressions =
+      [&lhs_shape, &rhs_shape, &bcast]() -> std::vector<xla::DExpr> {
+    auto merge_broadcast_dim = [](bool has_lhs, int64_t lhs_dim,
+                                  const xla::DExpr& lhs_expr, bool has_rhs,
+                                  int64_t rhs_dim, const xla::DExpr& rhs_expr,
+                                  int64_t output_dim) {
+      if (!has_lhs) {
+        return rhs_expr;
+      }
+      if (!has_rhs) {
+        return lhs_expr;
+      }
+      if (lhs_dim == 1 && rhs_dim != 1) {
+        // A broadcasted singleton usually inherits the other side's
+        // expression, but keep a dynamic singleton visible by folding it into
+        // the result.
+        return lhs_expr && lhs_expr->is_dynamic()
+                   ? (lhs_expr * rhs_expr).simplify()
+                   : rhs_expr;
+      }
+      if (rhs_dim == 1 && lhs_dim != 1) {
+        // Symmetric case for a singleton rhs broadcast.
+        return rhs_expr && rhs_expr->is_dynamic()
+                   ? (rhs_expr * lhs_expr).simplify()
+                   : lhs_expr;
+      }
+      // When both sides describe the same logical dimension, prefer whichever
+      // side still carries a dynamic symbolic expression.
+      if (lhs_expr && lhs_expr->is_dynamic()) {
+        return lhs_expr;
+      }
+      if (rhs_expr && rhs_expr->is_dynamic()) {
+        return rhs_expr;
+      }
+      return xla::DExpr::Const(output_dim);
+    };
+
+    const auto& output_shape = bcast.output_shape();
+    std::vector<xla::DExpr> output_exprs(output_shape.size());
+
+    for (int out_i = output_shape.size() - 1, lhs_i = lhs_shape.dims() - 1,
+             rhs_i = rhs_shape.dims() - 1;
+         out_i >= 0; --out_i, --lhs_i, --rhs_i) {
+      const bool has_lhs = lhs_i >= 0;
+      const bool has_rhs = rhs_i >= 0;
+      xla::DExpr lhs_expr = has_lhs ? lhs_shape.get_filled_expression(lhs_i)
+                                    : xla::DExpr::Const(1);
+      xla::DExpr rhs_expr = has_rhs ? rhs_shape.get_filled_expression(rhs_i)
+                                    : xla::DExpr::Const(1);
+      const int64_t lhs_dim = has_lhs ? lhs_shape.dim_size(lhs_i) : 1;
+      const int64_t rhs_dim = has_rhs ? rhs_shape.dim_size(rhs_i) : 1;
+      output_exprs[out_i] = merge_broadcast_dim(
+          has_lhs, lhs_dim, lhs_expr, has_rhs, rhs_dim, rhs_expr,
+          output_shape[out_i]);
+    }
+
+    return output_exprs;
+  };
+  std::vector<xla::DExpr> broadcast_output_exprs =
+      build_broadcast_output_expressions();
 
   // If the ranks of the inputs don't match, TensorFlow automatically
   // reshapes the smaller by padding with dimensions of size 1 as a
@@ -359,7 +426,8 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   // Call virtual method to emit the computation.
   xla::XlaOp output =
       Computation(ctx, lhs_handle, lhs_shape.dim_sizes(), rhs_handle,
-                  rhs_shape.dim_sizes(), bcast, extend_dimension);
+                  rhs_shape.dim_sizes(), bcast,
+                  broadcast_output_exprs, extend_dimension);
 
   // The TensorFlow helper computed the post-broadcast shape in
   // output_shape: we rely on subclassed Computations to implement the
@@ -377,13 +445,20 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
 }
 
 /* static */ std::pair<xla::XlaOp, xla::XlaOp> XlaBinaryOp::Broadcast(
-    xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper) {
-  auto lhs_output = BroadcastTo(lhs, broadcast_helper.output_shape());
+    xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper,
+    absl::Span<const xla::DExpr> output_exprs) {
+  CHECK_EQ(output_exprs.size(), broadcast_helper.output_shape().size());
+  for (const xla::DExpr& expr : output_exprs) {
+    CHECK(expr);
+  }
+  auto lhs_output =
+      BroadcastTo(lhs, broadcast_helper.output_shape(), output_exprs);
   if (!lhs_output.ok()) {
     xla::XlaOp error = lhs.builder()->ReportError(lhs_output.status());
     return {error, error};
   }
-  auto rhs_output = BroadcastTo(rhs, broadcast_helper.output_shape());
+  auto rhs_output =
+      BroadcastTo(rhs, broadcast_helper.output_shape(), output_exprs);
   if (!rhs_output.ok()) {
     xla::XlaOp error = rhs.builder()->ReportError(rhs_output.status());
     return {error, error};
