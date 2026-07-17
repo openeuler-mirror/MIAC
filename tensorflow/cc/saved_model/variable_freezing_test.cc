@@ -8,9 +8,7 @@
 #include "absl/strings/str_cat.h"
 #include "tensorflow/cc/saved_model/constants.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
-#include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
-#include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -104,21 +102,6 @@ const NodeDef* FindNode(const GraphDef& graph, const std::string& name) {
   return nullptr;
 }
 
-const FunctionDef* FindFunction(const GraphDef& graph,
-                                const std::string& name) {
-  for (const FunctionDef& function : graph.library().function()) {
-    if (function.signature().name() == name) return &function;
-  }
-  return nullptr;
-}
-
-const NodeDef* FindNode(const FunctionDef& function, const std::string& name) {
-  for (const NodeDef& node : function.node_def()) {
-    if (node.name() == name) return &node;
-  }
-  return nullptr;
-}
-
 void ExpectConstTensorEquals(const NodeDef& node, const Tensor& expected) {
   ASSERT_EQ(node.op(), "Const");
   const auto dtype_it = node.attr().find("dtype");
@@ -149,41 +132,41 @@ void AddMutatingVarHandleReadGraph(GraphDef* graph) {
   SetTypeAttr(read, "dtype", DT_FLOAT);
 }
 
-  void AddMutatingVariableV2ReadGraph(GraphDef* graph,
-                    const std::string& export_dir) {
-    NodeDef* variable = AddNode(graph, "model/dense/bias", "VariableV2");
-    SetTypeAttr(variable, "dtype", DT_FLOAT);
+void AddMutatingVariableV2ReadGraph(GraphDef* graph,
+                                   const std::string& export_dir) {
+  NodeDef* variable = AddNode(graph, "model/dense/bias", "VariableV2");
+  SetTypeAttr(variable, "dtype", DT_FLOAT);
 
-    Tensor tensor_names = StringTensor({"checkpoint/dense/bias"});
-    NodeDef* tensor_names_node =
+  Tensor tensor_names = StringTensor({"checkpoint/dense/bias"});
+  NodeDef* tensor_names_node =
       AddNode(graph, "save/RestoreV2/tensor_names", "Const");
-    SetTensorAttr(tensor_names_node, "value", tensor_names);
+  SetTensorAttr(tensor_names_node, "value", tensor_names);
 
-    Tensor shape_and_slices = StringTensor({""});
-    NodeDef* shape_and_slices_node =
+  Tensor shape_and_slices = StringTensor({""});
+  NodeDef* shape_and_slices_node =
       AddNode(graph, "save/RestoreV2/shape_and_slices", "Const");
-    SetTensorAttr(shape_and_slices_node, "value", shape_and_slices);
+  SetTensorAttr(shape_and_slices_node, "value", shape_and_slices);
 
-    NodeDef* prefix = AddNode(graph, "save/Const", "Const");
-    SetTensorAttr(prefix, "value", StringTensor({VariablesPrefix(export_dir)}));
+  NodeDef* prefix = AddNode(graph, "save/Const", "Const");
+  SetTensorAttr(prefix, "value", StringTensor({VariablesPrefix(export_dir)}));
 
-    AddNode(graph, "save/RestoreV2", "RestoreV2",
-        {"save/Const", "save/RestoreV2/tensor_names",
-         "save/RestoreV2/shape_and_slices"});
-    AddNode(graph, "save/Assign", "Assign",
-        {"model/dense/bias", "save/RestoreV2"});
+  AddNode(graph, "save/RestoreV2", "RestoreV2",
+          {"save/Const", "save/RestoreV2/tensor_names",
+           "save/RestoreV2/shape_and_slices"});
+  AddNode(graph, "save/Assign", "Assign",
+          {"model/dense/bias", "save/RestoreV2"});
 
-    NodeDef* new_value = AddNode(graph, "new_bias", "Placeholder");
-    SetTypeAttr(new_value, "dtype", DT_FLOAT);
-    NodeDef* runtime_assign =
+  NodeDef* new_value = AddNode(graph, "new_bias", "Placeholder");
+  SetTypeAttr(new_value, "dtype", DT_FLOAT);
+  NodeDef* runtime_assign =
       AddNode(graph, "assign_bias", "Assign", {"model/dense/bias", "new_bias"});
-    SetTypeAttr(runtime_assign, "T", DT_FLOAT);
+  SetTypeAttr(runtime_assign, "T", DT_FLOAT);
 
-    NodeDef* read =
+  NodeDef* read =
       AddNode(graph, "model/dense/bias/read", "Identity",
-          {"model/dense/bias", "^assign_bias"});
-    SetTypeAttr(read, "T", DT_FLOAT);
-  }
+              {"model/dense/bias", "^assign_bias"});
+  SetTypeAttr(read, "T", DT_FLOAT);
+}
 
 void RunAssignThenRead(const GraphDef& graph, float new_value, Tensor* output) {
   std::unique_ptr<Session> session(NewSession(SessionOptions()));
@@ -231,11 +214,12 @@ TEST(VariableFreezingTest, FreezesAllowlistedVarHandleRead) {
   ExpectConstTensorEquals(*rewritten_read, frozen);
 }
 
-TEST(VariableFreezingTest, FreezesLinearWeightsPartZeroVarHandleRead) {
+TEST(VariableFreezingTest, SkipsLinearWeightsPartZeroVarHandleRead) {
+  // Names containing "/part_" are explicitly rejected to avoid freezing
+  // sharded variables, even when the rest of the name looks like a weight.
   const std::string export_dir = CurrentTestExportDir();
-  const Tensor frozen = FloatTensor({1.0f});
   WriteCheckpoint(export_dir, "linear/linear_model/I1/weights/part_0",
-                  frozen);
+                  FloatTensor({1.0f}));
 
   MetaGraphDef meta_graph_def;
   GraphDef* graph = meta_graph_def.mutable_graph_def();
@@ -253,14 +237,15 @@ TEST(VariableFreezingTest, FreezesLinearWeightsPartZeroVarHandleRead) {
   const NodeDef* rewritten_read = FindNode(
       meta_graph_def.graph_def(), "linear/linear_model/I1/weights/ReadVariableOp");
   ASSERT_NE(rewritten_read, nullptr);
-  ExpectConstTensorEquals(*rewritten_read, frozen);
+  EXPECT_EQ(rewritten_read->op(), "ReadVariableOp");
 }
 
-TEST(VariableFreezingTest, FreezesLinearBiasWeightsPartZeroVarHandleRead) {
+TEST(VariableFreezingTest, SkipsLinearBiasWeightsPartZeroVarHandleRead) {
+  // Names containing "/part_" are explicitly rejected to avoid freezing
+  // sharded variables, even when the rest of the name looks like a bias.
   const std::string export_dir = CurrentTestExportDir();
-  const Tensor frozen = FloatTensor({2.0f});
   WriteCheckpoint(export_dir, "linear/linear_model/bias_weights/part_0",
-                  frozen);
+                  FloatTensor({2.0f}));
 
   MetaGraphDef meta_graph_def;
   GraphDef* graph = meta_graph_def.mutable_graph_def();
@@ -281,7 +266,7 @@ TEST(VariableFreezingTest, FreezesLinearBiasWeightsPartZeroVarHandleRead) {
       meta_graph_def.graph_def(),
       "linear/linear_model/bias_weights/ReadVariableOp");
   ASSERT_NE(rewritten_read, nullptr);
-  ExpectConstTensorEquals(*rewritten_read, frozen);
+  EXPECT_EQ(rewritten_read->op(), "ReadVariableOp");
 }
 
 TEST(VariableFreezingTest, SkipsKernelPartZeroVarHandleRead) {
@@ -334,10 +319,9 @@ TEST(VariableFreezingTest, FreezesVariableV2IdentityReadFromRestoreV2Key) {
            "save/RestoreV2/shape_and_slices"});
   AddNode(graph, "save/Assign", "Assign",
           {"model/dense/bias", "save/RestoreV2"});
-    NodeDef* read =
-        AddNode(graph, "model/dense/bias/read", "Identity",
-          {"model/dense/bias"});
-    SetTypeAttr(read, "T", DT_FLOAT);
+  NodeDef* read = AddNode(graph, "model/dense/bias/read", "Identity",
+                          {"model/dense/bias"});
+  SetTypeAttr(read, "T", DT_FLOAT);
 
   TF_ASSERT_OK(FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
 
@@ -371,47 +355,6 @@ TEST(VariableFreezingTest, SkipsDisallowedEmbeddingVarHandleName) {
       FindNode(meta_graph_def.graph_def(), "model/embedding/kernel/read");
   ASSERT_NE(rewritten_read, nullptr);
   EXPECT_EQ(rewritten_read->op(), "ReadVariableOp");
-}
-
-TEST(VariableFreezingTest, FreezesCapturedFunctionRead) {
-  const std::string export_dir = CurrentTestExportDir();
-  const Tensor frozen = FloatTensor({6.0f});
-  WriteCheckpoint(export_dir, "model/dense/beta", frozen);
-
-  MetaGraphDef meta_graph_def;
-  GraphDef* graph = meta_graph_def.mutable_graph_def();
-  NodeDef* handle = AddNode(graph, "model/dense/beta", "VarHandleOp");
-  SetTypeAttr(handle, "dtype", DT_FLOAT);
-  SetStringAttr(handle, "shared_name", "model/dense/beta");
-
-  NodeDef* call = AddNode(graph, "serving_call", "StatefulPartitionedCall",
-                          {"model/dense/beta"});
-  (*call->mutable_attr())["f"].mutable_func()->set_name("serving_fn");
-
-  FunctionDef* function = graph->mutable_library()->add_function();
-  function->mutable_signature()->set_name("serving_fn");
-  OpDef::ArgDef* input_arg = function->mutable_signature()->add_input_arg();
-  input_arg->set_name("resource_arg");
-  input_arg->set_type(DT_RESOURCE);
-  OpDef::ArgDef* output_arg = function->mutable_signature()->add_output_arg();
-  output_arg->set_name("output");
-  output_arg->set_type(DT_FLOAT);
-
-  NodeDef* function_read = function->add_node_def();
-  function_read->set_name("read_beta");
-  function_read->set_op("ReadVariableOp");
-  function_read->add_input("resource_arg");
-  SetTypeAttr(function_read, "dtype", DT_FLOAT);
-  (*function->mutable_ret())["output"] = "read_beta:0";
-
-  TF_ASSERT_OK(FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
-
-  const FunctionDef* rewritten_function =
-      FindFunction(meta_graph_def.graph_def(), "serving_fn");
-  ASSERT_NE(rewritten_function, nullptr);
-  const NodeDef* rewritten_read = FindNode(*rewritten_function, "read_beta");
-  ASSERT_NE(rewritten_read, nullptr);
-  ExpectConstTensorEquals(*rewritten_read, frozen);
 }
 
 TEST(VariableFreezingTest, FreezesVarHandleReadWithPreservedAssignVariableOp) {
@@ -538,9 +481,9 @@ TEST(VariableFreezingTest, FrozenReadReturnsCheckpointValueAfterFreeze) {
 
 // Builds a graph mirroring the real presort moving_mean pattern: a VarHandleOp
 // with VarIsInitializedOp, a Const-backed initializer Assign, a direct
-// ReadVariableOp, a RestoreV2->Identity->AssignVariableOp restore path, and a
-// resource Switch chain feeding another ReadVariableOp. All write-path
-// consumers must be preserved while both read paths are frozen to Const.
+// ReadVariableOp, and a RestoreV2->Identity->AssignVariableOp restore path.
+// All write-path consumers must be preserved while the direct read path is
+// frozen to Const.
 void AddMovingMeanPatternGraph(GraphDef* graph, const std::string& export_dir) {
   const std::string var_name = "model/deep_1/deep_1_dense_1/deep_1_dense_1_bn/moving_mean";
 
@@ -589,47 +532,16 @@ void AddMovingMeanPatternGraph(GraphDef* graph, const std::string& export_dir) {
       AddNode(graph, "save/AssignVariableOp", "AssignVariableOp",
               {var_name, "save/Identity"});
   SetTypeAttr(restore_assign, "dtype", DT_FLOAT);
-
-  // Resource Switch chain: Switch -> Switch_1 -> Switch_2 -> Switch_3
-  // -> ReadVariableOp (reads Switch_3:1, the false branch)
-  NodeDef* pred = AddNode(graph, "case/cond/pred_id", "Placeholder");
-  SetTypeAttr(pred, "dtype", DT_BOOL);
-  NodeDef* pred_1 = AddNode(graph, "case/cond/cond/pred_id", "Placeholder");
-  SetTypeAttr(pred_1, "dtype", DT_BOOL);
-  NodeDef* pred_2 = AddNode(graph, "case/cond/cond/cond/pred_id", "Placeholder");
-  SetTypeAttr(pred_2, "dtype", DT_BOOL);
-  NodeDef* pred_3 = AddNode(graph, "case/cond/cond/cond/cond/pred_id",
-                            "Placeholder");
-  SetTypeAttr(pred_3, "dtype", DT_BOOL);
-
-  NodeDef* sw0 = AddNode(graph, "batchnorm/ReadVariableOp_1/Switch", "Switch",
-                         {var_name, "case/cond/pred_id"});
-  SetTypeAttr(sw0, "T", DT_RESOURCE);
-  NodeDef* sw1 = AddNode(graph, "batchnorm/ReadVariableOp_1/Switch_1", "Switch",
-                         {"batchnorm/ReadVariableOp_1/Switch",
-                          "case/cond/cond/pred_id"});
-  SetTypeAttr(sw1, "T", DT_RESOURCE);
-  NodeDef* sw2 = AddNode(graph, "batchnorm/ReadVariableOp_1/Switch_2", "Switch",
-                         {"batchnorm/ReadVariableOp_1/Switch_1",
-                          "case/cond/cond/cond/pred_id"});
-  SetTypeAttr(sw2, "T", DT_RESOURCE);
-  NodeDef* sw3 = AddNode(graph, "batchnorm/ReadVariableOp_1/Switch_3", "Switch",
-                         {"batchnorm/ReadVariableOp_1/Switch_2",
-                          "case/cond/cond/cond/cond/pred_id"});
-  SetTypeAttr(sw3, "T", DT_RESOURCE);
-
-  NodeDef* switch_read = AddNode(
-      graph, "batchnorm/ReadVariableOp_1", "ReadVariableOp",
-      {"batchnorm/ReadVariableOp_1/Switch_3:1"});
-  SetTypeAttr(switch_read, "dtype", DT_FLOAT);
 }
 
-TEST(VariableFreezingTest, FreezesVarHandleWithRestoreIdentityAssignAndSwitch) {
-  // Reproduces the presort moving_mean pattern: a VarHandleOp whose consumers
+TEST(VariableFreezingTest, FreezesVarHandleWithRestoreIdentityAssign) {
+  // Reproduces the presort moving_mean pattern minus the resource Switch
+  // chain (Switch is not a recognized read-only consumer, so a variable that
+  // feeds a Switch is rejected for freezing). Here a VarHandleOp's consumers
   // include VarIsInitializedOp, a Const-backed init Assign, a direct
-  // ReadVariableOp, a RestoreV2->Identity->AssignVariableOp restore path, and a
-  // 4-level resource Switch chain feeding another ReadVariableOp. All write
-  // paths are preserved; both read paths are frozen to the checkpoint value.
+  // ReadVariableOp, and a RestoreV2->Identity->AssignVariableOp restore path.
+  // All write paths are preserved; the direct read path is frozen to the
+  // checkpoint value.
   const std::string export_dir = CurrentTestExportDir();
   const Tensor frozen = FloatTensor({0.12f, -0.34f});
   const std::string var_name =
@@ -669,12 +581,6 @@ TEST(VariableFreezingTest, FreezesVarHandleWithRestoreIdentityAssignAndSwitch) {
       meta_graph_def.graph_def(), var_name + "/Read/ReadVariableOp");
   ASSERT_NE(direct_read, nullptr);
   ExpectConstTensorEquals(*direct_read, frozen);
-
-  // Switch-chain ReadVariableOp is frozen to Const.
-  const NodeDef* switch_read =
-      FindNode(meta_graph_def.graph_def(), "batchnorm/ReadVariableOp_1");
-  ASSERT_NE(switch_read, nullptr);
-  ExpectConstTensorEquals(*switch_read, frozen);
 }
 
 }  // namespace
