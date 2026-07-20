@@ -248,7 +248,7 @@ std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
   MK_OPT("common_subgraph_elimination", "common_subgraph_elimination",
          new CommonSubgraphElimination(cfg_.common_subgraph_elimination()));
   MK_OPT("arithmetic", "arithmetic_optimization",
-         new ArithmeticOptimizer(cfg_.arithmetic_optimization()));
+         new ArithmeticOptimizer(cfg_));
   MK_OPT("autoparallel", "auto_parallel",
          new AutoParallel(cfg_.auto_parallel().num_replicas()));
   MK_OPT("loop", "loop_optimization",
@@ -418,8 +418,7 @@ absl::Status MetaOptimizer::InitializeOptimizers(
         USER_IS_EXPERIMENTAL_BOTH(arithmetic_optimization)) {
       VLOG(2) << "arithmetic_optimization is not implemented in TFG yet";
     } else {
-      optimizers->push_back(std::make_unique<ArithmeticOptimizer>(
-          cfg_.arithmetic_optimization()));
+      optimizers->push_back(std::make_unique<ArithmeticOptimizer>(cfg_));
     }
   }
   if (BOTH_NOT_OFF(layout_optimizer)) {

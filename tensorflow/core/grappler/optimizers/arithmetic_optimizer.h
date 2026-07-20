@@ -41,6 +41,10 @@ class ArithmeticOptimizer : public GraphOptimizer {
       : opt_level_(opt_level),
         options_(ArithmeticOptimizerOptions::Default(opt_level)) {}
 
+  explicit ArithmeticOptimizer(const RewriterConfig& cfg)
+      : opt_level_(cfg.arithmetic_optimization()),
+        options_(ArithmeticOptimizerOptions::Default(cfg)) {}
+
   ~ArithmeticOptimizer() override {}
 
   string name() const override { return "arithmetic_optimizer"; };
@@ -95,6 +99,16 @@ class ArithmeticOptimizer : public GraphOptimizer {
     static ArithmeticOptimizerOptions Default(
         RewriterConfig::Toggle opt_level) {
       ArithmeticOptimizerOptions options;
+      return options;
+    }
+
+    // Choose which arithmetic optimizer stages will be enabled based on the
+    // full RewriterConfig, allowing individual stages to be toggled via proto
+    // fields independently of the overall arithmetic_optimization toggle.
+    static ArithmeticOptimizerOptions Default(const RewriterConfig& cfg) {
+      ArithmeticOptimizerOptions options;
+      options.simplify_gather_of_concat =
+          cfg.simplify_gather_of_concat() != RewriterConfig::OFF;
       return options;
     }
   };
