@@ -75,7 +75,7 @@ bool IsUntransposed(const NodeDef& matmul) {
 }
 
 bool ReadIntConst(const NodeDef* node, std::vector<int64_t>* values) {
-  if (node == nullptr || node->op() != "Const") return false;
+  if (node == nullptr || (node->op() != "Const" && node->op() != "HostConst")) return false;
   const auto value = node->attr().find("value");
   if (value == node->attr().end()) return false;
 
@@ -318,6 +318,7 @@ string AddIntConst(GraphDef* graph, const string& name,
                 scalar ? TensorShape({})
                        : TensorShape({static_cast<int64_t>(values.size())}));
   if (scalar) {
+    DCHECK_EQ(values.size(), 1);
     tensor.scalar<int32>()() = values[0];
   } else {
     auto flat = tensor.flat<int32>();
