@@ -581,7 +581,7 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
               << variable_name << " reason=unsafe_or_incompatible";
       continue;
     }
-    LOG(INFO) << "[variable_freezing] matched VariableV2 checkpoint key="
+    VLOG(2) << "[variable_freezing] matched VariableV2 checkpoint key="
               << tensor_name << " graph_node=" << variable_name;
     frozen_values[variable_name] = tensor;
   }
@@ -627,7 +627,7 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVarHandleValues(
               << node.name() << " reason=unsafe_or_incompatible";
       continue;
     }
-    LOG(INFO) << "[variable_freezing] matched VarHandleOp checkpoint graph_node="
+    VLOG(2) << "[variable_freezing] matched VarHandleOp checkpoint graph_node="
             << node.name() << " shared_name=" << shared_name;
     // Key the frozen map by graph node name because later graph rewrites match
     // consumers against VarHandleOp node names, not checkpoint keys.
@@ -654,7 +654,7 @@ absl::Status RewriteTopLevelReadNodes(GraphDef* graph_def,
     const auto frozen_it = frozen_values.find(source_name);
     if (frozen_it == frozen_values.end()) continue;
     if (!IsTensorCompatibleWithNode(frozen_it->second, node)) continue;
-    LOG(INFO) << "[variable_freezing] rewrite top-level node=" << node.name()
+    VLOG(2) << "[variable_freezing] rewrite top-level node=" << node.name()
             << " op=" << node.op() << " source=" << source_name;
     ReplaceNodeWithConst(frozen_it->second, &node);
   }
@@ -676,7 +676,7 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
   const bool has_variable_v2 = GraphContainsOp(*graph_def, "VariableV2");
   const bool has_var_handle = GraphContainsOp(*graph_def, "VarHandleOp");
   if (!has_variable_v2 && !has_var_handle) {
-    LOG(INFO) << "[variable_freezing] export_dir=" << export_dir
+    VLOG(2) << "[variable_freezing] export_dir=" << export_dir
               << " matched_v1=0 matched_total=0";
     return absl::OkStatus();
   }
