@@ -39,6 +39,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/arithmetic_optimizer.h"
 #include "tensorflow/core/grappler/optimizers/auto_mixed_precision.h"
 #include "tensorflow/core/grappler/optimizers/auto_parallel.h"
+#include "tensorflow/core/grappler/optimizers/broadcasted_matmul_factorization.h"
 #include "tensorflow/core/grappler/optimizers/common_subgraph_elimination.h"
 #include "tensorflow/core/grappler/optimizers/constant_folding.h"
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer_registry.h"
@@ -82,6 +83,8 @@ namespace {
 constexpr int kDefaultNumberOfIterations = 2;
 constexpr int kDefaultMinGraphNodes = 4;
 constexpr char kSimplifyGatherOfPack[] = "simplify_gather_of_pack";
+constexpr char kBroadcastedMatMulFactorization[] =
+    "broadcasted_matmul_factorization";
 constexpr char kGrapplerCategory[] = "Grappler";
 
 int64_t NumEdges(const GraphDef& graph) {
@@ -918,6 +921,25 @@ absl::Status MetaOptimizer::OptimizeGraph(Cluster* cluster, GrapplerItem&& item,
   } else {
     TF_RETURN_IF_ERROR(InitializeOptimizersByName(device_types, &optimizers));
   }
+  if (cfg_.broadcasted_matmul_factorization() == RewriterConfig::ON &&
+      !cfg_.disable_meta_optimizer() &&
+      std::none_of(optimizers.begin(), optimizers.end(),
+                   [](const std::unique_ptr<GraphOptimizer>& optimizer) {
+                     return optimizer->name() ==
+                            kBroadcastedMatMulFactorization;
+                   })) {
+    auto optimizer =
+        std::make_unique<BroadcastedMatMulFactorizationOptimizer>();
+    // Keep the MatMul visible, then let constant folding split frozen weights.
+    const auto before_folding_or_remapping =
+        std::find_if(optimizers.begin(), optimizers.end(),
+                     [](const std::unique_ptr<GraphOptimizer>& existing) {
+                       return existing->name() == "constant_folding" ||
+                              existing->name() == "remapper";
+                     });
+    optimizers.insert(before_folding_or_remapping, std::move(optimizer));
+    VLOG(1) << "Automatically scheduled broadcasted MatMul factorization";
+  }
   PrintUserAndPluginConfigs(device_types);
 
   return OptimizeGraph(std::move(optimizers), cluster, std::move(item),
@@ -1372,6 +1394,7 @@ bool MetaOptimizerEnabled(const ConfigProto& cfg) {
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_mkl()) ||
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_cpu()) ||
          rewrite_cfg.simplify_gather_of_pack() != RewriterConfig::OFF ||
+         rewrite_cfg.broadcasted_matmul_factorization() == RewriterConfig::ON ||
          !rewrite_cfg.optimizers().empty() ||
          !rewrite_cfg.custom_optimizers().empty();
 }
