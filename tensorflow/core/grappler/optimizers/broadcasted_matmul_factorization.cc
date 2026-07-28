@@ -200,14 +200,12 @@ bool MatchRepeatedInput(const string& input, DataType dtype,
   std::vector<int64_t> tile_values;
   std::vector<int64_t> reshape_values;
   int64_t query_width;
-  int64_t repeated_width;
   if (!ReadIntConst(multiples, &tile_values) || tile_values.size() != 2 ||
       tile_values[0] != 1 || tile_values[1] <= 1 ||
       !ReadIntConst(reshape_shape, &reshape_values) ||
       reshape_values.size() != 2 ||
       !Rank2Width(tile->input(0), nodes, properties, &query_width) ||
-      !Rank2Width(input, nodes, properties, &repeated_width) ||
-      repeated_width != query_width || reshape_values[1] != query_width) {
+      reshape_values[1] != query_width) {
     return false;
   }
 
