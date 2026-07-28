@@ -266,6 +266,8 @@ bool Analyze(const NodeDef& matmul, const NodeIndex& nodes,
       (weight_source->op() != "Const" && weight_source->op() != "HostConst") ||
       !InputShape(matmul.input(1), nodes, properties, &weight_shape) ||
       weight_shape.dim_size() != 2) {
+    VLOG(2) << "Rejected broadcasted MatMul candidate " << matmul.name()
+            << ": weight must resolve to a rank-2 Const or HostConst";
     return false;
   }
 
@@ -301,6 +303,9 @@ bool Analyze(const NodeDef& matmul, const NodeIndex& nodes,
                   dtype};
     return true;
   }
+  VLOG(2) << "Rejected broadcasted MatMul candidate " << matmul.name()
+          << ": no profitable repeated Tile/Reshape input with compatible "
+             "dimensions";
   return false;
 }
 
