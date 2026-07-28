@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -14,11 +13,9 @@
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
-#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/grappler/costs/graph_properties.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/utils.h"
-#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
@@ -75,7 +72,8 @@ bool IsUntransposed(const NodeDef& matmul) {
 }
 
 bool ReadIntConst(const NodeDef* node, std::vector<int64_t>* values) {
-  if (node == nullptr || (node->op() != "Const" && node->op() != "HostConst")) return false;
+  if (node == nullptr || (node->op() != "Const" && node->op() != "HostConst"))
+    return false;
   const auto value = node->attr().find("value");
   if (value == node->attr().end()) return false;
 
@@ -444,7 +442,8 @@ absl::Status BroadcastedMatMulFactorizationOptimizer::Optimize(
   for (const NodeDef& node : item.graph.node()) {
     const NodeDef* input =
         node.input_size() > 0 ? FindNode(nodes, node.input(0)) : nullptr;
-    //MatMul(Concat(X, Repeat(Q, L)), W) -> MatMul(X, W_x) + Broadcast(MatMul(Q, W_q), L).
+    // MatMul(Concat(X, Repeat(Q, L)), W) -> MatMul(X, W_x) +
+    // Broadcast(MatMul(Q, W_q), L).
     if (node.op() == "MatMul" && input != nullptr &&
         input->op() == "ConcatV2" &&
         referenced.find(node.name()) != referenced.end()) {
