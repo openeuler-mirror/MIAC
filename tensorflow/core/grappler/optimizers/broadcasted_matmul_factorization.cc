@@ -104,13 +104,17 @@ bool OutputShape(const NodeDef& node, int port,
                  const GraphProperties* properties, TensorShapeProto* shape) {
   const auto value = node.attr().find("value");
   // ANNC fused weights carry their shape in Const.value only.
-  if (port == 0 && (node.op() == "Const" || node.op() == "HostConst") &&
-      value != node.attr().end()) {
+  if (port == 0 && (node.op() == "Const" || node.op() == "HostConst")) {
+    if (value == node.attr().end()) return false;
+
     Tensor tensor;
-    if (tensor.FromProto(value->second.tensor())) {
-      tensor.shape().AsProto(shape);
-      return true;
+    if (!tensor.FromProto(value->second.tensor())) {
+      VLOG(2) << "Could not decode constant tensor " << node.name();
+      return false;
     }
+
+    tensor.shape().AsProto(shape);
+    return true;
   }
 
   const auto outputs = node.attr().find("_output_shapes");
