@@ -237,7 +237,7 @@ bool Analyze(const NodeDef& matmul, const NodeIndex& nodes,
   }
 
   const auto type = matmul.attr().find("T");
-  if (type == matmul.attr().end() || !DataTypeIsFloating(type->second.type())) {
+  if (type == matmul.attr().end() || type->second.type() != DT_FLOAT) {
     return false;
   }
   const DataType dtype = type->second.type();
