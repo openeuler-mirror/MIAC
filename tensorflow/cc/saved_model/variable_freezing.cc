@@ -59,6 +59,21 @@ bool HasAnySuffix(absl::string_view value,
   return false;
 }
 
+bool HasIndexParameterSuffix(absl::string_view name) {
+  const size_t separator = name.rfind("_");
+  if (separator == absl::string_view::npos || separator + 1 >= name.size()) {
+    return false;
+  }
+  const absl::string_view index = name.substr(separator + 1);
+  for (char c : index) {
+    if (c < '0' || c > '9') {
+      return false;
+    }
+  }
+  const absl::string_view prefix = name.substr(0, separator);
+  return HasAnySuffix(prefix, {"_w", "_b", "_weight", "_bias", "_kernel"});
+}
+
 // Allowed promotions for freezing variables are based on variable name
 // patterns, which is admittedly a bit hacky but is the most practical way to
 // avoid freezing non-variable tensors without doing an expensive static
@@ -70,9 +85,10 @@ bool IsAllowlistedVariableName(absl::string_view name) {
                   {"embedding", "lookup_table", "/part_", "hash_table"})) {
     return false;
   }
-  return HasAnySuffix(lowered_view, {"weight", "bias", "kernel", "_w", "/w",
-                                     "_b", "/b", "beta", "gamma", "mean",
-                                     "variance"});
+  return (
+      HasAnySuffix(lowered_view, {"weight", "bias", "kernel", "_w", "/w", "_b",
+                                  "/b", "beta", "gamma", "mean", "variance"}) ||
+      HasIndexParameterSuffix(lowered_view));
 }
 
 // Checks if the given op mutates a variable. This is used to determine 

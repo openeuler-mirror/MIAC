@@ -214,6 +214,53 @@ TEST(VariableFreezingTest, FreezesAllowlistedVarHandleRead) {
   ExpectConstTensorEquals(*rewritten_read, frozen);
 }
 
+TEST(VariableFreezingTest, FreezesIndexedWeightSuffixVarHandleRead) {
+  const std::string export_dir = CurrentTestExportDir();
+  const Tensor frozen = FloatTensor({1.0f, 2.0f});
+  WriteCheckpoint(export_dir, "model/dense/proj_w_0", frozen);
+
+  MetaGraphDef meta_graph_def;
+  GraphDef* graph = meta_graph_def.mutable_graph_def();
+  NodeDef* handle = AddNode(graph, "model/dense/proj_w_0", "VarHandleOp");
+  SetTypeAttr(handle, "dtype", DT_FLOAT);
+  SetStringAttr(handle, "shared_name", "model/dense/proj_w_0");
+  NodeDef* read = AddNode(graph, "model/dense/proj_w_0/read",
+                          "ReadVariableOp", {"model/dense/proj_w_0"});
+  SetTypeAttr(read, "dtype", DT_FLOAT);
+
+  TF_ASSERT_OK(FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
+
+  const NodeDef* rewritten_read =
+      FindNode(meta_graph_def.graph_def(), "model/dense/proj_w_0/read");
+  ASSERT_NE(rewritten_read, nullptr);
+  ExpectConstTensorEquals(*rewritten_read, frozen);
+}
+
+TEST(VariableFreezingTest, SkipsIndexedWeightWhenCheckpointKeyLacksSuffix) {
+  // Graph node is "model/dense/proj_w_0" but the checkpoint only has the
+  // unindexed key "model/dense/proj_w". The indexed name must NOT be frozen
+  // with the unindexed tensor, since that would likely be a sharded variable
+  // whose full value does not match the per-shard shape.
+  const std::string export_dir = CurrentTestExportDir();
+  WriteCheckpoint(export_dir, "model/dense/proj_w", FloatTensor({1.0f, 2.0f}));
+
+  MetaGraphDef meta_graph_def;
+  GraphDef* graph = meta_graph_def.mutable_graph_def();
+  NodeDef* handle = AddNode(graph, "model/dense/proj_w_0", "VarHandleOp");
+  SetTypeAttr(handle, "dtype", DT_FLOAT);
+  SetStringAttr(handle, "shared_name", "model/dense/proj_w_0");
+  NodeDef* read = AddNode(graph, "model/dense/proj_w_0/read",
+                          "ReadVariableOp", {"model/dense/proj_w_0"});
+  SetTypeAttr(read, "dtype", DT_FLOAT);
+
+  TF_ASSERT_OK(FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
+
+  const NodeDef* rewritten_read =
+      FindNode(meta_graph_def.graph_def(), "model/dense/proj_w_0/read");
+  ASSERT_NE(rewritten_read, nullptr);
+  EXPECT_EQ(rewritten_read->op(), "ReadVariableOp");
+}
+
 TEST(VariableFreezingTest, SkipsLinearWeightsPartZeroVarHandleRead) {
   // Names containing "/part_" are explicitly rejected to avoid freezing
   // sharded variables, even when the rest of the name looks like a weight.
