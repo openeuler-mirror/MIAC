@@ -228,6 +228,8 @@ std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
   MK_OPT("shape", "shape_optimization", new ShapeOptimizer());
   MK_OPT(kSimplifyGatherOfPack, "simplify_gather_of_pack",
          new SimplifyGatherOfPackOptimizer());
+  MK_OPT(kBroadcastedMatMulFactorization, "broadcasted_matmul_factorization",
+         new BroadcastedMatMulFactorizationOptimizer());
   MK_OPT("remap", "remapping",
          new Remapper(cfg_.remapping(), cfg_.cpu_layout_conversion(),
                       xla_auto_clustering_on_));
@@ -365,6 +367,10 @@ absl::Status MetaOptimizer::InitializeOptimizers(
     VLOG(2) << "debug_stripper is not implemented in TFG yet";
   if (cfg_.simplify_gather_of_pack() != RewriterConfig::OFF) {
     optimizers->push_back(std::make_unique<SimplifyGatherOfPackOptimizer>());
+  }
+  if (cfg_.broadcasted_matmul_factorization() != RewriterConfig::OFF) {
+    optimizers->push_back(
+        std::make_unique<BroadcastedMatMulFactorizationOptimizer>());
   }
   if (BOTH_NOT_OFF(constant_folding)) {
     if (USER_IS_EXPERIMENTAL_MLIR(constant_folding) ||
@@ -920,24 +926,6 @@ absl::Status MetaOptimizer::OptimizeGraph(Cluster* cluster, GrapplerItem&& item,
     TF_RETURN_IF_ERROR(InitializeOptimizers(device_types, &optimizers));
   } else {
     TF_RETURN_IF_ERROR(InitializeOptimizersByName(device_types, &optimizers));
-  }
-  if (cfg_.broadcasted_matmul_factorization() != RewriterConfig::OFF &&
-      std::none_of(optimizers.begin(), optimizers.end(),
-                   [](const std::unique_ptr<GraphOptimizer>& optimizer) {
-                     return optimizer->name() ==
-                            kBroadcastedMatMulFactorization;
-                   })) {
-    auto optimizer =
-        std::make_unique<BroadcastedMatMulFactorizationOptimizer>();
-    // Keep the MatMul visible, then let constant folding split frozen weights.
-    const auto before_folding_or_remapping =
-        std::find_if(optimizers.begin(), optimizers.end(),
-                     [](const std::unique_ptr<GraphOptimizer>& existing) {
-                       return existing->name() == "constant_folding" ||
-                              existing->name() == "remapper";
-                     });
-    optimizers.insert(before_folding_or_remapping, std::move(optimizer));
-    VLOG(1) << "Automatically scheduled broadcasted MatMul factorization";
   }
   PrintUserAndPluginConfigs(device_types);
 

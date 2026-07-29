@@ -283,23 +283,6 @@ TEST_F(BroadcastedMatMulFactorizationTest, SkipsUnprofitableRepeat) {
       nullptr);
 }
 
-TEST_F(BroadcastedMatMulFactorizationTest, DoesNotRunAutomaticallyByDefault) {
-  GrapplerItem item = MakeGraph(/*repeats=*/3);
-  ConfigProto config;
-  RewriterConfig* rewrite =
-      config.mutable_graph_options()->mutable_rewrite_options();
-  rewrite->set_meta_optimizer_iterations(RewriterConfig::ONE);
-  rewrite->set_min_graph_nodes(-1);
-
-  GraphDef optimized;
-  TF_ASSERT_OK(RunMetaOptimizer(std::move(item), config,
-                                /*cpu_device=*/nullptr, /*cluster=*/nullptr,
-                                &optimized));
-  EXPECT_EQ(
-      FindNode(&optimized, "dense/projection/broadcast_factorization/output"),
-      nullptr);
-}
-
 TEST_F(BroadcastedMatMulFactorizationTest, RunsAutomaticallyWhenEnabled) {
   GrapplerItem item = MakeGraph(/*repeats=*/3);
   ConfigProto config;
@@ -308,6 +291,24 @@ TEST_F(BroadcastedMatMulFactorizationTest, RunsAutomaticallyWhenEnabled) {
   rewrite->set_meta_optimizer_iterations(RewriterConfig::ONE);
   rewrite->set_min_graph_nodes(-1);
   rewrite->set_broadcasted_matmul_factorization(RewriterConfig::ON);
+
+  GraphDef optimized;
+  TF_ASSERT_OK(RunMetaOptimizer(std::move(item), config,
+                                /*cpu_device=*/nullptr, /*cluster=*/nullptr,
+                                &optimized));
+  EXPECT_NE(
+      FindNode(&optimized, "dense/projection/broadcast_factorization/output"),
+      nullptr);
+}
+
+TEST_F(BroadcastedMatMulFactorizationTest, RunsWhenSelectedByName) {
+  GrapplerItem item = MakeGraph(/*repeats=*/3);
+  ConfigProto config;
+  RewriterConfig* rewrite =
+      config.mutable_graph_options()->mutable_rewrite_options();
+  rewrite->set_meta_optimizer_iterations(RewriterConfig::ONE);
+  rewrite->set_min_graph_nodes(-1);
+  rewrite->add_optimizers("broadcasted_matmul_factorization");
 
   GraphDef optimized;
   TF_ASSERT_OK(RunMetaOptimizer(std::move(item), config,
