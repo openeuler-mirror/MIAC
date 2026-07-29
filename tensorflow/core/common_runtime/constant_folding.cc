@@ -53,6 +53,8 @@ namespace {
 
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
 const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
+const char kUserInferredValueContentsAttrName[] =
+    "_user_inferred_value_contents";
 
 bool IsShapeOp(const Node* n);
 
@@ -78,6 +80,432 @@ bool GetShapeFromDirectDynamicSource(const Node* node,
   return (IsShapeOp(node) ||
           node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
          GetShapeFromArgNode(node, out_shape);
+}
+
+bool TryGetContentsProtoAttr(const AttrSlice& attrs,
+                             TensorShapeProto* out_contents) {
+  string serialized_contents;
+  if (!GetNodeAttr(attrs, kUserInferredValueContentsAttrName,
+                   &serialized_contents)
+           .ok()) {
+    return false;
+  }
+  out_contents->Clear();
+  return out_contents->ParseFromString(serialized_contents);
+}
+
+bool HasTransitiveDynamicShapeContents(
+    const Node* node, std::unordered_map<const Node*, bool>* memo,
+    absl::flat_hash_set<const Node*>* visiting) {
+  auto it = memo->find(node);
+  if (it != memo->end()) {
+    return it->second;
+  }
+  if (!visiting->insert(node).second) {
+    return false;
+  }
+
+  TensorShapeProto contents_proto;
+  if (TryGetContentsProtoAttr(node->attrs(), &contents_proto) &&
+      HasDynamicDimExprs(contents_proto)) {
+    return (*memo)[node] = true;
+  }
+
+  bool has_dynamic = false;
+  TensorShapeProto inferred_shape_proto;
+  if (GetNodeAttr(node->attrs(), "has_dynamic", &has_dynamic).ok() &&
+      has_dynamic &&
+      GetNodeAttr(node->attrs(), "user_inferred_shape", &inferred_shape_proto)
+          .ok() &&
+      HasDynamicDimExprs(inferred_shape_proto)) {
+    return (*memo)[node] = true;
+  }
+
+  if (GetShapeFromDirectDynamicSource(node, &inferred_shape_proto) ||
+      node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
+    return (*memo)[node] = true;
+  }
+
+  for (const Edge* edge : node->in_edges()) {
+    if (edge->IsControlEdge()) continue;
+    if (HasTransitiveDynamicShapeContents(edge->src(), memo, visiting)) {
+      return (*memo)[node] = true;
+    }
+  }
+
+  return (*memo)[node] = false;
+}
+
+bool GetConstTensor(const Node* node, Tensor* tensor) {
+  if (node == nullptr || !node->IsConstant()) {
+    return false;
+  }
+  const TensorProto* tensor_proto;
+  if (!GetNodeAttr(node->attrs(), "value", &tensor_proto).ok()) {
+    return false;
+  }
+  DataType dtype;
+  if (!GetNodeAttr(node->attrs(), "dtype", &dtype).ok()) {
+    return false;
+  }
+  *tensor = Tensor(dtype);
+  return tensor->FromProto(cpu_allocator(), *tensor_proto);
+}
+
+bool GetInputConstTensor(const Node* node, int input_index, Tensor* tensor) {
+  const Edge* edge;
+  if (!node->input_edge(input_index, &edge).ok()) {
+    return false;
+  }
+  return GetConstTensor(edge->src(), tensor);
+}
+
+bool GetTensorIntValues(const Tensor& tensor, std::vector<int64_t>* values) {
+  values->clear();
+  if (tensor.dims() == 0) {
+    values->reserve(1);
+    switch (tensor.dtype()) {
+      case DT_INT32:
+        values->push_back(tensor.scalar<int32>()());
+        return true;
+      case DT_INT64:
+        values->push_back(tensor.scalar<int64_t>()());
+        return true;
+      default:
+        return false;
+    }
+  }
+  if (tensor.dims() != 1) {
+    return false;
+  }
+  values->reserve(tensor.NumElements());
+  switch (tensor.dtype()) {
+    case DT_INT32: {
+      auto flat = tensor.flat<int32>();
+      for (int i = 0; i < flat.size(); ++i) values->push_back(flat(i));
+      return true;
+    }
+    case DT_INT64: {
+      auto flat = tensor.flat<int64_t>();
+      for (int i = 0; i < flat.size(); ++i) values->push_back(flat(i));
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+void CopyContentAt(const TensorShapeProto& input_contents, int64_t index,
+                   TensorShapeProto* output_contents) {
+  output_contents->add_dim()->CopyFrom(input_contents.dim(index));
+  ExpressionProto* output_expression = output_contents->add_expressions();
+  if (index < input_contents.expressions_size()) {
+    output_expression->CopyFrom(input_contents.expressions(index));
+  } else {
+    output_expression->set_constant_value(input_contents.dim(index).size());
+  }
+}
+
+void AppendScalarConstantContent(int64_t value,
+                                 TensorShapeProto* output_contents) {
+  output_contents->add_dim()->set_size(value);
+  output_contents->add_expressions()->set_constant_value(value);
+}
+
+void AppendScalarContentFromTensor(const Tensor& tensor,
+                                   TensorShapeProto* output_contents) {
+  if (tensor.dtype() == DT_INT32) {
+    AppendScalarConstantContent(tensor.scalar<int32>()(), output_contents);
+  } else {
+    AppendScalarConstantContent(tensor.scalar<int64_t>()(), output_contents);
+  }
+}
+
+ExpressionProto MakeConstantExpressionProto(int64_t value) {
+  ExpressionProto expr;
+  expr.set_constant_value(value);
+  return expr;
+}
+
+ExpressionProto GetContentExpressionProto(const TensorShapeProto& contents,
+                                          int64_t index) {
+  if (index < contents.expressions_size()) {
+    return contents.expressions(index);
+  }
+  return MakeConstantExpressionProto(contents.dim(index).size());
+}
+
+ExpressionProto MakeMulExpressionProto(ExpressionProto lhs,
+                                       ExpressionProto rhs) {
+  ExpressionProto expr;
+  auto* mul = expr.mutable_mul_node();
+  *mul->mutable_lhs() = std::move(lhs);
+  *mul->mutable_rhs() = std::move(rhs);
+  return expr;
+}
+
+bool TryGetFoldedValueContents(const Node* node, int output_index,
+                               TensorShapeProto* out_contents,
+                               absl::flat_hash_set<const Node*>* visiting) {
+  out_contents->Clear();
+  if (output_index != 0) {
+    return false;
+  }
+  if (!visiting->insert(node).second) {
+    return false;
+  }
+  auto remove_from_visiting =
+      gtl::MakeCleanup([&] { visiting->erase(node); });
+
+  if (TryGetContentsProtoAttr(node->attrs(), out_contents)) {
+    return true;
+  }
+
+  bool has_dynamic = false;
+  TensorShapeProto user_inferred_shape;
+  if (GetNodeAttr(node->attrs(), "has_dynamic", &has_dynamic).ok() &&
+      has_dynamic &&
+      GetNodeAttr(node->attrs(), "user_inferred_shape", &user_inferred_shape)
+          .ok()) {
+    *out_contents = user_inferred_shape;
+    return true;
+  }
+
+  if (GetShapeFromDirectDynamicSource(node, out_contents)) {
+    return true;
+  }
+
+  auto recurse_input = [&](int input_index,
+                           TensorShapeProto* input_contents) -> bool {
+    const Edge* input_edge;
+    if (!node->input_edge(input_index, &input_edge).ok()) {
+      return false;
+    }
+    return TryGetFoldedValueContents(input_edge->src(), input_edge->src_output(),
+                                     input_contents, visiting);
+  };
+
+  if (node->IsIdentity() || node->type_string() == "Cast") {
+    return recurse_input(0, out_contents);
+  }
+
+  TensorShapeProto input_contents;
+  if (node->type_string() == "Reshape" && recurse_input(0, &input_contents)) {
+    Tensor shape_tensor;
+    std::vector<int64_t> shape_dims;
+    if (!GetInputConstTensor(node, 1, &shape_tensor) ||
+        !GetTensorIntValues(shape_tensor, &shape_dims)) {
+      return false;
+    }
+    if (input_contents.dim_size() == 1 && shape_dims.empty()) {
+      CopyContentAt(input_contents, 0, out_contents);
+      return true;
+    }
+    if (shape_dims.size() == 1 && input_contents.dim_size() == shape_dims[0]) {
+      out_contents->CopyFrom(input_contents);
+      return true;
+    }
+    return false;
+  }
+
+  if (node->type_string() == "Pack") {
+    for (int i = 0; i < node->num_inputs(); ++i) {
+      TensorShapeProto scalar_contents;
+      Tensor scalar_tensor;
+      if (recurse_input(i, &scalar_contents)) {
+        if (scalar_contents.dim_size() != 1) {
+          return false;
+        }
+        CopyContentAt(scalar_contents, 0, out_contents);
+      } else if (GetInputConstTensor(node, i, &scalar_tensor) &&
+                 scalar_tensor.dims() == 0 &&
+                 (scalar_tensor.dtype() == DT_INT32 ||
+                  scalar_tensor.dtype() == DT_INT64)) {
+        AppendScalarContentFromTensor(scalar_tensor, out_contents);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (node->type_string() == "ConcatV2") {
+    Tensor axis_tensor;
+    std::vector<int64_t> axis_values;
+    if (!GetInputConstTensor(node, node->num_inputs() - 1, &axis_tensor) ||
+        !GetTensorIntValues(axis_tensor, &axis_values) ||
+        axis_values.size() != 1) {
+      return false;
+    }
+    int64_t axis = axis_values[0];
+    if (axis != 0 && axis != -1) {
+      return false;
+    }
+    for (int i = 0; i < node->num_inputs() - 1; ++i) {
+      TensorShapeProto part_contents;
+      if (!recurse_input(i, &part_contents)) {
+        return false;
+      }
+      for (int64_t j = 0; j < part_contents.dim_size(); ++j) {
+        CopyContentAt(part_contents, j, out_contents);
+      }
+    }
+    return true;
+  }
+
+  if ((node->type_string() == "Gather" || node->type_string() == "GatherV2") &&
+      recurse_input(0, &input_contents)) {
+    Tensor indices_tensor;
+    std::vector<int64_t> indices;
+    if (!GetInputConstTensor(node, 1, &indices_tensor) ||
+        !GetTensorIntValues(indices_tensor, &indices)) {
+      return false;
+    }
+
+    int64_t axis = 0;
+    if (node->type_string() == "GatherV2") {
+      Tensor axis_tensor;
+      std::vector<int64_t> axis_values;
+      if (!GetInputConstTensor(node, 2, &axis_tensor) ||
+          !GetTensorIntValues(axis_tensor, &axis_values) ||
+          axis_values.size() != 1) {
+        return false;
+      }
+      axis = axis_values[0];
+    }
+
+    const int64_t params_rank = 1;
+    if (axis < 0) axis += params_rank;
+    if (axis != 0) {
+      return false;
+    }
+
+    const int64_t rank = input_contents.dim_size();
+    for (int64_t index : indices) {
+      if (index < 0) index += rank;
+      if (index < 0 || index >= rank) {
+        return false;
+      }
+      CopyContentAt(input_contents, index, out_contents);
+    }
+    return true;
+  }
+
+  if (node->type_string() == "Prod" && recurse_input(0, &input_contents)) {
+    Tensor reduction_indices_tensor;
+    std::vector<int64_t> axes;
+    bool keep_dims = false;
+    if (!GetInputConstTensor(node, 1, &reduction_indices_tensor) ||
+        !GetTensorIntValues(reduction_indices_tensor, &axes) ||
+        !GetNodeAttr(node->attrs(), "keep_dims", &keep_dims).ok() ||
+        keep_dims || axes.size() != 1 ||
+        (axes[0] != 0 && axes[0] != -1) || input_contents.dim_size() == 0) {
+      return false;
+    }
+    int64_t value = 1;
+    ExpressionProto expr = GetContentExpressionProto(input_contents, 0);
+    for (int64_t i = 0; i < input_contents.dim_size(); ++i) {
+      value *= input_contents.dim(i).size();
+      if (i > 0) {
+        expr = MakeMulExpressionProto(std::move(expr),
+                                      GetContentExpressionProto(input_contents, i));
+      }
+    }
+    out_contents->add_dim()->set_size(value);
+    out_contents->add_expressions()->Swap(&expr);
+    return true;
+  }
+
+  if (node->type_string() == "Slice" && recurse_input(0, &input_contents)) {
+    Tensor begin_tensor;
+    Tensor size_tensor;
+    std::vector<int64_t> begin;
+    std::vector<int64_t> size;
+    if (!GetInputConstTensor(node, 1, &begin_tensor) ||
+        !GetInputConstTensor(node, 2, &size_tensor) ||
+        !GetTensorIntValues(begin_tensor, &begin) ||
+        !GetTensorIntValues(size_tensor, &size) || begin.size() != 1 ||
+        size.size() != 1) {
+      return false;
+    }
+    int64_t start = begin[0];
+    if (start < 0 || start > input_contents.dim_size()) {
+      return false;
+    }
+    int64_t length = size[0] < 0 ? input_contents.dim_size() - start : size[0];
+    if (length < 0 || start + length > input_contents.dim_size()) {
+      return false;
+    }
+    for (int64_t i = 0; i < length; ++i) {
+      CopyContentAt(input_contents, start + i, out_contents);
+    }
+    return true;
+  }
+
+  if (node->type_string() == "StridedSlice" &&
+      recurse_input(0, &input_contents)) {
+    Tensor begin_tensor;
+    Tensor end_tensor;
+    Tensor strides_tensor;
+    std::vector<int64_t> begin;
+    std::vector<int64_t> end;
+    std::vector<int64_t> strides;
+    int64_t begin_mask = 0;
+    int64_t end_mask = 0;
+    int64_t ellipsis_mask = 0;
+    int64_t new_axis_mask = 0;
+    int64_t shrink_axis_mask = 0;
+    if (!GetInputConstTensor(node, 1, &begin_tensor) ||
+        !GetInputConstTensor(node, 2, &end_tensor) ||
+        !GetInputConstTensor(node, 3, &strides_tensor) ||
+        !GetTensorIntValues(begin_tensor, &begin) ||
+        !GetTensorIntValues(end_tensor, &end) ||
+        !GetTensorIntValues(strides_tensor, &strides) || begin.size() != 1 ||
+        end.size() != 1 || strides.size() != 1 ||
+        !GetNodeAttr(node->attrs(), "begin_mask", &begin_mask).ok() ||
+        !GetNodeAttr(node->attrs(), "end_mask", &end_mask).ok() ||
+        !GetNodeAttr(node->attrs(), "ellipsis_mask", &ellipsis_mask).ok() ||
+        !GetNodeAttr(node->attrs(), "new_axis_mask", &new_axis_mask).ok() ||
+        !GetNodeAttr(node->attrs(), "shrink_axis_mask", &shrink_axis_mask).ok()) {
+      return false;
+    }
+    if (ellipsis_mask != 0 || new_axis_mask != 0) {
+      return false;
+    }
+    const int64_t rank = input_contents.dim_size();
+    int64_t stride = strides[0];
+    if (stride == 0) {
+      return false;
+    }
+    int64_t start = (begin_mask & 1) ? (stride > 0 ? 0 : rank - 1) : begin[0];
+    int64_t stop = (end_mask & 1) ? (stride > 0 ? rank : -1) : end[0];
+    if (start < 0) start += rank;
+    if (stop < 0 && !(end_mask & 1 && stride < 0)) stop += rank;
+    if (shrink_axis_mask & 1) {
+      if (start < 0 || start >= rank) {
+        return false;
+      }
+      CopyContentAt(input_contents, start, out_contents);
+      return true;
+    }
+    if (stride < 0) {
+      return false;
+    }
+    start = std::max<int64_t>(0, start);
+    stop = std::min<int64_t>(rank, stop);
+    for (int64_t i = start; i < stop; i += stride) {
+      CopyContentAt(input_contents, i, out_contents);
+    }
+    return true;
+  }
+
+  return false;
+}
+
+bool TryGetFoldedValueContents(const Node* node, int output_index,
+                               TensorShapeProto* out_contents) {
+  absl::flat_hash_set<const Node*> visiting;
+  return TryGetFoldedValueContents(node, output_index, out_contents, &visiting);
 }
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
@@ -272,17 +700,21 @@ bool IsConstantFoldable(
         shape_map,
     const std::function<bool(const Node*)>& consider,
     int64_t max_constant_size_in_bytes,
-    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
+    std::unordered_map<const Node*, bool>* dynamic_contents_memo) {
+  TensorShapeProto exact_contents;
+  const bool has_exact_contents =
+      TryGetFoldedValueContents(n, 0, &exact_contents);
   TensorShapeProto dynamic_shape;
-  if (GetShapeFromDirectDynamicSource(n, &dynamic_shape)) {
-    VLOG(1) << "Skipping constant folding for dynamic shape-derived node "
-            << n->name() << " op=" << n->type_string()
-            << " inferred_shape=" << dynamic_shape.DebugString();
-    return false;
-  }
-  if (n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
-    VLOG(1) << "Skipping constant folding for shape-derived node "
-            << n->name() << " op=" << n->type_string();
+  const bool has_dynamic = GetShapeFromDirectDynamicSource(n, &dynamic_shape);
+  const bool is_shape_derived =
+      n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr;
+  absl::flat_hash_set<const Node*> dynamic_contents_visiting;
+  const bool has_transitive_dynamic_contents =
+      HasTransitiveDynamicShapeContents(n, dynamic_contents_memo,
+                                        &dynamic_contents_visiting);
+  if ((has_dynamic || is_shape_derived || has_transitive_dynamic_contents) &&
+      (!has_exact_contents || n->num_outputs() > 1)) {
     return false;
   }
   if (n->IsConstant()) {
@@ -367,10 +799,11 @@ void ConsiderConstantFoldableNode(
     Node* n, const ConstantFoldingOptions& opts, std::vector<Node*>* nodes,
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
+    std::unordered_map<const Node*, bool>* dynamic_contents_memo,
     bool* internal_node_inserted) {
   if (!IsConstantFoldable(n, opts.shape_map, opts.consider,
                           opts.max_constant_size_in_bytes,
-                          shape_replacement_map)) {
+                          shape_replacement_map, dynamic_contents_memo)) {
     return;
   }
   // A node is constant provided all of its non-control incoming Tensors come
@@ -426,13 +859,15 @@ void FindConstantFoldableNodes(
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
   bool internal_node_inserted = false;
+  std::unordered_map<const Node*, bool> dynamic_contents_memo;
   // Walk the nodes in data flow order.
   ReverseDFS(
       *graph, nullptr,
       [nodes, constant_control_deps, shape_replacement_map,
-       &internal_node_inserted, &opts](Node* n) {
+       &dynamic_contents_memo, &internal_node_inserted, &opts](Node* n) {
         ConsiderConstantFoldableNode(n, opts, nodes, constant_control_deps,
                                      shape_replacement_map,
+                                     &dynamic_contents_memo,
                                      &internal_node_inserted);
       },
       NodeComparatorName());
@@ -492,6 +927,9 @@ void AddShapeNodeToConstantGraph(
   TensorShapeProto user_inferred_shape;
   const bool has_dynamic =
       GetShapeFromDirectDynamicSource(n, &user_inferred_shape);
+  TensorShapeProto exact_contents;
+  const bool has_exact_contents =
+      TryGetFoldedValueContents(n, 0, &exact_contents);
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {
@@ -504,6 +942,10 @@ void AddShapeNodeToConstantGraph(
     if (has_dynamic) {
       builder.Attr("has_dynamic", has_dynamic)
           .Attr("user_inferred_shape", user_inferred_shape);
+    }
+    if (has_exact_contents && HasDynamicDimExprs(exact_contents)) {
+      builder.Attr(kUserInferredValueContentsAttrName,
+                   exact_contents.SerializeAsString());
     }
     NodeDef def;
     CHECK(builder.Finalize(&def).ok());
@@ -595,6 +1037,12 @@ bool ReplaceTensorWithConstant(
                                ? DeviceType{partition_device->device_type()}
                                : DEVICE_CPU;
   if (partition_device && device_type != DEVICE_CPU) {
+    // Constant folding replaces one output edge-set at a time. Be
+    // conservative for non-CPU multi-output ops, since partially replacing a
+    // node can violate per-output placement or memory-type assumptions.
+    if (tensor.first->num_outputs() > 1) {
+      return false;
+    }
     MemoryTypeVector input_mvec;
     MemoryTypeVector output_mvec;
     if (!MemoryTypesForNode(graph->op_registry(), device_type,
@@ -626,6 +1074,24 @@ bool ReplaceTensorWithConstant(
   TensorShapeProto user_inferred_shape;
   const bool has_dynamic =
       GetShapeFromDirectDynamicSource(tensor.first, &user_inferred_shape);
+  const bool is_shape_derived =
+      tensor.first->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr;
+  if (tensor.second != 0 && (has_dynamic || is_shape_derived)) {
+    VLOG(1) << "Skipping replacement of " << tensor.first->name() << " :: "
+            << tensor.second
+            << " because symbolic content preservation is only supported for "
+            << "single-output replacements";
+    return false;
+  }
+  TensorShapeProto exact_contents;
+  const bool has_exact_contents =
+      TryGetFoldedValueContents(tensor.first, tensor.second, &exact_contents);
+  if ((has_dynamic || is_shape_derived) && !has_exact_contents) {
+    VLOG(1) << "Skipping replacement of " << tensor.first->name() << " :: "
+            << tensor.second
+            << " because constant folding could not preserve symbolic contents";
+    return false;
+  }
   Node* constant_node;
   auto builder = NodeDefBuilder(generate_new_name(graph, node_name), "Const")
                      .Attr("dtype", constant.dtype())
@@ -633,6 +1099,11 @@ bool ReplaceTensorWithConstant(
   if (has_dynamic) {
     builder.Attr("has_dynamic", has_dynamic)
         .Attr("user_inferred_shape", user_inferred_shape);
+  }
+  if (has_exact_contents && HasDynamicDimExprs(exact_contents)) {
+    builder.Attr("has_dynamic", true)
+        .Attr(kUserInferredValueContentsAttrName,
+              exact_contents.SerializeAsString());
   }
   if (partition_device) {
     builder.Device(partition_device->name());
