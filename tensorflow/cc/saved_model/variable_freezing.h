@@ -9,8 +9,8 @@
 namespace tensorflow {
 namespace internal {
 
-absl::Status FreezeAllowlistedVariableReads(
-	const std::string& export_dir, MetaGraphDef* meta_graph_def);
+absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
+                                            MetaGraphDef* meta_graph_def);
 
 }  // namespace internal
 }  // namespace tensorflow
