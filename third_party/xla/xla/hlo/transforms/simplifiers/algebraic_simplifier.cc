@@ -2370,6 +2370,29 @@ absl::Status AlgebraicSimplifierVisitor::HandleDivide(HloInstruction* divide) {
     return absl::OkStatus();
   }
 
+  // A / broadcast(B) => A * broadcast(1 / B).
+  //
+  // This changes floating-point rounding and the handling of exceptional
+  // values, so backends must explicitly opt in when reciprocal substitution
+  // is permitted.
+  if (options_.enable_divide_by_broadcast_reciprocal() &&
+      ShapeUtil::ElementIsFloating(divide->shape()) &&
+      Match(divide,
+            m::Divide(
+                m::Op(&a),
+                m::Broadcast(m::Op(&b).WithShape(m::Shape().IsScalar()))))) {
+    TF_ASSIGN_OR_RETURN(
+        HloInstruction * reciprocal,
+        MakeBinaryHlo(HloOpcode::kDivide, MakeScalarLike(b, 1), b));
+    HloInstruction* reciprocal_broadcast =
+        divide->mutable_operand(1)->AddInstruction(
+            HloInstruction::CreateBroadcast(divide->shape(), reciprocal, {}));
+    TF_ASSIGN_OR_RETURN(
+        HloInstruction * multiply,
+        MakeBinaryHlo(HloOpcode::kMultiply, a, reciprocal_broadcast));
+    return ReplaceInstruction(divide, multiply);
+  }
+
   // A / Const => A * (1 / Const)
   //
   // (Backends can do this transformation, but generally only if the constant is

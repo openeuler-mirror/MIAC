@@ -2044,6 +2044,34 @@ TEST_F(AlgebraicSimplifierTest, DivideByBroadcastedConstant) {
                   m::Broadcast(m::Op().IsConstantScalar(1.0f / 256.0f)))));
 }
 
+TEST_F(AlgebraicSimplifierTest,
+       DivideByBroadcastedRuntimeScalarUsingReciprocal) {
+  const char* kModuleStr = R"(
+    HloModule m
+    test {
+      p0 = f32[16] parameter(0)
+      p1 = f32[] parameter(1)
+      b = f32[16] broadcast(p1), dimensions={}
+      ROOT d = f32[16] divide(p0, b)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+
+  ASSERT_FALSE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  EXPECT_THAT(m->entry_computation()->root_instruction(),
+              GmockMatch(m::Divide(m::Parameter(0),
+                                   m::Broadcast(m::Parameter(1)))));
+
+  AlgebraicSimplifierOptions options = default_options_;
+  options.set_enable_divide_by_broadcast_reciprocal(true);
+  ASSERT_TRUE(AlgebraicSimplifier(options).Run(m.get()).value());
+  EXPECT_THAT(
+      m->entry_computation()->root_instruction(),
+      GmockMatch(m::Multiply(
+          m::Parameter(0),
+          m::Broadcast(m::Divide(m::ConstantScalar(1), m::Parameter(1))))));
+}
+
 // pow(pow(A, X), Y) => pow(A, X*Y)
 TEST_F(AlgebraicSimplifierTest, PowerOfPower) {
   auto m = CreateNewVerifiedModule();
