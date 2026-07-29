@@ -530,10 +530,35 @@ class ShapeUtil {
         .value();
   }
 
+  // Constructs a dense array shape while preserving dimension expressions.
+  static Shape MakeShapeWithDenseLayout(
+      PrimitiveType element_type, absl::Span<const int64_t> dimensions,
+      absl::Span<const DExpr> expressions,
+      absl::Span<const int64_t> minor_to_major,
+      absl::Span<const Tile> tiles = {},
+      int64_t tail_padding_alignment_in_elements = 1,
+      int64_t element_size_in_bits = 0, int64_t memory_space = 0,
+      absl::Span<const SplitConfig> split_configs = {}) {
+    return MakeValidatedShapeWithDenseLayout(
+               element_type, dimensions, expressions, minor_to_major, tiles,
+               tail_padding_alignment_in_elements, element_size_in_bits,
+               memory_space, split_configs)
+        .value();
+  }
+
   // Constructs a new dense array shape with the given minor_to_major order in
   // its Layout. Returns a value shape such that shape.has_layout().
   static absl::StatusOr<Shape> MakeValidatedShapeWithDenseLayout(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
+      absl::Span<const int64_t> minor_to_major,
+      absl::Span<const Tile> tiles = {},
+      int64_t tail_padding_alignment_in_elements = 1,
+      int64_t element_size_in_bits = 0, int64_t memory_space = 0,
+      absl::Span<const SplitConfig> split_configs = {});
+
+  static absl::StatusOr<Shape> MakeValidatedShapeWithDenseLayout(
+      PrimitiveType element_type, absl::Span<const int64_t> dimensions,
+      absl::Span<const DExpr> expressions,
       absl::Span<const int64_t> minor_to_major,
       absl::Span<const Tile> tiles = {},
       int64_t tail_padding_alignment_in_elements = 1,
