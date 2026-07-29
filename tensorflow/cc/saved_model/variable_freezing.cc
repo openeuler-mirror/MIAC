@@ -93,6 +93,12 @@ bool IsAllowlistedVariableName(absl::string_view name) {
 
 // Checks if the given op mutates a variable. This is used to determine
 // if a variable is read-only and can be frozen.
+// Note: Assign-style ops are accepted when the variable is only the write
+// target (dst_input == 0). This is safe for inference-only SavedModels
+// because after freezing, all reads are replaced by Const nodes, making
+// the Assign a dead write. The pass must NOT be enabled for training
+// or fine-tuning graphs where variable updates and frozen reads would
+// become inconsistent.
 bool IsMutatingVariableOp(absl::string_view op) {
   return op == "Assign" || op == "AssignAdd" || op == "AssignSub" ||
          op == "AssignVariableOp" || op == "AssignAddVariableOp" ||
@@ -438,7 +444,6 @@ bool IsSafeVariableV2ToFreeze(const NodeDef& variable,
       if (consumer->op() == "Save" || consumer->op() == "SaveV2") {
         return true;
       }
-
       if (IsMutatingVariableOp(consumer->op())) {
         ok = dst_input == 0;
         return ok;
@@ -565,20 +570,34 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
       const std::string tensor_names_const_name =
           BaseNodeName(restore_it->second->input(1));
       const auto tensor_names_const_it = node_map.find(tensor_names_const_name);
-      if (tensor_names_const_it != node_map.end()) {
-        // RestoreV2 input(1) is a string Const listing checkpoint keys in
-        // output order, so decode it and use the restore output index to pick
-        // the matching checkpoint tensor name.
-        TF_ASSIGN_OR_RETURN(
-            std::vector<std::string> tensor_names,
-            GetConstStringValues(*tensor_names_const_it->second));
-        if (restore_output_index >= 0 &&
-            restore_output_index < tensor_names.size()) {
-          tensor_name = tensor_names[restore_output_index];
-        } else if (!tensor_names.empty()) {
-          tensor_name = tensor_names[0];
-        }
+      if (tensor_names_const_it == node_map.end() ||
+          tensor_names_const_it->second->op() != "Const") {
+        VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+                << variable_name
+                << " reason=RestoreV2 tensor-names input is not Const";
+        continue;
       }
+      // RestoreV2 input(1) is a string Const listing checkpoint keys in
+      // output order, so decode it and use the restore output index to pick
+      // the matching checkpoint tensor name.
+      const absl::StatusOr<std::vector<std::string>> tensor_names_or =
+          GetConstStringValues(*tensor_names_const_it->second);
+      if (!tensor_names_or.ok()) {
+        VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+                << variable_name
+                << " reason=failed to decode RestoreV2 tensor names: "
+                << tensor_names_or.status();
+        continue;
+      }
+      const std::vector<std::string>& tensor_names = *tensor_names_or;
+      if (restore_output_index < 0 ||
+          restore_output_index >= static_cast<int>(tensor_names.size())) {
+        VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+                << variable_name << " reason=invalid RestoreV2 output index "
+                << restore_output_index;
+        continue;
+      }
+      tensor_name = tensor_names[restore_output_index];
     }
 
     Tensor tensor;
