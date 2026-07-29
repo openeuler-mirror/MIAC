@@ -1,0 +1,63 @@
+/* Copyright 2026 The OpenXLA Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#include "xla/service/dynamic_constant_rewriter.h"
+
+#include <memory>
+#include <utility>
+
+#include <gtest/gtest.h>
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/literal_util.h"
+#include "xla/shape_expr.h"
+#include "xla/tests/hlo_test_base.h"
+#include "xla/xla_data.pb.h"
+
+namespace xla {
+namespace {
+
+using DynamicConstantRewriterTest = HloTestBase;
+
+TEST_F(DynamicConstantRewriterTest, ReusesIdenticalRuntimeExpression) {
+  HloComputation::Builder builder(TestName());
+  auto make_dynamic_constant = [&builder]() {
+    HloInstruction* constant = builder.AddInstruction(
+        HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(32)));
+    ExpressionProto expression;
+    DExpr::Var(1).to_proto(&expression);
+    constant->set_contents({std::move(expression)});
+    return constant;
+  };
+
+  HloInstruction* first = make_dynamic_constant();
+  HloInstruction* second = make_dynamic_constant();
+  builder.AddInstruction(HloInstruction::CreateTuple({first, second}));
+
+  std::unique_ptr<HloModule> module = CreateNewVerifiedModule();
+  HloComputation* computation =
+      module->AddEntryComputation(builder.Build());
+
+  ASSERT_TRUE(DynamicConstantRewriter().Run(module.get()).value());
+
+  HloInstruction* root = computation->root_instruction();
+  ASSERT_EQ(root->operand_count(), 2);
+  EXPECT_EQ(root->operand(0), root->operand(1));
+  EXPECT_EQ(root->operand(0)->opcode(), HloOpcode::kCustomCall);
+  EXPECT_EQ(root->operand(0)->custom_call_target(), "GetExpressionValue");
+}
+
+}  // namespace
+}  // namespace xla

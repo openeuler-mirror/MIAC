@@ -156,6 +156,19 @@ cc_library(
     ],
 )
 
+xla_cc_test(
+    name = "dynamic_constant_rewriter_test",
+    srcs = ["dynamic_constant_rewriter_test.cc"],
+    deps = [
+        ":dynamic_constant_rewriter",
+        "//xla:literal_util",
+        "//xla:xla_data_proto_cc",
+        "//xla/hlo/ir:hlo",
+        "//xla/tests:hlo_test_base",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
 cc_library(
     name = "all_reduce_promotion",
     srcs = ["all_reduce_promotion.cc"],

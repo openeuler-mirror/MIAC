@@ -23,8 +23,10 @@
 namespace xla {
 namespace {
 
+using RuntimeValueCache = std::vector<std::pair<DExpr, HloInstruction*>>;
+
 absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
-    HloInstruction* constant_instr) {
+    HloInstruction* constant_instr, RuntimeValueCache* runtime_value_cache) {
   TF_RET_CHECK(constant_instr->opcode() == HloOpcode::kConstant);
   TF_RET_CHECK(constant_instr->has_contents());
 
@@ -67,17 +69,28 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
       << "GetExpressionValue carriers must fit in s32, got " << carrier_bound;
 
   HloComputation* computation = constant_instr->parent();
-  HloInstruction* carrier = computation->AddInstruction(
-      HloInstruction::CreateConstant(
-          LiteralUtil::CreateR1<int32_t>(
-              {static_cast<int32_t>(carrier_bound)})));
-  ExpressionProto expr_proto;
-  expr.to_proto(&expr_proto);
+  HloInstruction* runtime_value = nullptr;
+  for (const auto& [cached_expr, cached_value] : *runtime_value_cache) {
+    if (cached_expr == expr) {
+      runtime_value = cached_value;
+      break;
+    }
+  }
 
-  HloInstruction* runtime_value = computation->AddInstruction(
-      HloInstruction::CreateCustomCall(
-          ShapeUtil::MakeShape(S32, {}), {carrier}, "GetExpressionValue"));
-  runtime_value->set_contents({std::move(expr_proto)});
+  if (runtime_value == nullptr) {
+    HloInstruction* carrier = computation->AddInstruction(
+        HloInstruction::CreateConstant(
+            LiteralUtil::CreateR1<int32_t>(
+                {static_cast<int32_t>(carrier_bound)})));
+    ExpressionProto expr_proto;
+    expr.to_proto(&expr_proto);
+
+    runtime_value = computation->AddInstruction(
+        HloInstruction::CreateCustomCall(
+            ShapeUtil::MakeShape(S32, {}), {carrier}, "GetExpressionValue"));
+    runtime_value->set_contents({std::move(expr_proto)});
+    runtime_value_cache->emplace_back(expr, runtime_value);
+  }
   if (shape.element_type() == S64) {
     runtime_value = computation->AddInstruction(HloInstruction::CreateConvert(
         ShapeUtil::MakeShape(S64, {}), runtime_value));
@@ -112,6 +125,7 @@ absl::StatusOr<bool> DynamicConstantRewriter::Run(
   bool changed = false;
   for (HloComputation* computation :
        module->MakeNonfusionComputations(execution_threads)) {
+    RuntimeValueCache runtime_value_cache;
     std::vector<HloInstruction*> marked_constants;
     for (HloInstruction* instruction : computation->MakeInstructionPostOrder()) {
       if (instruction->opcode() == HloOpcode::kConstant) {
@@ -133,7 +147,8 @@ absl::StatusOr<bool> DynamicConstantRewriter::Run(
         continue;
       }
       TF_ASSIGN_OR_RETURN(HloInstruction * replacement,
-                          BuildDynamicConstantReplacement(constant_instr));
+                          BuildDynamicConstantReplacement(
+                              constant_instr, &runtime_value_cache));
       VLOG(1) << "Rewriting marked constant " << constant_instr->name()
               << " into " << replacement->name() << " ("
               << HloOpcodeString(replacement->opcode()) << ")";
