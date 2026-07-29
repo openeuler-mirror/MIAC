@@ -500,7 +500,13 @@ absl::StatusOr<std::unique_ptr<BundleReader>> OpenVariablesBundleReader(
     const std::string& export_dir) {
   const std::string variables_prefix = io::JoinPath(
       export_dir, kSavedModelVariablesDirectory, kSavedModelVariablesFilename);
-  auto reader = std::make_unique<BundleReader>(Env::Default(), variables_prefix);
+  if (!Env::Default()->FileExists(variables_prefix).ok()) {
+    LOG(INFO) << "[variable_freezing] no variables checkpoint at "
+              << variables_prefix << "; skipping freeze pass";
+    return nullptr;
+  }
+  auto reader =
+      std::make_unique<BundleReader>(Env::Default(), variables_prefix);
   TF_RETURN_WITH_CONTEXT_IF_ERROR(
       reader->status(), "Unable to load SavedModel variables checkpoint from ",
       variables_prefix);
@@ -692,8 +698,13 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
     return absl::OkStatus();
   }
 
+  // Open the variables checkpoint reader. If reader is nullptr,
+  // the checkpoint is missing and we skip the freeze pass.
   TF_ASSIGN_OR_RETURN(std::unique_ptr<BundleReader> reader,
                       OpenVariablesBundleReader(export_dir));
+  if (reader == nullptr) {
+    return absl::OkStatus();
+  }
   const Fanouts fanouts = BuildDataFanouts(*graph_def);
 
   // Collect freezeable values from both legacy VariableV2 graphs and
