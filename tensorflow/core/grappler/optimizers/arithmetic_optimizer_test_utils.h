@@ -238,9 +238,9 @@ class ArithmeticOptimizerTest : public GrapplerTest {
     optimizer->options_.remove_stack_slice_same_axis = true;
   }
 
-  void EnableOnlySimplifyGatherOfConcat(ArithmeticOptimizer* optimizer) {
+  void EnableOnlySimplifyGatherOfPack(ArithmeticOptimizer* optimizer) {
     DisableAllStages(optimizer);
-    optimizer->options_.simplify_gather_of_concat = true;
+    optimizer->options_.simplify_gather_of_pack = true;
   }
 
   void EnableOnlySimplifyEmbeddingLookup(ArithmeticOptimizer* optimizer) {
@@ -280,7 +280,7 @@ class ArithmeticOptimizerTest : public GrapplerTest {
     options.reorder_cast_like_and_value_preserving = false;
     options.replace_mul_with_tile = false;
     options.replace_mul_with_square = false;
-    options.simplify_gather_of_concat = false;
+    options.simplify_gather_of_pack = false;
     options.simplify_aggregation = false;
     options.unary_ops_composition = false;
     options.simplify_embedding_lookup = false;

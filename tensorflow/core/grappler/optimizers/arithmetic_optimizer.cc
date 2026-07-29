@@ -4329,16 +4329,14 @@ class RemoveCastIntoSegmentReductionStage : public ArithmeticOptimizerStage {
   }
 };
 
-// Rewrites Gather/GatherV2 over a ConcatV2 or Pack with static indices into a
-// smaller ConcatV2 or Pack when the gather only selects whole source slices of
-// size 1 along the gather axis.
-class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
+// Rewrites Gather/GatherV2 over a Pack with static indices into a smaller Pack
+// when the gather indexes the pack axis.
+class SimplifyGatherOfPackStage : public ArithmeticOptimizerStage {
  public:
-  explicit SimplifyGatherOfConcatStage(
-      const GraphOptimizerContext& ctx,
-      const ArithmeticOptimizerContext& ctx_ext)
-      : ArithmeticOptimizerStage("SimplifyGatherOfConcatStage", ctx, ctx_ext) {}
-  ~SimplifyGatherOfConcatStage() override = default;
+  explicit SimplifyGatherOfPackStage(const GraphOptimizerContext& ctx,
+                                     const ArithmeticOptimizerContext& ctx_ext)
+      : ArithmeticOptimizerStage("SimplifyGatherOfPackStage", ctx, ctx_ext) {}
+  ~SimplifyGatherOfPackStage() override = default;
 
   bool IsSupported(const NodeDef* node) const override {
     return (node->op() == "GatherV2" || node->op() == "Gather") &&
@@ -4348,14 +4346,12 @@ class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
   absl::Status TrySimplify(NodeDef* gather_node,
                            string* simplified_node_name) override {
     if (IsInPreserveSet(*gather_node)) return absl::OkStatus();
-    VLOG(1) << "SimplifyGatherOfConcatStage::TrySimplify: "
-              << gather_node->name();
+    VLOG(1) << "SimplifyGatherOfPackStage::TrySimplify: "
+            << gather_node->name();
 
     NodeDef* source_node = nullptr;
     TF_RETURN_IF_ERROR(GetInputNode(gather_node->input(0), &source_node));
-    const bool source_is_concat = source_node->op() == "ConcatV2";
-    const bool source_is_pack = source_node->op() == "Pack";
-    if (!source_is_concat && !source_is_pack) return absl::OkStatus();
+    if (source_node->op() != "Pack") return absl::OkStatus();
     if (!source_node->device().empty() && !gather_node->device().empty() &&
         source_node->device() != gather_node->device()) {
       return absl::OkStatus();
@@ -4400,17 +4396,15 @@ class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
     if (axis < 0) axis += source_rank;
     if (axis < 0 || axis >= source_rank) return absl::OkStatus();
 
-    if (source_is_pack) {
-      int64_t pack_axis = 0;
-      absl::Status pack_axis_status =
-          GetNodeAttr(*source_node, "axis", &pack_axis);
-      if (!pack_axis_status.ok()) {
-        return pack_axis_status;
-      }
-      if (pack_axis < 0) pack_axis += source_rank;
-      if (pack_axis < 0 || pack_axis >= source_rank || pack_axis != axis) {
-        return absl::OkStatus();
-      }
+    int64_t pack_axis = 0;
+    absl::Status pack_axis_status =
+        GetNodeAttr(*source_node, "axis", &pack_axis);
+    if (!pack_axis_status.ok()) {
+      return pack_axis_status;
+    }
+    if (pack_axis < 0) pack_axis += source_rank;
+    if (pack_axis < 0 || pack_axis >= source_rank || pack_axis != axis) {
+      return absl::OkStatus();
     }
 
     Tensor indices_tensor;
@@ -4450,14 +4444,8 @@ class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
       return absl::OkStatus();
     }
 
-    int source_data_input_count = 0;
-    if (source_is_concat) {
-      const int num_concat_regular_inputs = NumNonControlInputs(*source_node);
-      source_data_input_count = num_concat_regular_inputs - 1;
-    } else {
-      TF_RETURN_IF_ERROR(CheckAttrExists(*source_node, "N"));
-      source_data_input_count = source_node->attr().at("N").i();
-    }
+    TF_RETURN_IF_ERROR(CheckAttrExists(*source_node, "N"));
+    const int source_data_input_count = source_node->attr().at("N").i();
     if (source_data_input_count <= 0) return absl::OkStatus();
 
     std::vector<string> selected_inputs;
@@ -4477,22 +4465,15 @@ class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
         return absl::OkStatus();
       }
 
-      if (source_is_concat) {
-        if (operand_properties->shape().dim_size() != source_rank ||
-            operand_properties->shape().dim(axis).size() != 1) {
-          return absl::OkStatus();
-        }
-      } else {
-        if (operand_properties->shape().dim_size() + 1 != source_rank) {
-          return absl::OkStatus();
-        }
+      if (operand_properties->shape().dim_size() + 1 != source_rank) {
+        return absl::OkStatus();
       }
 
       unique_selected_operand_indices.insert(operand_index);
       selected_inputs.push_back(selected_input);
     }
 
-    // Skip no-op rewrites that preserve the full original concat operand set.
+    // Skip no-op rewrites that preserve the full original pack operand set.
     if (unique_selected_operand_indices.size() >= source_data_input_count) {
       return absl::OkStatus();
     }
@@ -4501,15 +4482,11 @@ class SimplifyGatherOfConcatStage : public ArithmeticOptimizerStage {
         UniqueOptimizedNodeName(ParseNodeScopeAndName(gather_node->name())),
         source_node);
     replacement->clear_input();
+    replacement->mutable_attr()->erase("_output_shapes");
     replacement->set_device(gather_node->device());
     for (const string& input : selected_inputs) {
       replacement->add_input(input);
       ctx().node_map->AddOutput(NodeName(input), replacement->name());
-    }
-    if (source_is_concat) {
-      const string& axis_input = source_node->input(source_data_input_count);
-      replacement->add_input(axis_input);
-      ctx().node_map->AddOutput(NodeName(axis_input), replacement->name());
     }
     (*replacement->mutable_attr())["N"].set_i(selected_inputs.size());
 
@@ -4599,8 +4576,8 @@ absl::Status ArithmeticOptimizer::SimplifyArithmeticOps(bool can_use_shapes) {
     pipeline.AddStage<UnaryOpsComposition>(ctx, ctx_ext);
   if (options_.remove_stack_slice_same_axis)
     pipeline.AddStage<RemoveStackSliceSameAxis>(ctx, ctx_ext);
-  if (options_.simplify_gather_of_concat && can_use_shapes)
-    pipeline.AddStage<SimplifyGatherOfConcatStage>(ctx, ctx_ext);
+  if (options_.simplify_gather_of_pack && can_use_shapes)
+    pipeline.AddStage<SimplifyGatherOfPackStage>(ctx, ctx_ext);
   if (options_.simplify_embedding_lookup)
     pipeline.AddStage<SimplifyEmbeddingLookupStage>(ctx, ctx_ext);
   if (options_.remove_cast_into_segment_reduction)

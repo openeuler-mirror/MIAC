@@ -592,7 +592,7 @@ TEST_F(ArithmeticOptimizerTest, ReplacePackWithTileReshapeOutOfRange) {
 }
 
 TEST_F(ArithmeticOptimizerTest,
-       SimplifyGatherOfConcatRewritesPackWhenGatherAxisMatchesPackAxis) {
+       SimplifyGatherOfPackRewritesWhenGatherAxisMatchesPackAxis) {
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   Output a = ops::Placeholder(s.WithOpName("a"), DT_FLOAT,
                               ops::Placeholder::Shape({2, 3}));
@@ -616,7 +616,7 @@ TEST_F(ArithmeticOptimizerTest,
 
   GraphDef g;
   ArithmeticOptimizer optimizer;
-  EnableOnlySimplifyGatherOfConcat(&optimizer);
+  EnableOnlySimplifyGatherOfPack(&optimizer);
   OptimizeAndPrune(&optimizer, &item, &g);
 
   EXPECT_EQ(CountOpNodes(g, "GatherV2"), 0);
@@ -639,7 +639,7 @@ TEST_F(ArithmeticOptimizerTest,
 }
 
 TEST_F(ArithmeticOptimizerTest,
-       SimplifyGatherOfConcatSkipsPackWhenGatherAxisDiffersFromPackAxis) {
+       SimplifyGatherOfPackSkipsWhenGatherAxisDiffersFromPackAxis) {
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   Output a = ops::Placeholder(s.WithOpName("a"), DT_FLOAT,
                               ops::Placeholder::Shape({2, 3}));
@@ -658,7 +658,7 @@ TEST_F(ArithmeticOptimizerTest,
 
   GraphDef g;
   ArithmeticOptimizer optimizer;
-  EnableOnlySimplifyGatherOfConcat(&optimizer);
+  EnableOnlySimplifyGatherOfPack(&optimizer);
   OptimizeAndPrune(&optimizer, &item, &g);
 
   CompareGraphs(item.graph, g);

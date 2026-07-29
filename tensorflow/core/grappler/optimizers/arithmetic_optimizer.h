@@ -89,7 +89,7 @@ class ArithmeticOptimizer : public GraphOptimizer {
     bool convert_expm1 = true;
     bool unary_ops_composition = true;
     bool remove_stack_slice_same_axis = true;
-    bool simplify_gather_of_concat = true;
+    bool simplify_gather_of_pack = true;
     bool simplify_aggregation = true;
     bool simplify_embedding_lookup = true;
     bool remove_cast_into_segment_reduction = true;
@@ -107,8 +107,8 @@ class ArithmeticOptimizer : public GraphOptimizer {
     // fields independently of the overall arithmetic_optimization toggle.
     static ArithmeticOptimizerOptions Default(const RewriterConfig& cfg) {
       ArithmeticOptimizerOptions options;
-      options.simplify_gather_of_concat =
-          cfg.simplify_gather_of_concat() != RewriterConfig::OFF;
+      options.simplify_gather_of_pack =
+          cfg.simplify_gather_of_pack() != RewriterConfig::OFF;
       return options;
     }
   };
