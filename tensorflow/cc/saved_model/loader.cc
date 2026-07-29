@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/cc/saved_model/loader.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -304,8 +305,14 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
                                                     &bundle->meta_graph_def));
   if (session_options.config.graph_options().rewrite_options()
           .freeze_allowlisted_variables() != RewriterConfig::OFF) {
+    const double max_tensor_mib =
+        session_options.config.graph_options().rewrite_options()
+            .freeze_max_tensor_mib();
+    // Convert MiB to bytes; 0 means no limit.
+    const int64_t max_tensor_bytes =
+        static_cast<int64_t>(max_tensor_mib * (1LL << 20));
     TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
-        export_dir, &bundle->meta_graph_def));
+        export_dir, &bundle->meta_graph_def, max_tensor_bytes));
   }
   TF_RETURN_IF_ERROR(
       ReadSavedModelDebugInfoIfPresent(export_dir, &bundle->debug_info));
@@ -446,8 +453,14 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
       ReadMetaGraphDefFromSavedModel(export_dir, tags, &meta_graph_def));
   if (session_options.config.graph_options().rewrite_options()
           .freeze_allowlisted_variables() != RewriterConfig::OFF) {
-    TF_RETURN_IF_ERROR(
-        internal::FreezeAllowlistedVariableReads(export_dir, &meta_graph_def));
+    const double max_tensor_mib =
+        session_options.config.graph_options().rewrite_options()
+            .freeze_max_tensor_mib();
+    // Convert MiB to bytes; 0 means no limit.
+    const int64_t max_tensor_bytes =
+        static_cast<int64_t>(max_tensor_mib * (1LL << 20));
+    TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
+        export_dir, &meta_graph_def, max_tensor_bytes));
   }
   std::unique_ptr<Session> session;
   TF_RETURN_IF_ERROR(LoadGraphDefIntoSession(

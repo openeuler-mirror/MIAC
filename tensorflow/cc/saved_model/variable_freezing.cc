@@ -700,10 +700,14 @@ absl::Status RewriteTopLevelReadNodes(GraphDef* graph_def,
 }  // namespace
 
 absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
-                                            MetaGraphDef* meta_graph_def) {
+                                            MetaGraphDef* meta_graph_def,
+                                            int64_t max_tensor_bytes) {
   if (meta_graph_def == nullptr) {
     return absl::OkStatus();
   }
+  // Use the caller-provided limit, or fall back to the internal default.
+  const int64_t effective_max_tensor_bytes =
+      max_tensor_bytes < 0 ? kDefaultMaxTensorBytes : max_tensor_bytes;
   // Snapshot the graph before any in-place rewrites for debugging.
   VLOG(2) << "[variable_freezing] graph before freeze:"
           << meta_graph_def->graph_def().DebugString();
@@ -735,7 +739,7 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
     TF_ASSIGN_OR_RETURN(
         FrozenValueMap loaded_v1_frozen_values,
         LoadFrozenVariableV2Values(reader.get(), *graph_def, node_map, fanouts,
-                                   kDefaultMaxTensorBytes));
+                                   effective_max_tensor_bytes));
     v1_frozen_values = std::move(loaded_v1_frozen_values);
   }
 
@@ -744,7 +748,7 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
     TF_ASSIGN_OR_RETURN(
         FrozenValueMap loaded_var_handle_values,
         LoadFrozenVarHandleValues(reader.get(), *graph_def, fanouts,
-                                  kDefaultMaxTensorBytes));
+                                  effective_max_tensor_bytes));
     frozen_values = std::move(loaded_var_handle_values);
   }
   for (auto& entry : v1_frozen_values) {
