@@ -2520,6 +2520,9 @@ class SymbolicShapeManager {
       case DimExpr::Kind::kSub:
       case DimExpr::Kind::kMul:
       case DimExpr::Kind::kDiv:
+      case DimExpr::Kind::kMax:
+      case DimExpr::Kind::kGt:
+      case DimExpr::Kind::kSelect:
         return true;
       default:
         return false;

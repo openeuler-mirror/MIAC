@@ -992,7 +992,7 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
     auto* div_node = static_cast<const Div*>(&expr);
     llvm::Value* v_lhs = EmitExpressionImpl(b, *div_node->get_lhs());
     llvm::Value* v_rhs = EmitExpressionImpl(b, *div_node->get_rhs());
-    return b->CreateUDiv(v_lhs, v_rhs, "div_dims");
+    return b->CreateSDiv(v_lhs, v_rhs, "div_dims");
   }
   if (expr.kind() == DExpr::Kind::kAdd) {
     auto* add_node = static_cast<const Add*>(&expr);
@@ -1005,6 +1005,32 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
     llvm::Value* v_lhs = EmitExpressionImpl(b, *sub_node->get_lhs());
     llvm::Value* v_rhs = EmitExpressionImpl(b, *sub_node->get_rhs());
     return b->CreateSub(v_lhs, v_rhs, "sub_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kMax) {
+    auto* max_node = static_cast<const MaxExpr*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *max_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *max_node->get_rhs());
+    llvm::Value* lhs_is_greater =
+        b->CreateICmpSGT(v_lhs, v_rhs, "max_dims_pred");
+    return b->CreateSelect(lhs_is_greater, v_lhs, v_rhs, "max_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kGt) {
+    auto* gt_node = static_cast<const GtExpr*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *gt_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *gt_node->get_rhs());
+    llvm::Value* pred = b->CreateICmpSGT(v_lhs, v_rhs, "gt_dims_pred");
+    return b->CreateZExt(pred, i64Type, "gt_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kSelect) {
+    auto* select_node = static_cast<const SelectExpr*>(&expr);
+    llvm::Value* pred = EmitExpressionImpl(b, *select_node->get_pred());
+    llvm::Value* v_true =
+        EmitExpressionImpl(b, *select_node->get_on_true());
+    llvm::Value* v_false =
+        EmitExpressionImpl(b, *select_node->get_on_false());
+    llvm::Value* nonzero = b->CreateICmpNE(
+        pred, llvm::ConstantInt::get(i64Type, 0, true), "select_dims_pred");
+    return b->CreateSelect(nonzero, v_true, v_false, "select_dims");
   }
   return nullptr;
 }

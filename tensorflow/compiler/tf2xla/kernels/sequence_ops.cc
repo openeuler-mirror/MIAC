@@ -92,17 +92,17 @@ xla::DExpr BuildRangeSizeExpr(const XlaExpression& start_expr,
   xla::DExpr limit_symbol = GetScalarExpr<T>(limit_expr, limit);
   xla::DExpr delta_symbol = GetScalarExpr<T>(delta_expr, delta);
 
-  if (delta.Get<T>({}) > 0) {
-    xla::DExpr diff = (limit_symbol - start_symbol).simplify();
-    xla::DExpr adjusted = (diff - 1).simplify();
-    xla::DExpr quotient = (adjusted / delta_symbol).simplify();
-    return (quotient + 1).simplify();
-  }
-  xla::DExpr step_symbol = (xla::DExpr::Const(0) - delta_symbol).simplify();
-  xla::DExpr diff = (start_symbol - limit_symbol).simplify();
-  xla::DExpr adjusted = (diff - 1).simplify();
-  xla::DExpr quotient = (adjusted / step_symbol).simplify();
-  return (quotient + 1).simplify();
+  xla::DExpr positive_diff = (limit_symbol - start_symbol).simplify();
+  xla::DExpr positive_size =
+      (((positive_diff - 1) / delta_symbol) + 1).simplify();
+  xla::DExpr negative_step =
+      (xla::DExpr::Const(0) - delta_symbol).simplify();
+  xla::DExpr negative_diff = (start_symbol - limit_symbol).simplify();
+  xla::DExpr negative_size =
+      (((negative_diff - 1) / negative_step) + 1).simplify();
+  return xla::DExpr::Select(xla::DExpr::Gt(delta_symbol, xla::DExpr::Const(0)),
+                            positive_size, negative_size)
+      .simplify();
 }
 
 // The type-specific part of the implementation of Range.
