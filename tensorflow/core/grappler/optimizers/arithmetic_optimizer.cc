@@ -4346,7 +4346,7 @@ class SimplifyGatherOfPackStage : public ArithmeticOptimizerStage {
   absl::Status TrySimplify(NodeDef* gather_node,
                            string* simplified_node_name) override {
     if (IsInPreserveSet(*gather_node)) return absl::OkStatus();
-    VLOG(1) << "SimplifyGatherOfPackStage::TrySimplify: "
+    VLOG(2) << "SimplifyGatherOfPackStage::TrySimplify: "
             << gather_node->name();
 
     NodeDef* source_node = nullptr;
