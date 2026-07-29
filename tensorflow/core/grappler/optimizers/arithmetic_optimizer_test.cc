@@ -664,6 +664,69 @@ TEST_F(ArithmeticOptimizerTest,
   CompareGraphs(item.graph, g);
 }
 
+TEST_F(ArithmeticOptimizerTest, SimplifyGatherOfPackSkipsFedPack) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+  Output a = ops::Placeholder(s.WithOpName("a"), DT_FLOAT,
+                              ops::Placeholder::Shape({2, 3}));
+  Output b = ops::Placeholder(s.WithOpName("b"), DT_FLOAT,
+                              ops::Placeholder::Shape({2, 3}));
+  Output packed =
+      ops::Stack(s.WithOpName("packed"), {a, b}, ops::Stack::Axis(1));
+  Output gathered = ops::GatherV2(s.WithOpName("gathered"), packed,
+                                  ops::Const(s.WithOpName("indices"), {1}),
+                                  ops::Const(s.WithOpName("axis"), 1));
+  Output o = ops::Identity(s.WithOpName("output"), gathered);
+
+  GrapplerItem item;
+  item.fetch = {"output"};
+  item.feed = {
+      {"packed", GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 2, 3}))}};
+  TF_CHECK_OK(s.ToGraphDef(&item.graph));
+
+  GraphDef g;
+  ArithmeticOptimizer optimizer;
+  EnableOnlySimplifyGatherOfPack(&optimizer);
+  OptimizeAndPrune(&optimizer, &item, &g);
+
+  CompareGraphs(item.graph, g);
+}
+
+TEST_F(ArithmeticOptimizerTest,
+       SimplifyGatherOfPackSupportsDuplicateIndicesWithDefaultPipeline) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+  Output a = ops::Placeholder(s.WithOpName("a"), DT_FLOAT,
+                              ops::Placeholder::Shape({2, 3}));
+  Output b = ops::Placeholder(s.WithOpName("b"), DT_FLOAT,
+                              ops::Placeholder::Shape({2, 3}));
+  Output c = ops::Placeholder(s.WithOpName("c"), DT_FLOAT,
+                              ops::Placeholder::Shape({2, 3}));
+  Output packed =
+      ops::Stack(s.WithOpName("packed"), {a, b, c}, ops::Stack::Axis(1));
+  Output gathered = ops::GatherV2(s.WithOpName("gathered"), packed,
+                                  ops::Const(s.WithOpName("indices"), {0, 0}),
+                                  ops::Const(s.WithOpName("axis"), 1));
+  Output o = ops::Identity(s.WithOpName("output"), gathered);
+
+  GrapplerItem item;
+  item.fetch = {"output"};
+  TF_CHECK_OK(s.ToGraphDef(&item.graph));
+  auto a_t = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 3}));
+  auto b_t = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 3}));
+  auto c_t = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 3}));
+  auto expected = EvaluateNodes(item.graph, item.fetch,
+                                {{"a", a_t}, {"b", b_t}, {"c", c_t}});
+  ASSERT_EQ(expected.size(), 1);
+
+  GraphDef g;
+  ArithmeticOptimizer optimizer;
+  OptimizeTwiceAndPrune(&optimizer, &item, &g);
+
+  EXPECT_EQ(CountOpNodes(g, "GatherV2"), 0);
+  auto result = EvaluateNodes(g, item.fetch, {{"a", a_t}});
+  ASSERT_EQ(result.size(), 1);
+  test::ExpectTensorNear<float>(result[0], expected[0], 1e-6);
+}
+
 TEST_F(ArithmeticOptimizerTest, RemoveInvolutionAdjacentNodes) {
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
 

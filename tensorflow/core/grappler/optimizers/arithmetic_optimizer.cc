@@ -4352,6 +4352,10 @@ class SimplifyGatherOfPackStage : public ArithmeticOptimizerStage {
     NodeDef* source_node = nullptr;
     TF_RETURN_IF_ERROR(GetInputNode(gather_node->input(0), &source_node));
     if (source_node->op() != "Pack") return absl::OkStatus();
+    if (ctx().feed_nodes->find(source_node->name()) !=
+        ctx().feed_nodes->end()) {
+      return absl::OkStatus();
+    }
     if (!source_node->device().empty() && !gather_node->device().empty() &&
         source_node->device() != gather_node->device()) {
       return absl::OkStatus();
@@ -4478,22 +4482,27 @@ class SimplifyGatherOfPackStage : public ArithmeticOptimizerStage {
       return absl::OkStatus();
     }
 
-    NodeDef* replacement = AddCopyNode(
-        UniqueOptimizedNodeName(ParseNodeScopeAndName(gather_node->name())),
-        source_node);
-    replacement->clear_input();
-    replacement->mutable_attr()->erase("_output_shapes");
-    replacement->set_device(gather_node->device());
-    for (const string& input : selected_inputs) {
-      replacement->add_input(input);
-      ctx().node_map->AddOutput(NodeName(input), replacement->name());
-    }
-    (*replacement->mutable_attr())["N"].set_i(selected_inputs.size());
+    const NodeDef original_gather = *gather_node;
+    const string gather_name = gather_node->name();
+    const string gather_device = gather_node->device();
 
-    ForwardControlDependencies(replacement, {gather_node, source_node});
-    AddToOptimizationQueue(replacement);
-    TF_RETURN_IF_ERROR(UpdateConsumers(gather_node, replacement->name()));
-    *simplified_node_name = replacement->name();
+    // Reuse the Gather node so its inferred output properties remain available
+    // to later arithmetic optimizer stages.
+    ctx().node_map->RemoveInputs(gather_name);
+    *gather_node = *source_node;
+    gather_node->set_name(gather_name);
+    gather_node->clear_input();
+    gather_node->mutable_attr()->erase("_output_shapes");
+    gather_node->set_device(gather_device);
+    for (const string& input : selected_inputs) {
+      gather_node->add_input(input);
+      ctx().node_map->AddOutput(NodeName(input), gather_name);
+    }
+    (*gather_node->mutable_attr())["N"].set_i(selected_inputs.size());
+
+    ForwardControlDependencies(gather_node, {&original_gather, source_node});
+    ctx().graph_properties->ClearInputProperties(gather_name);
+    *simplified_node_name = gather_name;
     return absl::OkStatus();
   }
 };
