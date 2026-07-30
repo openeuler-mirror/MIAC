@@ -54,7 +54,7 @@ GrapplerItem MakeGraph(const std::vector<int32>& indices = {0, 1},
       ops::Stack(scope.WithOpName("packed"), {a, b, c}, ops::Stack::Axis(1));
   Output gathered =
       ops::GatherV2(scope.WithOpName("gathered"), packed,
-                    ops::Const(scope.WithOpName("indices"), indices),
+                    ops::Const(scope.WithOpName("indices"), test::AsTensor<int32>(indices)),
                     ops::Const(scope.WithOpName("axis"), gather_axis));
   ops::Identity(scope.WithOpName("output"), gathered);
 
