@@ -41,10 +41,6 @@ class ArithmeticOptimizer : public GraphOptimizer {
       : opt_level_(opt_level),
         options_(ArithmeticOptimizerOptions::Default(opt_level)) {}
 
-  explicit ArithmeticOptimizer(const RewriterConfig& cfg)
-      : opt_level_(cfg.arithmetic_optimization()),
-        options_(ArithmeticOptimizerOptions::Default(cfg)) {}
-
   ~ArithmeticOptimizer() override {}
 
   string name() const override { return "arithmetic_optimizer"; };
@@ -89,7 +85,6 @@ class ArithmeticOptimizer : public GraphOptimizer {
     bool convert_expm1 = true;
     bool unary_ops_composition = true;
     bool remove_stack_slice_same_axis = true;
-    bool simplify_gather_of_pack = true;
     bool simplify_aggregation = true;
     bool simplify_embedding_lookup = true;
     bool remove_cast_into_segment_reduction = true;
@@ -99,16 +94,6 @@ class ArithmeticOptimizer : public GraphOptimizer {
     static ArithmeticOptimizerOptions Default(
         RewriterConfig::Toggle opt_level) {
       ArithmeticOptimizerOptions options;
-      return options;
-    }
-
-    // Choose which arithmetic optimizer stages will be enabled based on the
-    // full RewriterConfig, allowing individual stages to be toggled via proto
-    // fields independently of the overall arithmetic_optimization toggle.
-    static ArithmeticOptimizerOptions Default(const RewriterConfig& cfg) {
-      ArithmeticOptimizerOptions options;
-      options.simplify_gather_of_pack =
-          cfg.simplify_gather_of_pack() != RewriterConfig::OFF;
       return options;
     }
   };

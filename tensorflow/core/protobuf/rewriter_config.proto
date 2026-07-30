@@ -129,9 +129,7 @@ message RewriterConfig {
   // Disable the TFG optimizer (off by default).
   bool disable_tfg_optimizer = 32;
   // Simplify Gather/GatherV2 over Pack with static indices into a smaller Pack
-  // when the gather indexes the pack axis (default is ON). This is a
-  // sub-optimization of arithmetic_optimization; setting
-  // arithmetic_optimization to OFF disables it regardless of this toggle.
+  // when the gather indexes the pack axis (default is ON).
   Toggle simplify_gather_of_pack = 33;
   // Optimizers registered by plugin (default is ON)
   Toggle use_plugin_optimizers = 28;

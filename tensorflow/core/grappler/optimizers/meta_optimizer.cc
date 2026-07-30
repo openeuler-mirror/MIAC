@@ -54,6 +54,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/remapper.h"
 #include "tensorflow/core/grappler/optimizers/scoped_allocator_optimizer.h"
 #include "tensorflow/core/grappler/optimizers/shape_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/simplify_gather_of_pack.h"
 #include "tensorflow/core/grappler/utils/canonicalizer.h"
 #include "tensorflow/core/grappler/utils/colocation.h"
 #include "tensorflow/core/grappler/utils/functions.h"
@@ -80,6 +81,7 @@ namespace {
 
 constexpr int kDefaultNumberOfIterations = 2;
 constexpr int kDefaultMinGraphNodes = 4;
+constexpr char kSimplifyGatherOfPack[] = "simplify_gather_of_pack";
 constexpr char kGrapplerCategory[] = "Grappler";
 
 int64_t NumEdges(const GraphDef& graph) {
@@ -221,6 +223,8 @@ std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
              cfg_.experimental_disable_compressed_tensor_optimization(),
              !cfg_.experimental_disable_folding_quantization_emulation()));
   MK_OPT("shape", "shape_optimization", new ShapeOptimizer());
+  MK_OPT(kSimplifyGatherOfPack, "simplify_gather_of_pack",
+         new SimplifyGatherOfPackOptimizer());
   MK_OPT("remap", "remapping",
          new Remapper(cfg_.remapping(), cfg_.cpu_layout_conversion(),
                       xla_auto_clustering_on_));
@@ -248,7 +252,7 @@ std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
   MK_OPT("common_subgraph_elimination", "common_subgraph_elimination",
          new CommonSubgraphElimination(cfg_.common_subgraph_elimination()));
   MK_OPT("arithmetic", "arithmetic_optimization",
-         new ArithmeticOptimizer(cfg_));
+         new ArithmeticOptimizer(cfg_.arithmetic_optimization()));
   MK_OPT("autoparallel", "auto_parallel",
          new AutoParallel(cfg_.auto_parallel().num_replicas()));
   MK_OPT("loop", "loop_optimization",
@@ -356,6 +360,9 @@ absl::Status MetaOptimizer::InitializeOptimizers(
   else if (BOTH_ARE_EXPERIMENTAL_MLIR(debug_stripper) ||
            BOTH_ARE_EXPERIMENTAL_BOTH(debug_stripper))
     VLOG(2) << "debug_stripper is not implemented in TFG yet";
+  if (cfg_.simplify_gather_of_pack() != RewriterConfig::OFF) {
+    optimizers->push_back(std::make_unique<SimplifyGatherOfPackOptimizer>());
+  }
   if (BOTH_NOT_OFF(constant_folding)) {
     if (USER_IS_EXPERIMENTAL_MLIR(constant_folding) ||
         USER_IS_EXPERIMENTAL_BOTH(constant_folding)) {
@@ -418,7 +425,8 @@ absl::Status MetaOptimizer::InitializeOptimizers(
         USER_IS_EXPERIMENTAL_BOTH(arithmetic_optimization)) {
       VLOG(2) << "arithmetic_optimization is not implemented in TFG yet";
     } else {
-      optimizers->push_back(std::make_unique<ArithmeticOptimizer>(cfg_));
+      optimizers->push_back(std::make_unique<ArithmeticOptimizer>(
+          cfg_.arithmetic_optimization()));
     }
   }
   if (BOTH_NOT_OFF(layout_optimizer)) {
@@ -1363,6 +1371,7 @@ bool MetaOptimizerEnabled(const ConfigProto& cfg) {
              rewrite_cfg.auto_mixed_precision_onednn_bfloat16()) ||
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_mkl()) ||
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_cpu()) ||
+         rewrite_cfg.simplify_gather_of_pack() != RewriterConfig::OFF ||
          !rewrite_cfg.optimizers().empty() ||
          !rewrite_cfg.custom_optimizers().empty();
 }
