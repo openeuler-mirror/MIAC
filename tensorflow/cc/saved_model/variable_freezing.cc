@@ -27,6 +27,7 @@
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/tstring.h"
+#include "tensorflow/core/util/tensor_bundle/naming.h"
 #include "tensorflow/core/util/tensor_bundle/tensor_bundle.h"
 
 namespace tensorflow {
@@ -505,7 +506,11 @@ absl::StatusOr<std::unique_ptr<BundleReader>> OpenVariablesBundleReader(
     const std::string& export_dir) {
   const std::string variables_prefix = io::JoinPath(
       export_dir, kSavedModelVariablesDirectory, kSavedModelVariablesFilename);
-  if (!Env::Default()->FileExists(variables_prefix).ok()) {
+  // BundleWriter writes .index and .data files under the prefix; the bare
+  // prefix itself is not a regular file. Check for the .index file to
+  // determine whether a checkpoint exists.
+  const std::string variables_index = MetaFilename(variables_prefix);
+  if (!Env::Default()->FileExists(variables_index).ok()) {
     LOG(INFO) << "[variable_freezing] no variables checkpoint at "
               << variables_prefix << "; skipping freeze pass";
     return nullptr;
