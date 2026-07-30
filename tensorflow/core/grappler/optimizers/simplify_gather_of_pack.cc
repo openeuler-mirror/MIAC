@@ -96,19 +96,28 @@ bool TrySimplify(NodeDef* gather,
                  const std::unordered_set<string>& feed_nodes,
                  NodeMap* node_map) {
   if ((gather->op() != "GatherV2" && gather->op() != "Gather") ||
-      nodes_to_preserve.find(gather->name()) != nodes_to_preserve.end() ||
       gather->input_size() < 2) {
     return false;
   }
 
   NodeDef* source = node_map->GetNode(gather->input(0));
-  if (source == nullptr || source->op() != "Pack" ||
-      feed_nodes.find(source->name()) != feed_nodes.end()) {
+  if (source == nullptr || source->op() != "Pack") return false;
+
+  const auto skip = [&](const char* reason) {
+    VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
+            << " over " << source->name() << ": " << reason;
     return false;
+  };
+
+  if (nodes_to_preserve.find(gather->name()) != nodes_to_preserve.end()) {
+    return skip("Gather node must be preserved");
+  }
+  if (feed_nodes.find(source->name()) != feed_nodes.end()) {
+    return skip("source Pack is fed");
   }
   if (!source->device().empty() && !gather->device().empty() &&
       source->device() != gather->device()) {
-    return false;
+    return skip("Pack and Gather have different devices");
   }
 
   int batch_dims = 0;
@@ -117,7 +126,8 @@ bool TrySimplify(NodeDef* gather,
     if (batch_dims_attr != gather->attr().end()) {
       batch_dims = batch_dims_attr->second.i();
     }
-    if (batch_dims != 0 || gather->input_size() < 3) return false;
+    if (batch_dims != 0) return skip("batch_dims is not zero");
+    if (gather->input_size() < 3) return skip("GatherV2 has no axis input");
   }
 
   int64_t axis = 0;
@@ -127,7 +137,7 @@ bool TrySimplify(NodeDef* gather,
     if (!TensorFromConst(gather->input(2), *node_map, feed_nodes, &axis_tensor,
                          &axis_node) ||
         !ScalarIntValue(axis_tensor, &axis)) {
-      return false;
+      return skip("axis is not an unfed scalar int32/int64 Const");
     }
   }
   const auto pack_axis_attr = source->attr().find("axis");
@@ -136,36 +146,53 @@ bool TrySimplify(NodeDef* gather,
   if (pack_axis_attr == source->attr().end() ||
       pack_n_attr == source->attr().end() ||
       pack_type_attr == source->attr().end()) {
-    return false;
+    return skip("Pack is missing axis, N, or T");
   }
   const int64_t pack_axis = pack_axis_attr->second.i();
   // Exact comparison handles the common positive-axis form and equal negative
   // axes without requiring whole-graph shape inference.
-  if (pack_axis != axis) return false;
+  if (pack_axis != axis) {
+    VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
+            << " over " << source->name() << ": axes differ (Pack axis "
+            << pack_axis << ", Gather axis " << axis << ")";
+    return false;
+  }
 
   const int64_t source_input_count = pack_n_attr->second.i();
   if (source_input_count <= 0 || source_input_count > source->input_size()) {
-    return false;
+    return skip("Pack has an invalid N attribute");
   }
 
   Tensor indices_tensor;
   const NodeDef* indices_node = nullptr;
   if (!TensorFromConst(gather->input(1), *node_map, feed_nodes, &indices_tensor,
                        &indices_node)) {
-    return false;
+    return skip("indices are not an unfed Const");
   }
   std::vector<int64_t> selected_indices;
-  if (!IntVectorValues(indices_tensor, &selected_indices)) return false;
+  if (!IntVectorValues(indices_tensor, &selected_indices)) {
+    return skip("indices are not a non-empty int32/int64 vector");
+  }
 
   std::vector<string> selected_inputs;
   selected_inputs.reserve(selected_indices.size());
   std::unordered_set<int64_t> unique_indices;
   for (const int64_t index : selected_indices) {
-    if (index < 0 || index >= source_input_count) return false;
+    if (index < 0 || index >= source_input_count) {
+      VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
+              << " over " << source->name() << ": index " << index
+              << " is outside [0, " << source_input_count << ")";
+      return false;
+    }
     selected_inputs.push_back(source->input(index));
     unique_indices.insert(index);
   }
   if (unique_indices.size() >= static_cast<std::size_t>(source_input_count)) {
+    VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
+            << " over " << source->name()
+            << ": Gather uses every Pack operand (Pack operands "
+            << source_input_count << ", indices " << selected_indices.size()
+            << ", unique indices " << unique_indices.size() << ")";
     return false;
   }
 
@@ -192,9 +219,10 @@ bool TrySimplify(NodeDef* gather,
   }
   DedupControlInputs(gather);
 
-  VLOG(1) << "Simplified Gather-of-Pack node " << gather->name() << " from "
-          << source_input_count << " to " << selected_inputs.size()
-          << " Pack inputs";
+  VLOG(1) << "Simplified Gather-of-Pack node " << gather->name() << " over "
+          << source->name() << ": selected " << selected_inputs.size()
+          << " outputs from " << unique_indices.size() << " of "
+          << source_input_count << " Pack operands";
   return true;
 }
 
