@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_MLIR_XLA_OP_KERNEL_H_
 #define TENSORFLOW_COMPILER_TF2XLA_MLIR_XLA_OP_KERNEL_H_
 
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -35,6 +36,14 @@ class MlirXlaOpKernel : public XlaOpKernel {
   void Compile(XlaOpKernelContext* ctx) override;
   absl::Status ConstructXlaOp(XlaOpKernelContext* ctx);
 };
+
+template <typename NativeOp>
+OpKernel* CreateDynamicNativeXlaOpKernel(OpKernelConstruction* ctx) {
+  if (GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes) {
+    return new NativeOp(ctx);
+  }
+  return new MlirXlaOpKernel(ctx);
+}
 
 }  // namespace tensorflow
 

@@ -932,6 +932,32 @@ bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
   return false;
 }
 
+bool HasDynamicInputExpression(const Node* node) {
+  for (const Edge* edge : node->in_edges()) {
+    if (edge->IsControlEdge()) {
+      continue;
+    }
+    auto it = expr_map.find(edge->src()->name());
+    if (it == expr_map.end()) {
+      continue;
+    }
+    const int output_index = edge->src_output();
+    if (output_index < 0 || output_index >= it->second.size()) {
+      continue;
+    }
+    for (const auto& expr : it->second[output_index]) {
+      if (expr == nullptr) {
+        continue;
+      }
+      xla::DExpr dynamic_expr = DimExprToDExpr(expr.get());
+      if (dynamic_expr && dynamic_expr->is_dynamic()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Runs Grappler static inference and logs any ExpressionProto found in output
 // tensor shapes (from GraphProperties, not from _output_shapes attrs).
 void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
@@ -1038,7 +1064,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   if (debug_options_.enable_dynamic_sizes) {
     LogExpressionsViaGraphProperties(*graph_);
   }
-
   TF_RETURN_IF_ERROR(FindCompilationCandidates());
 
   if (compilation_candidates_.empty()) {
@@ -1077,32 +1102,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   }
   if (debug_options_.enable_dynamic_sizes) {
     TF_RETURN_IF_ERROR(AssignDimVars());
-    auto has_dynamic_input_expression = [&](const Node* n) {
-      for (const Edge* edge : n->in_edges()) {
-        if (edge->IsControlEdge()) {
-          continue;
-        }
-        const Node* src = edge->src();
-        auto it = expr_map.find(src->name());
-        if (it == expr_map.end()) {
-          continue;
-        }
-        const int output_index = edge->src_output();
-        if (output_index < 0 || output_index >= it->second.size()) {
-          continue;
-        }
-        for (const auto& expr_ptr : it->second[output_index]) {
-          if (expr_ptr == nullptr) {
-            continue;
-          }
-          xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
-          if (dyn && dyn->is_dynamic()) {
-            return true;
-          }
-        }
-      }
-      return false;
-    };
     for (Node* n : graph_->op_nodes()) {
       bool mark_shape_derived = false;
       auto is_shape_like = [](const Node* node) {
@@ -1110,14 +1109,14 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
         return t == "Shape" || t == "ShapeN" || t == "Size";
       };
       if (is_shape_like(n)) {
-        mark_shape_derived = has_dynamic_input_expression(n);
+        mark_shape_derived = HasDynamicInputExpression(n);
       } else if (n->type_string() == "Cast") {
         for (const Edge* edge : n->in_edges()) {
           if (edge->IsControlEdge()) {
             continue;
           }
           const Node* src = edge->src();
-          if (is_shape_like(src) && has_dynamic_input_expression(src)) {
+          if (is_shape_like(src) && HasDynamicInputExpression(src)) {
             mark_shape_derived = true;
             break;
           }
@@ -1860,6 +1859,15 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
         filter, DeviceType{registration->compilation_device_name});
 
     if (!checker.IsCompilableNode(*node, lib_runtime)) {
+      continue;
+    }
+
+    if (debug_options_.enable_dynamic_sizes &&
+        XlaOpRegistry::IsMlirXlaOp(node->type_string()) &&
+        HasDynamicInputExpression(node)) {
+      VLOG(1) << "Rejecting " << node->name()
+              << " from XLA clustering: MlirXlaOpKernel does not support "
+                 "dynamic input expressions";
       continue;
     }
 

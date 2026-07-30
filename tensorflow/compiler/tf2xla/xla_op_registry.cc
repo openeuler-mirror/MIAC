@@ -415,6 +415,18 @@ std::vector<const KernelDef*> XlaOpRegistry::DeviceKernels(
   return ops;
 }
 
+/* static */ bool XlaOpRegistry::IsMlirXlaOp(absl::string_view op) {
+  XlaOpRegistry& registry = Instance();
+  mutex_lock lock(registry.mutex_);
+  auto it = registry.ops_.find(string(op));
+  if (it == registry.ops_.end() || it->second.empty()) {
+    return false;
+  }
+  return absl::c_all_of(it->second, [](const auto& registration) {
+    return registration->uses_mlir_kernel;
+  });
+}
+
 /*static*/ const std::unordered_set<std::string>*
 XlaOpRegistry::CompileTimeConstantInputArgNames(const string& op) {
   XlaOpRegistry& registry = Instance();
@@ -604,8 +616,9 @@ XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::Label(std::string label) {
 }
 
 std::unique_ptr<XlaOpRegistry::OpRegistration> XlaOpRegistrationBuilder::Build(
-    XlaOpRegistry::Factory factory) {
+    XlaOpRegistry::Factory factory, bool uses_mlir_kernel) {
   registration_->factory = factory;
+  registration_->uses_mlir_kernel = uses_mlir_kernel;
   return std::move(registration_);
 }
 
