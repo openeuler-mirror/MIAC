@@ -133,7 +133,7 @@ message RewriterConfig {
   Toggle simplify_gather_of_pack = 33;
   // Factorize MatMul inputs that concatenate varying rows with a broadcasted
   // input, so the broadcasted contribution is computed once (default is ON).
-  Toggle broadcasted_matmul_factorization = 34;
+  Toggle broadcasted_matmul_factorization = 35;
   // Optimizers registered by plugin (default is ON)
   Toggle use_plugin_optimizers = 28;
   // Conditional code motion (default is ON).
