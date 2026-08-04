@@ -95,17 +95,41 @@ bool TrySimplify(NodeDef* gather,
                  const std::unordered_set<string>& nodes_to_preserve,
                  const std::unordered_set<string>& feed_nodes,
                  NodeMap* node_map) {
-  if ((gather->op() != "GatherV2" && gather->op() != "Gather") ||
-      gather->input_size() < 2) {
+  if (gather->op() != "GatherV2" && gather->op() != "Gather") {
+    return false;
+  }
+
+  LOG(INFO) << "[SimplifyGatherOfPack] inspecting Gather node: name="
+            << gather->name() << ", op=" << gather->op()
+            << ", inputs=" << gather->input_size();
+  if (gather->input_size() < 2) {
+    LOG(INFO) << "[SimplifyGatherOfPack] skipping " << gather->name()
+              << ": Gather has fewer than two inputs; node="
+              << gather->ShortDebugString();
     return false;
   }
 
   NodeDef* source = node_map->GetNode(gather->input(0));
-  if (source == nullptr || source->op() != "Pack") return false;
+  if (source == nullptr) {
+    LOG(INFO) << "[SimplifyGatherOfPack] skipping " << gather->name()
+              << ": input 0 could not be resolved: " << gather->input(0)
+              << "; node=" << gather->ShortDebugString();
+    return false;
+  }
+  if (source->op() != "Pack") {
+    LOG(INFO) << "[SimplifyGatherOfPack] Gather " << gather->name()
+              << " is not a Gather-of-Pack candidate: input 0="
+              << gather->input(0) << " resolves to op=" << source->op();
+    return false;
+  }
+
+  LOG(INFO) << "[SimplifyGatherOfPack] found candidate: gather="
+            << gather->ShortDebugString()
+            << "; source_pack=" << source->ShortDebugString();
 
   const auto skip = [&](const char* reason) {
-    VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
-            << " over " << source->name() << ": " << reason;
+    LOG(INFO) << "[SimplifyGatherOfPack] skipping candidate " << gather->name()
+              << " over " << source->name() << ": " << reason;
     return false;
   };
 
@@ -137,8 +161,21 @@ bool TrySimplify(NodeDef* gather,
     if (!TensorFromConst(gather->input(2), *node_map, feed_nodes, &axis_tensor,
                          &axis_node) ||
         !ScalarIntValue(axis_tensor, &axis)) {
+      const NodeDef* unresolved_axis = node_map->GetNode(gather->input(2));
+      LOG(INFO) << "[SimplifyGatherOfPack] axis diagnostic for "
+                << gather->name() << ": input=" << gather->input(2)
+                << ", resolved_node="
+                << (unresolved_axis == nullptr
+                        ? "<null>"
+                        : unresolved_axis->ShortDebugString())
+                << ", is_feed="
+                << (unresolved_axis != nullptr &&
+                    feed_nodes.find(unresolved_axis->name()) !=
+                        feed_nodes.end());
       return skip("axis is not an unfed scalar int32/int64 Const");
     }
+    LOG(INFO) << "[SimplifyGatherOfPack] axis for " << gather->name() << " is "
+              << axis << "; axis_node=" << axis_node->ShortDebugString();
   }
   const auto pack_axis_attr = source->attr().find("axis");
   const auto pack_n_attr = source->attr().find("N");
@@ -152,9 +189,9 @@ bool TrySimplify(NodeDef* gather,
   // Exact comparison handles the common positive-axis form and equal negative
   // axes without requiring whole-graph shape inference.
   if (pack_axis != axis) {
-    VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
-            << " over " << source->name() << ": axes differ (Pack axis "
-            << pack_axis << ", Gather axis " << axis << ")";
+    LOG(INFO) << "[SimplifyGatherOfPack] skipping candidate " << gather->name()
+              << " over " << source->name() << ": axes differ (Pack axis "
+              << pack_axis << ", Gather axis " << axis << ")";
     return false;
   }
 
@@ -167,32 +204,52 @@ bool TrySimplify(NodeDef* gather,
   const NodeDef* indices_node = nullptr;
   if (!TensorFromConst(gather->input(1), *node_map, feed_nodes, &indices_tensor,
                        &indices_node)) {
+    const NodeDef* unresolved_indices = node_map->GetNode(gather->input(1));
+    LOG(INFO) << "[SimplifyGatherOfPack] indices diagnostic for "
+              << gather->name() << ": input=" << gather->input(1)
+              << ", resolved_node="
+              << (unresolved_indices == nullptr
+                      ? "<null>"
+                      : unresolved_indices->ShortDebugString())
+              << ", is_feed="
+              << (unresolved_indices != nullptr &&
+                  feed_nodes.find(unresolved_indices->name()) !=
+                      feed_nodes.end());
     return skip("indices are not an unfed Const");
   }
   std::vector<int64_t> selected_indices;
   if (!IntVectorValues(indices_tensor, &selected_indices)) {
+    LOG(INFO) << "[SimplifyGatherOfPack] invalid indices tensor for "
+              << gather->name() << ": dims=" << indices_tensor.dims()
+              << ", elements=" << indices_tensor.NumElements()
+              << ", dtype=" << DataTypeString(indices_tensor.dtype())
+              << "; indices_node=" << indices_node->ShortDebugString();
     return skip("indices are not a non-empty int32/int64 vector");
   }
+
+  LOG(INFO) << "[SimplifyGatherOfPack] candidate values for " << gather->name()
+            << ": Pack axis=" << pack_axis << ", Pack N=" << source_input_count
+            << ", Gather indices=" << indices_tensor.SummarizeValue(16);
 
   std::vector<string> selected_inputs;
   selected_inputs.reserve(selected_indices.size());
   std::unordered_set<int64_t> unique_indices;
   for (const int64_t index : selected_indices) {
     if (index < 0 || index >= source_input_count) {
-      VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
-              << " over " << source->name() << ": index " << index
-              << " is outside [0, " << source_input_count << ")";
+      LOG(INFO) << "[SimplifyGatherOfPack] skipping candidate "
+                << gather->name() << " over " << source->name() << ": index "
+                << index << " is outside [0, " << source_input_count << ")";
       return false;
     }
     selected_inputs.push_back(source->input(index));
     unique_indices.insert(index);
   }
   if (unique_indices.size() >= static_cast<std::size_t>(source_input_count)) {
-    VLOG(1) << "Skipping Gather-of-Pack candidate " << gather->name()
-            << " over " << source->name()
-            << ": Gather uses every Pack operand (Pack operands "
-            << source_input_count << ", indices " << selected_indices.size()
-            << ", unique indices " << unique_indices.size() << ")";
+    LOG(INFO) << "[SimplifyGatherOfPack] skipping candidate " << gather->name()
+              << " over " << source->name()
+              << ": Gather uses every Pack operand (Pack operands "
+              << source_input_count << ", indices " << selected_indices.size()
+              << ", unique indices " << unique_indices.size() << ")";
     return false;
   }
 
@@ -219,10 +276,11 @@ bool TrySimplify(NodeDef* gather,
   }
   DedupControlInputs(gather);
 
-  VLOG(1) << "Simplified Gather-of-Pack node " << gather->name() << " over "
-          << source->name() << ": selected " << selected_inputs.size()
-          << " outputs from " << unique_indices.size() << " of "
-          << source_input_count << " Pack operands";
+  LOG(INFO) << "[SimplifyGatherOfPack] simplified node " << gather->name()
+            << " over " << source->name() << ": selected "
+            << selected_inputs.size() << " outputs from "
+            << unique_indices.size() << " of " << source_input_count
+            << " Pack operands; rewritten_node=" << gather->ShortDebugString();
   return true;
 }
 
@@ -231,6 +289,12 @@ bool TrySimplify(NodeDef* gather,
 absl::Status SimplifyGatherOfPackOptimizer::Optimize(Cluster* /*cluster*/,
                                                      const GrapplerItem& item,
                                                      GraphDef* output) {
+  LOG(INFO) << "[SimplifyGatherOfPack] optimizer entered: item_id=" << item.id
+            << ", graph_nodes=" << item.graph.node_size()
+            << ", fetches=" << item.fetch.size()
+            << ", feeds=" << item.feed.size()
+            << ", keep_ops=" << item.keep_ops.size()
+            << ", init_ops=" << item.init_ops.size();
   *output = item.graph;
 
   const std::unordered_set<string> nodes_to_preserve = item.NodesToPreserve();
@@ -241,11 +305,29 @@ absl::Status SimplifyGatherOfPackOptimizer::Optimize(Cluster* /*cluster*/,
   }
 
   NodeMap node_map(output);
+  int gather_nodes = 0;
+  int gather_of_pack_candidates = 0;
+  int simplified_nodes = 0;
   for (int i = 0; i < output->node_size(); ++i) {
     GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED();
-    TrySimplify(output->mutable_node(i), nodes_to_preserve, feed_nodes,
-                &node_map);
+    NodeDef* node = output->mutable_node(i);
+    if (node->op() == "Gather" || node->op() == "GatherV2") {
+      ++gather_nodes;
+      if (node->input_size() > 0) {
+        const NodeDef* source = node_map.GetNode(node->input(0));
+        if (source != nullptr && source->op() == "Pack") {
+          ++gather_of_pack_candidates;
+        }
+      }
+    }
+    if (TrySimplify(node, nodes_to_preserve, feed_nodes, &node_map)) {
+      ++simplified_nodes;
+    }
   }
+  LOG(INFO) << "[SimplifyGatherOfPack] optimizer finished: item_id=" << item.id
+            << ", Gather/GatherV2 nodes=" << gather_nodes
+            << ", Gather-of-Pack candidates=" << gather_of_pack_candidates
+            << ", simplified=" << simplified_nodes;
   return absl::OkStatus();
 }
 
