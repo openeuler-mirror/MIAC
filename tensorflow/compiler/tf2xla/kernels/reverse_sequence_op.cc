@@ -71,6 +71,9 @@ class ReverseSequenceOp : public XlaOpKernel {
     xla::XlaBuilder* builder = context->builder();
     const auto input = context->Input(0);
     const auto seq_lens = context->Input(1);
+    auto input_xla_shape_or = context->InputXlaShape(0);
+    OP_REQUIRES(context, input_xla_shape_or.ok(), input_xla_shape_or.status());
+    const xla::Shape& input_xla_shape = input_xla_shape_or.value();
 
     const int64_t batch_size = input_shape.dim_size(batch_dim_);
     if (batch_size == 0) {
@@ -86,17 +89,21 @@ class ReverseSequenceOp : public XlaOpKernel {
     xla::XlaOp back = xla::Sub(seq_lens, xla::ScalarLike(seq_lens, 1));
     xla::XlaOp batch_idx = xla::Iota(
         builder,
-        xla::ShapeUtil::MakeShape(seq_lens_type, {batch_size, max_seq_len, 1},
-                                  {input_shape.get_filled_expression(batch_dim_),
-                                   input_shape.get_filled_expression(seq_dim_),
-                                   xla::DExpr::Const(1)}),
+        xla::ShapeUtil::MakeShape(
+            seq_lens_type, {batch_size, max_seq_len, 1},
+            std::vector<xla::DExpr>{
+                input_shape.get_filled_expression(batch_dim_),
+                input_shape.get_filled_expression(seq_dim_),
+                xla::DExpr::Const(1)}),
         /*iota_dimension=*/0);
     xla::XlaOp forward_idx = xla::Iota(
         builder,
-        xla::ShapeUtil::MakeShape(seq_lens_type, {batch_size, max_seq_len, 1},
-                                  {input_shape.get_filled_expression(batch_dim_),
-                                   input_shape.get_filled_expression(seq_dim_),
-                                   xla::DExpr::Const(1)}),
+        xla::ShapeUtil::MakeShape(
+            seq_lens_type, {batch_size, max_seq_len, 1},
+            std::vector<xla::DExpr>{
+                input_shape.get_filled_expression(batch_dim_),
+                input_shape.get_filled_expression(seq_dim_),
+                xla::DExpr::Const(1)}),
         /*iota_dimension=*/1);
     xla::XlaOp reverse_idx = xla::Sub(back, forward_idx, {0});
     reverse_idx = xla::Select(xla::Lt(reverse_idx, xla::ZerosLike(reverse_idx)),
@@ -135,8 +142,8 @@ class ReverseSequenceOp : public XlaOpKernel {
     slice_sizes[batch_dim_] = 1;
     slice_sizes[seq_dim_] = 1;
 
-    context->SetOutput(0,
-                       xla::Gather(input, start_indices, dnums, slice_sizes));
+    xla::XlaOp gathered = xla::Gather(input, start_indices, dnums, slice_sizes);
+    context->SetOutput(0, xla::Reshape(input_xla_shape, gathered));
   }
 
  private:

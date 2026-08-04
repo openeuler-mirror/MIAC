@@ -33,7 +33,8 @@ XlaOp Zero(XlaBuilder* builder, PrimitiveType type) {
 }
 
 XlaOp Zeros(XlaBuilder* builder, const Shape& shape) {
-  return Broadcast(Zero(builder, shape.element_type()), shape.dimensions());
+  return Broadcast(Zero(builder, shape.element_type()), shape.dimensions(),
+                   shape.expressions());
 }
 
 XlaOp ZerosLike(XlaOp prototype) {

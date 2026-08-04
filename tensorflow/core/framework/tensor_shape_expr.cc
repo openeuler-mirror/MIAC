@@ -15,15 +15,28 @@ bool ParseTensorShapeExpressionsEnabled() {
       tsl::Flag("tf_xla_enable_dynamic_sizes", &tf_xla_enable_dynamic_sizes,
                 "XLA flag for enabling XLA dynamic sizes."),
   };
-  xla::ParseFlagsFromEnvAndIgnoreUnknown("TF_XLA_FLAGS", flag_list);
+  xla::ParseFlagsFromEnvAndIgnoreUnknown(
+      "TF_XLA_FLAGS", flag_list, /*reset_envvar=*/true);
   return tf_xla_enable_dynamic_sizes;
+}
+
+std::optional<bool>& TensorShapeExpressionsEnabledOverride() {
+  static auto* enabled_override = new std::optional<bool>();
+  return *enabled_override;
 }
 
 }  // namespace
 
 bool TensorShapeExpressionsEnabled() {
+  if (TensorShapeExpressionsEnabledOverride().has_value()) {
+    return *TensorShapeExpressionsEnabledOverride();
+  }
   static const bool enabled = ParseTensorShapeExpressionsEnabled();
   return enabled;
+}
+
+void SetTensorShapeExpressionsEnabledForTesting(std::optional<bool> enabled) {
+  TensorShapeExpressionsEnabledOverride() = enabled;
 }
 
 bool IsDynamicDimExpr(const ExpressionProto& proto) {

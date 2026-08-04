@@ -101,8 +101,7 @@ absl::Status XLAShapeToTensorShape(const xla::Shape& shape,
   for (int i = 0; i < shape.dimensions().size(); ++i) {
     TF_RETURN_IF_ERROR(tensor_shape->AddDimWithStatus(shape.dimensions(i)));
   }
-  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
-  if (flags->tf_xla_enable_dynamic_sizes) {
+  if (!shape.expressions().empty()) {
     std::vector<xla::DExpr> dexprs(shape.expressions().begin(),
                                    shape.expressions().end());
     tensor_shape->set_expressions(std::move(dexprs));

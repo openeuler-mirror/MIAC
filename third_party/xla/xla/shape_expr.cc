@@ -407,19 +407,35 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
           rhs->kind() == DExpr::Kind::kUnknown) {
         return std::make_unique<UnknownExpr>();
       }
-      Constant* l = AsConstant(lhs.get());
-      Constant* r = AsConstant(rhs.get());
-      if (l && l->get_val() == 0 && r && r->get_val() != 0) {
-        return std::make_unique<Constant>(0);
+      Constant* lhs_constant = AsConstant(lhs.get());
+      Constant* rhs_constant = AsConstant(rhs.get());
+      if (rhs_constant != nullptr) {
+        int64_t denominator = rhs_constant->get_val();
+        CHECK_NE(denominator, 0) << "Cannot simplify division by zero";
+        if (lhs_constant != nullptr) {
+          int64_t numerator = lhs_constant->get_val();
+          NormalizeFraction(&numerator, &denominator);
+          if (denominator == 1) {
+            return std::make_unique<Constant>(numerator);
+          }
+          return std::make_unique<Div>(DynExpr::_(numerator),
+                                       DynExpr::_(denominator));
+        }
+        if (denominator == 1) {
+          return lhs;
+        }
       }
-      if (r && r->get_val() == 1) return lhs;
-      if (l && r && r->get_val() != 0) {
-        int64_t numerator = l->get_val();
-        int64_t denominator = r->get_val();
-        NormalizeFraction(&numerator, &denominator);
-        if (denominator == 1) return std::make_unique<Constant>(numerator);
-        return std::make_unique<Div>(DynExpr::_(numerator),
-                                     DynExpr::_(denominator));
+      if (*lhs == *rhs) return std::make_unique<Constant>(1);
+      if (lhs->kind() == DExpr::Kind::kMul) {
+        auto* mul = static_cast<Mul*>(lhs.get());
+        auto lhs_l = std::unique_ptr<DynExpr>(mul->get_lhs()->s());
+        auto lhs_r = std::unique_ptr<DynExpr>(mul->get_rhs()->s());
+        if (*lhs_l == *rhs) {
+          return lhs_r;
+        }
+        if (*lhs_r == *rhs) {
+          return lhs_l;
+        }
       }
       return std::make_unique<Div>(lhs.release(), rhs.release());
     }
@@ -432,6 +448,11 @@ std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
     return std::make_unique<UnknownExpr>();
   }
   if (auto canonical = ToCanonicalAffine(expr); canonical.has_value()) {
+    if (canonical->IsPureConstant()) {
+      CHECK_NE(canonical->denominator, 0);
+      return std::make_unique<Constant>(canonical->constant /
+                                        canonical->denominator);
+    }
     return BuildCanonicalExpr(*canonical);
   }
   return SimplifyFallback(expr);
@@ -501,6 +522,13 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
   auto e1 = std::unique_ptr<DynExpr>(expr1->s());
   auto e2 = std::unique_ptr<DynExpr>(expr2->s());
   if (e1 == nullptr || e2 == nullptr) return false;
+  auto a1 = ToCanonicalAffine(e1.get());
+  auto a2 = ToCanonicalAffine(e2.get());
+  if (a1.has_value() && a2.has_value()) {
+    return a1->denominator == a2->denominator &&
+           a1->constant == a2->constant &&
+           a1->coefficients == a2->coefficients;
+  }
   if (e1->kind() == DExpr::Kind::kConstant &&
       e2->kind() == DExpr::Kind::kConstant) {
     return static_cast<Constant*>(e1.get())->get_val() ==

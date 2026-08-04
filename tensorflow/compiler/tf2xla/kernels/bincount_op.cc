@@ -110,11 +110,15 @@ class DenseBincountOp : public XlaOpKernel {
     scatter_dnums.add_scatter_dims_to_operand_dims(0);
 
     if (rank == 2) {
-      output_shape = xla::ShapeUtil::MakeShape(dtype, {size, output_size});
+      output_shape = xla::ShapeUtil::MakeShape(
+          dtype, {size, output_size},
+          std::vector<xla::DExpr>{input_shape.expressions(0),
+                                  xla::DExpr::Const(output_size)});
       scatter_dnums.add_inserted_window_dims(1);
       scatter_dnums.add_scatter_dims_to_operand_dims(1);
-      auto i_shape =
-          xla::ShapeUtil::MakeShape(input_xla_type, {input_shape.dimensions()});
+      auto i_shape = xla::ShapeUtil::MakeShape(input_xla_type,
+                                               input_shape.dimensions(),
+                                               input_shape.expressions());
       auto i = xla::Iota(ctx->builder(), i_shape, 0);
       xla::DExpr flattened_expr =
           input_shape.expressions(0) * input_shape.expressions(1);
@@ -131,7 +135,8 @@ class DenseBincountOp : public XlaOpKernel {
       updates = xla::Broadcast(
           one, {input_shape.dimensions(0) * input_shape.dimensions(1)});
       output = xla::Broadcast(
-          zero, {output_shape.dimensions(0), output_shape.dimensions(1)});
+          zero, {output_shape.dimensions(0), output_shape.dimensions(1)},
+          {output_shape.expressions(0), output_shape.expressions(1)});
       if (has_weights && !binary_output_) {
         weights = xla::Reshape(
             weights, {input_shape.dimensions(0) * input_shape.dimensions(1)},

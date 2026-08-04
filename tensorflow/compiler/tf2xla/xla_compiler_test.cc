@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 
 #include <gmock/gmock.h>
+#include <optional>
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/cc/framework/ops.h"
@@ -96,6 +97,36 @@ class XlaCompilerTest : public ::testing::Test {
 
   xla::Client* client_;
   std::unique_ptr<FunctionLibraryDefinition> flib_def_;
+};
+
+class ScopedTfXlaDynamicSizesFlag {
+ public:
+  ScopedTfXlaDynamicSizesFlag() {
+    old_value_ = GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
+    GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes = true;
+    SetTensorShapeExpressionsEnabledForTesting(true);
+  }
+
+  ~ScopedTfXlaDynamicSizesFlag() {
+    SetTensorShapeExpressionsEnabledForTesting(std::nullopt);
+    GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes = old_value_;
+  }
+
+ private:
+  bool old_value_ = false;
+};
+
+class XlaCompilerDynamicSizesTest : public XlaCompilerTest {
+ protected:
+  void SetUp() override {
+    dynamic_sizes_flag_ = std::make_unique<ScopedTfXlaDynamicSizesFlag>();
+    XlaCompilerTest::SetUp();
+  }
+
+  void TearDown() override { dynamic_sizes_flag_.reset(); }
+
+ private:
+  std::unique_ptr<ScopedTfXlaDynamicSizesFlag> dynamic_sizes_flag_;
 };
 
 namespace {
@@ -274,9 +305,10 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
   std::vector<XlaCompiler::Argument> args(2);
   args[0].kind = XlaCompiler::Argument::kParameter;
   args[0].type = DT_INT32;
-  args[0].shape = xla::ShapeUtil::MakeShape(
-      /*element_type=*/xla::S32, /*dimensions=*/{2},
-      /*dynamic_dimensions=*/{true}, /*expressions=*/{});
+  args[0].shape =
+      xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32, /*dimensions=*/{2},
+                                /*dynamic_dimensions=*/std::vector<bool>{true},
+                                /*expressions=*/{});
   args[1].kind = XlaCompiler::Argument::kParameter;
   args[1].type = DT_INT32;
   args[1].shape = TensorShape(/*dimensions=*/{2});
@@ -392,6 +424,2524 @@ TEST_F(XlaCompilerTest,
               root_shape.expressions(0)->is_dynamic());
   EXPECT_TRUE(root_shape.expressions(1) &&
               root_shape.expressions(1)->is_constant());
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, DynamicShapeParameterPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto identity = ops::Identity(scope.WithOpName("identity"), input);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), identity, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6}, std::vector<xla::DExpr>{xla::DExpr::Var(1)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "identity",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(1)));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          LoadModuleFromHloProto(result.computation->proto()));
+  const xla::Shape& param_shape =
+      module->entry_computation()->parameter_instruction(0)->shape();
+  EXPECT_TRUE(
+      xla::DynExpr::equal(param_shape.expressions(0), xla::DExpr::Var(1)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(1)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ReverseSequencePreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto seq_lens = ops::_Arg(scope.WithOpName("seq_lens"), DT_INT32, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("reverse_sequence", "ReverseSequence")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(seq_lens.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tlen", DT_INT32)
+                   .Attr("batch_dim", 0)
+                   .Attr("seq_dim", 1)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* reverse_sequence = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(reverse_sequence));
+  scope.graph()->AddEdge(input.node(), 0, reverse_sequence, 0);
+  scope.graph()->AddEdge(seq_lens.node(), 0, reverse_sequence, 1);
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(reverse_sequence), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {4, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(1), xla::DExpr::Var(2)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {4}, std::vector<xla::DExpr>{xla::DExpr::Var(1)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "reverse_sequence", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(1)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Var(2)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(1)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Var(2)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, UniquePreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("unique", "Unique")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("out_idx", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* unique = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(unique));
+  scope.graph()->AddEdge(input.node(), 0, unique, 0);
+
+  auto retval0 =
+      ops::_Retval(scope.WithOpName("retval0"), Output(unique, 0), 0);
+  auto retval1 =
+      ops::_Retval(scope.WithOpName("retval1"), Output(unique, 1), 1);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7}, std::vector<xla::DExpr>{xla::DExpr::Var(3)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "unique",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 2);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(3)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(3)));
+
+  const xla::Shape& values_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  const xla::Shape& indices_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {1});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(values_shape.expressions(0), xla::DExpr::Var(3)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(indices_shape.expressions(0), xla::DExpr::Var(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, DynamicPartitionPreservesPartitionExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto data = ops::_Arg(scope.WithOpName("data"), DT_INT32, 0);
+  auto partitions = ops::_Arg(scope.WithOpName("partitions"), DT_INT32, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("dynamic_partition", "DynamicPartition")
+                   .Input(data.node()->name(), 0, DT_INT32)
+                   .Input(partitions.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("num_partitions", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* dynamic_partition = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(dynamic_partition));
+  scope.graph()->AddEdge(data.node(), 0, dynamic_partition, 0);
+  scope.graph()->AddEdge(partitions.node(), 0, dynamic_partition, 1);
+
+  auto retval0 = ops::_Retval(scope.WithOpName("retval0"),
+                              Output(dynamic_partition, 0), 0);
+  auto retval1 = ops::_Retval(scope.WithOpName("retval1"),
+                              Output(dynamic_partition, 1), 1);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6}, std::vector<xla::DExpr>{xla::DExpr::Var(4)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6}, std::vector<xla::DExpr>{xla::DExpr::Var(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "dynamic_partition", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 2);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(4)));
+
+  const xla::Shape& result0_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  const xla::Shape& result1_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {1});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result0_shape.expressions(0), xla::DExpr::Var(4)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result1_shape.expressions(0), xla::DExpr::Var(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       DynamicPartitionBroadcastPreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto data = ops::_Arg(scope.WithOpName("data"), DT_INT32, 0);
+  auto partitions = ops::_Arg(scope.WithOpName("partitions"), DT_INT32, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("dynamic_partition", "DynamicPartition")
+                   .Input(data.node()->name(), 0, DT_INT32)
+                   .Input(partitions.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("num_partitions", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* dynamic_partition = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(dynamic_partition));
+  scope.graph()->AddEdge(data.node(), 0, dynamic_partition, 0);
+  scope.graph()->AddEdge(partitions.node(), 0, dynamic_partition, 1);
+
+  auto retval0 = ops::_Retval(scope.WithOpName("retval0"),
+                              Output(dynamic_partition, 0), 0);
+  auto retval1 = ops::_Retval(scope.WithOpName("retval1"),
+                              Output(dynamic_partition, 1), 1);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(40), xla::DExpr::Const(3)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8}, std::vector<xla::DExpr>{xla::DExpr::Var(40)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "dynamic_partition_broadcast",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 2);
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_TRUE(xla::DynExpr::equal(
+        result.outputs[i].shape.get_filled_expression(0), xla::DExpr::Var(40)));
+    EXPECT_TRUE(xla::DynExpr::equal(
+        result.outputs[i].shape.get_filled_expression(1), xla::DExpr::Const(3)));
+    const xla::Shape& out_shape =
+        xla::ShapeUtil::GetSubshape(result.xla_output_shape, {i});
+    EXPECT_TRUE(
+        xla::DynExpr::equal(out_shape.expressions(0), xla::DExpr::Var(40)));
+    EXPECT_TRUE(
+        xla::DynExpr::equal(out_shape.expressions(1), xla::DExpr::Const(3)));
+  }
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       DenseBincountMatrixPreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto weights = ops::_Arg(scope.WithOpName("weights"), DT_FLOAT, 1);
+  auto size = ops::Const(scope.WithOpName("size"), 5);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("dense_bincount", "DenseBincount")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(size.node()->name(), 0, DT_INT32)
+                   .Input(weights.node()->name(), 0, DT_FLOAT)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("binary_output", false)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* bincount = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, bincount, 0);
+  scope.graph()->AddEdge(size.node(), 0, bincount, 1);
+  scope.graph()->AddEdge(weights.node(), 0, bincount, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(bincount));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(bincount, 0), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {12, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(50), xla::DExpr::Const(4)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_FLOAT;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {12, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(50), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "dense_bincount", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(50)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+
+  const xla::Shape& out_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(xla::DynExpr::equal(out_shape.expressions(0), xla::DExpr::Var(50)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(out_shape.expressions(1), xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       DynamicStitchEmptyPreservesTrailingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto data0 = ops::_Arg(scope.WithOpName("data0"), DT_INT32, 0);
+  auto data1 = ops::_Arg(scope.WithOpName("data1"), DT_INT32, 1);
+  Tensor empty_indices_tensor(DT_INT32, TensorShape({0}));
+  auto indices0 = ops::Const(scope.WithOpName("indices0"), empty_indices_tensor);
+  auto indices1 = ops::Const(scope.WithOpName("indices1"), empty_indices_tensor);
+
+  NodeDef def;
+  std::vector<NodeDefBuilder::NodeOut> indices_inputs = {
+      {indices0.node()->name(), 0, DT_INT32},
+      {indices1.node()->name(), 0, DT_INT32},
+  };
+  std::vector<NodeDefBuilder::NodeOut> data_inputs = {
+      {data0.node()->name(), 0, DT_INT32},
+      {data1.node()->name(), 0, DT_INT32},
+  };
+  TF_ASSERT_OK(NodeDefBuilder("dynamic_stitch_empty", "DynamicStitch")
+                   .Input(indices_inputs)
+                   .Input(data_inputs)
+                   .Attr("N", 2)
+                   .Attr("T", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* dynamic_stitch = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(indices0.node(), 0, dynamic_stitch, 0);
+  scope.graph()->AddEdge(indices1.node(), 0, dynamic_stitch, 1);
+  scope.graph()->AddEdge(data0.node(), 0, dynamic_stitch, 2);
+  scope.graph()->AddEdge(data1.node(), 0, dynamic_stitch, 3);
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"),
+                             Output(dynamic_stitch, 0), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {0, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Const(0), xla::DExpr::Var(61)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {0, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Const(0), xla::DExpr::Var(61)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "dynamic_stitch_empty", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Const(0)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Var(61)));
+
+  const xla::Shape& out_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(out_shape.expressions(0), xla::DExpr::Const(0)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(out_shape.expressions(1), xla::DExpr::Var(61)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       TensorListPushBackStackPreservesElementExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto element = ops::_Arg(scope.WithOpName("element"), DT_INT32, 0);
+  auto element_shape = ops::Const(scope.WithOpName("element_shape"),
+                                  {-1, 3}, {2});
+  auto max_num_elements = ops::Const(scope.WithOpName("max_num_elements"), 4);
+
+  NodeDef empty_def;
+  TF_ASSERT_OK(NodeDefBuilder("empty_list", "EmptyTensorList")
+                   .Input(element_shape.node()->name(), 0, DT_INT32)
+                   .Input(max_num_elements.node()->name(), 0, DT_INT32)
+                   .Attr("element_dtype", DT_INT32)
+                   .Attr("shape_type", DT_INT32)
+                   .Finalize(&empty_def));
+  absl::Status status;
+  Node* empty_list = scope.graph()->AddNode(empty_def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(element_shape.node(), 0, empty_list, 0);
+  scope.graph()->AddEdge(max_num_elements.node(), 0, empty_list, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(empty_list));
+
+  NodeDef push_def;
+  TF_ASSERT_OK(NodeDefBuilder("push_back", "TensorListPushBack")
+                   .Input(empty_list->name(), 0, DT_VARIANT)
+                   .Input(element.node()->name(), 0, DT_INT32)
+                   .Attr("element_dtype", DT_INT32)
+                   .Finalize(&push_def));
+  Node* push_back = scope.graph()->AddNode(push_def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(empty_list, 0, push_back, 0);
+  scope.graph()->AddEdge(element.node(), 0, push_back, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(push_back));
+
+  NodeDef stack_def;
+  TF_ASSERT_OK(NodeDefBuilder("stack", "TensorListStack")
+                   .Input(push_back->name(), 0, DT_VARIANT)
+                   .Input(element_shape.node()->name(), 0, DT_INT32)
+                   .Attr("element_dtype", DT_INT32)
+                   .Attr("num_elements", 4)
+                   .Finalize(&stack_def));
+  Node* stack = scope.graph()->AddNode(stack_def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(push_back, 0, stack, 0);
+  scope.graph()->AddEdge(element_shape.node(), 0, stack, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(stack));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(stack, 0), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(70), xla::DExpr::Const(3)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "tensor_list_stack", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Var(70)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ShapeThenReshapePreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto shape_source = ops::_Arg(scope.WithOpName("shape_source"), DT_INT32, 0);
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 1);
+  auto shape = ops::Shape(scope.WithOpName("shape"), shape_source);
+  auto reshaped = ops::Reshape(scope.WithOpName("reshape"), input, shape);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), reshaped, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Var(41), xla::DExpr::Const(7)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Var(41), xla::DExpr::Const(7)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "shape_then_reshape", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(41)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(7)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(41)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Const(7)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ZerosLikePreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto zeros = ops::ZerosLike(scope.WithOpName("zeros_like"), input);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), zeros, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {9, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(43), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "zeros_like_exprs", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(43)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, OnesLikePreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto ones = ops::OnesLike(scope.WithOpName("ones_like"), input);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), ones, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {9, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(44), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "ones_like_exprs", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(44)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, MatrixDiagPreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("matrix_diag", "MatrixDiag")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* matrix_diag = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(matrix_diag));
+  scope.graph()->AddEdge(input.node(), 0, matrix_diag, 0);
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(matrix_diag), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(45), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "matrix_diag_exprs", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(45)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, WhereBuildsDynamicIndexMatrixShape) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_BOOL, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("where", "Where")
+                   .Input(input.node()->name(), 0, DT_BOOL)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* where = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(where));
+  scope.graph()->AddEdge(input.node(), 0, where, 0);
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(where), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_BOOL;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::PRED, {8, 4, 6},
+      std::vector<xla::DExpr>{xla::DExpr::Var(46), xla::DExpr::Const(4),
+                              xla::DExpr::Var(47)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "where",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions_size(), 2);
+  EXPECT_EQ(result_shape.dimensions(1), 3);
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, DiagDuplicatesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("diag", "Diag")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* diag = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(diag));
+  scope.graph()->AddEdge(input.node(), 0, diag, 0);
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(diag), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5}, std::vector<xla::DExpr>{xla::DExpr::Var(42)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "diag",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(42)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Var(42)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(42)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Var(42)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, InTopKPreservesBatchExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto predictions = ops::_Arg(scope.WithOpName("predictions"), DT_FLOAT, 0);
+  auto targets = ops::_Arg(scope.WithOpName("targets"), DT_INT32, 1);
+  auto k = ops::Const<int32>(scope.WithOpName("k"), 3, {});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("in_topk", "InTopKV2")
+                   .Input(predictions.node()->name(), 0, DT_FLOAT)
+                   .Input(targets.node()->name(), 0, DT_INT32)
+                   .Input(k.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* in_topk = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(predictions.node(), 0, in_topk, 0);
+  scope.graph()->AddEdge(targets.node(), 0, in_topk, 1);
+  scope.graph()->AddEdge(k.node(), 0, in_topk, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(in_topk));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(in_topk), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {5, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Var(43), xla::DExpr::Const(7)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5}, std::vector<xla::DExpr>{xla::DExpr::Var(43)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "in_topk",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(43)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(43)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ReshapeCollapsePreservesSymbolicExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto shape = ops::Const<int32>(scope.WithOpName("shape"), {96}, {1});
+  auto reshaped = ops::Reshape(scope.WithOpName("reshape"), input, shape);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), reshaped, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {3, 4, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(5), xla::DExpr::Const(4),
+                              xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "reshape_collapse", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(5) * xla::DExpr::Const(32)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0), expected));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ReshapeSplitPreservesSymbolicExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto shape = ops::Const<int32>(scope.WithOpName("shape"), {5, 16}, {2});
+  auto reshaped = ops::Reshape(scope.WithOpName("reshape"), input, shape);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), reshaped, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {10, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(6), xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "reshape_split", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(6) / xla::DExpr::Const(2)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0), expected));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ReshapeSplitAndCollapsePreservesSymbolicExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto shape = ops::Const<int32>(scope.WithOpName("shape"), {4, 64}, {2});
+  auto reshaped = ops::Reshape(scope.WithOpName("reshape"), input, shape);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), reshaped, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 8, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(7), xla::DExpr::Const(8),
+                              xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "reshape_split_collapse",
+                                     std::move(graph), args, &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(7) / xla::DExpr::Const(2)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0), expected));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, GatherV2PreservesUngatheredExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto params = ops::_Arg(scope.WithOpName("params"), DT_INT32, 0);
+  auto indices = ops::Const<int32>(scope.WithOpName("indices"), {0, 2, 4}, {3});
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), 1, {});
+  auto gathered =
+      ops::GatherV2(scope.WithOpName("gather"), params, indices, axis);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), gathered, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {9, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Var(8), xla::DExpr::Const(7)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "gather_preserve", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(8)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(8)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, TransposePermutesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto perm = ops::Const<int32>(scope.WithOpName("perm"), {1, 0}, {2});
+  auto transposed = ops::Transpose(scope.WithOpName("transpose"), input, perm);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), transposed, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5, 7},
+      std::vector<xla::DExpr>{xla::DExpr::Var(9), xla::DExpr::Var(10)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "transpose_exprs", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(10)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Var(9)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ExpandDimsInsertsUnitExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto dim = ops::Const<int32>(scope.WithOpName("dim"), 1, {});
+  auto expanded = ops::ExpandDims(scope.WithOpName("expand"), input, dim);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), expanded, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(11), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "expand_dims_exprs", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(11)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(1)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, SqueezeRemovesUnitExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("squeeze", "Squeeze")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("squeeze_dims", {1})
+                   .Finalize(&def));
+  absl::Status status;
+  Node* squeeze = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, squeeze, 0);
+  TF_ASSERT_OK(scope.DoShapeInference(squeeze));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(squeeze), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 1, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(12), xla::DExpr::Const(1),
+                              xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "squeeze_exprs", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(12)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, SplitPreservesAndDividesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto split_dim = ops::Const<int32>(scope.WithOpName("split_dim"), 0, {});
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto split = ops::Split(scope.WithOpName("split"), split_dim, input, 2);
+  auto retval0 = ops::_Retval(scope.WithOpName("retval0"), split.output[0], 0);
+  auto retval1 = ops::_Retval(scope.WithOpName("retval1"), split.output[1], 1);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(13), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "split_exprs", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(13) / xla::DExpr::Const(2)).simplify();
+  ASSERT_EQ(result.outputs.size(), 2);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
+                                      0),
+                                  expected));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, TileScalesExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto multiples =
+      ops::Const<int32>(scope.WithOpName("multiples"), {3, 1}, {2});
+  auto tiled = ops::Tile(scope.WithOpName("tile"), input, multiples);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), tiled, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {4, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(14), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "tile_exprs", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(14) * xla::DExpr::Const(3)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, PackInsertsAxisAndPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input0 = ops::_Arg(scope.WithOpName("input0"), DT_INT32, 0);
+  auto input1 = ops::_Arg(scope.WithOpName("input1"), DT_INT32, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("pack", "Pack")
+                   .Input({NodeDefBuilder::NodeOut(input0.node()->name(), 0,
+                                                   DT_INT32),
+                           NodeDefBuilder::NodeOut(input1.node()->name(), 0,
+                                                   DT_INT32)})
+                   .Attr("T", DT_INT32)
+                   .Attr("N", 2)
+                   .Attr("axis", 1)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* pack = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input0.node(), 0, pack, 0);
+  scope.graph()->AddEdge(input1.node(), 0, pack, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(pack));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(pack), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6}, std::vector<xla::DExpr>{xla::DExpr::Var(15)});
+  args[1] = args[0];
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "pack",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(15)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(2)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, UnpackRemovesAxisAndPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("unpack", "Unpack")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("num", 3)
+                   .Attr("axis", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* unpack = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, unpack, 0);
+  TF_ASSERT_OK(scope.DoShapeInference(unpack));
+
+  auto retval0 = ops::_Retval(scope.WithOpName("retval0"), Output(unpack, 0), 0);
+  auto retval1 = ops::_Retval(scope.WithOpName("retval1"), Output(unpack, 1), 1);
+  auto retval2 = ops::_Retval(scope.WithOpName("retval2"), Output(unpack, 2), 2);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 4, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(16), xla::DExpr::Const(4),
+                              xla::DExpr::Const(3)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "unpack",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 3);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_TRUE(xla::DynExpr::equal(
+        result.outputs[i].shape.get_filled_expression(0), xla::DExpr::Var(16)));
+    EXPECT_TRUE(xla::DynExpr::equal(result.outputs[i].shape.get_filled_expression(
+                                        1),
+                                    xla::DExpr::Const(4)));
+  }
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ConcatV2AddsLeadingExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), 0, {});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("concat", "ConcatV2")
+                   .Input({NodeDefBuilder::NodeOut(lhs.node()->name(), 0,
+                                                   DT_INT32),
+                           NodeDefBuilder::NodeOut(rhs.node()->name(), 0,
+                                                   DT_INT32)})
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("N", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* concat = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(lhs.node(), 0, concat, 0);
+  scope.graph()->AddEdge(rhs.node(), 0, concat, 1);
+  scope.graph()->AddEdge(axis.node(), 0, concat, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(concat));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(concat), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(17), xla::DExpr::Const(4)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(18), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "concat",
+                                     std::move(graph), args, &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(17) + xla::DExpr::Var(18)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ConcatAddsLeadingExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), 0, {});
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("concat", "Concat")
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Input({NodeDefBuilder::NodeOut(lhs.node()->name(), 0,
+                                                   DT_INT32),
+                           NodeDefBuilder::NodeOut(rhs.node()->name(), 0,
+                                                   DT_INT32)})
+                   .Attr("T", DT_INT32)
+                   .Attr("N", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* concat = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(axis.node(), 0, concat, 0);
+  scope.graph()->AddEdge(lhs.node(), 0, concat, 1);
+  scope.graph()->AddEdge(rhs.node(), 0, concat, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(concat));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(concat), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(22), xla::DExpr::Const(4)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(23), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "concat_legacy", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(22) + xla::DExpr::Var(23)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ConcatAddsThreeLeadingExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto mid = ops::_Arg(scope.WithOpName("mid"), DT_INT32, 1);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 2);
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), 0, {});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("concat0", "ConcatV2")
+                   .Input({NodeDefBuilder::NodeOut(lhs.node()->name(), 0,
+                                                   DT_INT32),
+                           NodeDefBuilder::NodeOut(mid.node()->name(), 0,
+                                                   DT_INT32)})
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("N", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* concat0 = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(lhs.node(), 0, concat0, 0);
+  scope.graph()->AddEdge(mid.node(), 0, concat0, 1);
+  scope.graph()->AddEdge(axis.node(), 0, concat0, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(concat0));
+
+  NodeDef def1;
+  TF_ASSERT_OK(NodeDefBuilder("concat1", "ConcatV2")
+                   .Input({NodeDefBuilder::NodeOut(concat0->name(), 0,
+                                                   DT_INT32),
+                           NodeDefBuilder::NodeOut(rhs.node()->name(), 0,
+                                                   DT_INT32)})
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("N", 2)
+                   .Finalize(&def1));
+  Node* concat1 = scope.graph()->AddNode(def1, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(concat0, 0, concat1, 0);
+  scope.graph()->AddEdge(rhs.node(), 0, concat1, 1);
+  scope.graph()->AddEdge(axis.node(), 0, concat1, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(concat1));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(concat1), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(3);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {3, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(31), xla::DExpr::Const(4)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {5, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(32), xla::DExpr::Const(4)});
+  args[2].kind = XlaCompiler::Argument::kParameter;
+  args[2].type = DT_INT32;
+  args[2].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(33), xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "concat_three", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected =
+      (xla::DExpr::Var(31) + xla::DExpr::Var(32) + xla::DExpr::Var(33))
+          .simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  expected));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0), expected));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ConcatV2PreservesLeadingExpressionOnInnerAxis) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), 1, {});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("concat", "ConcatV2")
+                   .Input({NodeDefBuilder::NodeOut(lhs.node()->name(), 0,
+                                                   DT_INT32),
+                           NodeDefBuilder::NodeOut(rhs.node()->name(), 0,
+                                                   DT_INT32)})
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Attr("N", 2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* concat = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(lhs.node(), 0, concat, 0);
+  scope.graph()->AddEdge(rhs.node(), 0, concat, 1);
+  scope.graph()->AddEdge(axis.node(), 0, concat, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(concat));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(concat), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 4},
+      std::vector<xla::DExpr>{xla::DExpr::Var(24), xla::DExpr::Const(4)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(24), xla::DExpr::Const(3)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "concat_inner", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(24)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(7)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, AddPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+  auto sum = ops::Add(scope.WithOpName("add"), lhs, rhs);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), sum, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(44), xla::DExpr::Const(5)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(44), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "add",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(44)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       AddSameRankBroadcastPreservesMappedExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+  auto sum = ops::Add(scope.WithOpName("add"), lhs, rhs);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), sum, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 1, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(45), xla::DExpr::Const(1),
+                              xla::DExpr::Const(3)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 4, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(45), xla::DExpr::Const(4),
+                              xla::DExpr::Const(3)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "add_broadcast", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(45)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, AddDegenerateBroadcastPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+  auto sum = ops::Add(scope.WithOpName("add"), lhs, rhs);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), sum, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {1, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Const(1), xla::DExpr::Const(5)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(46), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "add_degenerate", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(46)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       MulSameRankBroadcastPreservesMappedExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
+  auto product = ops::Mul(scope.WithOpName("mul"), lhs, rhs);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), product, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 1, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(47), xla::DExpr::Const(1),
+                              xla::DExpr::Const(3)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 4, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Var(47), xla::DExpr::Const(4),
+                              xla::DExpr::Const(3)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "mul_broadcast", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(47)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, ReverseV2PreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), {1}, {1});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("reverse", "ReverseV2")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tidx", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* reverse = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, reverse, 0);
+  scope.graph()->AddEdge(axis.node(), 0, reverse, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(reverse));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(reverse), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {8, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(19), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "reverse_v2",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(19)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, BatchMatMulPreservesBatchExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_FLOAT, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_FLOAT, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("batch_matmul", "BatchMatMul")
+                   .Input(lhs.node()->name(), 0, DT_FLOAT)
+                   .Input(rhs.node()->name(), 0, DT_FLOAT)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("adj_x", false)
+                   .Attr("adj_y", false)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* batch_matmul = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(lhs.node(), 0, batch_matmul, 0);
+  scope.graph()->AddEdge(rhs.node(), 0, batch_matmul, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(batch_matmul));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(batch_matmul), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 4, 6},
+      std::vector<xla::DExpr>{xla::DExpr::Var(25), xla::DExpr::Const(4),
+                              xla::DExpr::Const(6)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_FLOAT;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 6, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(25), xla::DExpr::Const(6),
+                              xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "batch_matmul", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(25)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, BatchMatMulV2BroadcastsBatchExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_FLOAT, 0);
+  auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_FLOAT, 1);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("batch_matmul_v2", "BatchMatMulV2")
+                   .Input(lhs.node()->name(), 0, DT_FLOAT)
+                   .Input(rhs.node()->name(), 0, DT_FLOAT)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("adj_x", false)
+                   .Attr("adj_y", false)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* batch_matmul = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(lhs.node(), 0, batch_matmul, 0);
+  scope.graph()->AddEdge(rhs.node(), 0, batch_matmul, 1);
+  TF_ASSERT_OK(scope.DoShapeInference(batch_matmul));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(batch_matmul), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {1, 4, 6},
+      std::vector<xla::DExpr>{xla::DExpr::Const(1), xla::DExpr::Const(4),
+                              xla::DExpr::Const(6)});
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_FLOAT;
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 6, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(26), xla::DExpr::Const(6),
+                              xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "batch_matmul_v2", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(26)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, SlicePreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 2}, {2});
+  auto size = ops::Const<int32>(scope.WithOpName("size"), {-1, 3}, {2});
+  auto sliced = ops::Slice(scope.WithOpName("slice"), input, begin, size);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), sliced, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(20), xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "slice",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(20)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, SliceSubtractsFromLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {2, 1}, {2});
+  auto size = ops::Const<int32>(scope.WithOpName("size"), {-1, 3}, {2});
+  auto sliced = ops::Slice(scope.WithOpName("slice"), input, begin, size);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), sliced, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {9, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(27), xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "slice_subtract", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  (xla::DExpr::Var(27) - 2).simplify()));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSlicePreservesLeadingExpressionOnInnerAxis) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 1}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 7}, {2});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1, 2}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 1)
+                   .Attr("end_mask", 1)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(40), xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_inner", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(40)));
+  EXPECT_EQ(result.outputs[0].shape.dim_size(1), 3);
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, StridedSliceScalesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 4}, {2});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {2, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 1)
+                   .Attr("end_mask", 1)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 4},
+      std::vector<xla::DExpr>{
+          ((xla::DExpr::Const(2) * xla::DExpr::Var(41)) -
+           xla::DExpr::Const(1))
+              .simplify(),
+          xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_leading", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(
+      result.outputs[0].shape.get_filled_expression(0), xla::DExpr::Var(41)));
+  EXPECT_EQ(result.outputs[0].shape.dim_size(0), 4);
+  EXPECT_EQ(result.outputs[0].shape.dim_size(1), 4);
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, StridedSliceNewAxisInsertsUnitExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 0}, {2});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x1)
+                   .Attr("end_mask", 0x1)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0x2)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(42), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_new_axis",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(42)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(1)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSliceShrinkAxisPreservesRemainingExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 2, 0}, {3});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 2, 5}, {3});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1, 1, 1}, {3});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x3)
+                   .Attr("end_mask", 0x3)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0x2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(43), xla::DExpr::Const(5),
+                              xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_shrink", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(43)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSliceNegativeStridePreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 0}, {2});
+  auto strides =
+      ops::Const<int32>(scope.WithOpName("strides"), {-1, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x3)
+                   .Attr("end_mask", 0x3)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(44), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_negative",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(44)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSliceNegativeStrideTwoScalesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 0}, {2});
+  auto strides =
+      ops::Const<int32>(scope.WithOpName("strides"), {-2, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x3)
+                   .Attr("end_mask", 0x3)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(45), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_negative_two",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(
+      result.outputs[0].shape.get_filled_expression(0),
+      ((xla::DExpr::Var(45) + xla::DExpr::Const(1)) / xla::DExpr::Const(2))
+          .simplify()));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, PadAddsToLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto paddings =
+      ops::Const<int32>(scope.WithOpName("paddings"), {1, 2, 0, 0}, {2, 2});
+  auto padded = ops::Pad(scope.WithOpName("pad"), input, paddings);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), padded, 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(28), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "pad",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  (xla::DExpr::Var(28) + 3).simplify()));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, SpaceToBatchNDScalesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_FLOAT, 0);
+  auto block_shape =
+      ops::Const<int32>(scope.WithOpName("block_shape"), {2}, {1});
+  auto paddings =
+      ops::Const<int32>(scope.WithOpName("paddings"), {0, 0}, {1, 2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("space_to_batch", "SpaceToBatchND")
+                   .Input(input.node()->name(), 0, DT_FLOAT)
+                   .Input(block_shape.node()->name(), 0, DT_INT32)
+                   .Input(paddings.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("Tblock_shape", DT_INT32)
+                   .Attr("Tpaddings", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* space_to_batch = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, space_to_batch, 0);
+  scope.graph()->AddEdge(block_shape.node(), 0, space_to_batch, 1);
+  scope.graph()->AddEdge(paddings.node(), 0, space_to_batch, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(space_to_batch));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(space_to_batch), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {4, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(29), xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "space_to_batch", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  (xla::DExpr::Const(2) * xla::DExpr::Var(29))
+                                      .simplify()));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, BatchToSpaceNDDividesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_FLOAT, 0);
+  auto block_shape =
+      ops::Const<int32>(scope.WithOpName("block_shape"), {2}, {1});
+  auto crops = ops::Const<int32>(scope.WithOpName("crops"), {0, 0}, {1, 2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("batch_to_space", "BatchToSpaceND")
+                   .Input(input.node()->name(), 0, DT_FLOAT)
+                   .Input(block_shape.node()->name(), 0, DT_INT32)
+                   .Input(crops.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("Tblock_shape", DT_INT32)
+                   .Attr("Tcrops", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* batch_to_space = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, batch_to_space, 0);
+  scope.graph()->AddEdge(block_shape.node(), 0, batch_to_space, 1);
+  scope.graph()->AddEdge(crops.node(), 0, batch_to_space, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(batch_to_space));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(batch_to_space), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 4},
+      std::vector<xla::DExpr>{(xla::DExpr::Const(2) * xla::DExpr::Var(30))
+                                  .simplify(),
+                              xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "batch_to_space", std::move(graph), args,
+                                     &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(30)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(8)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, SpaceToDepthScalesDepthExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_FLOAT, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("space_to_depth", "SpaceToDepth")
+                   .Input(input.node()->name(), 0, DT_FLOAT)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("block_size", 2)
+                   .Attr("data_format", "NHWC")
+                   .Finalize(&def));
+  absl::Status status;
+  Node* space_to_depth = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, space_to_depth, 0);
+  TF_ASSERT_OK(scope.DoShapeInference(space_to_depth));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(space_to_depth), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {5, 8, 8, 3},
+      std::vector<xla::DExpr>{xla::DExpr::Const(5), xla::DExpr::Const(8),
+                              xla::DExpr::Const(8), xla::DExpr::Var(35)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "space_to_depth", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected_depth =
+      (xla::DExpr::Const(4) * xla::DExpr::Var(35)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Const(5)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      3),
+                                  expected_depth));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Const(5)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Const(4)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(2), xla::DExpr::Const(4)));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(3), expected_depth));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, DepthToSpaceScalesSpatialExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_FLOAT, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("depth_to_space", "DepthToSpace")
+                   .Input(input.node()->name(), 0, DT_FLOAT)
+                   .Attr("T", DT_FLOAT)
+                   .Attr("block_size", 2)
+                   .Attr("data_format", "NHWC")
+                   .Finalize(&def));
+  absl::Status status;
+  Node* depth_to_space = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, depth_to_space, 0);
+  TF_ASSERT_OK(scope.DoShapeInference(depth_to_space));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(depth_to_space), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {5, 4, 4, 12},
+      std::vector<xla::DExpr>{xla::DExpr::Const(5), xla::DExpr::Var(37),
+                              xla::DExpr::Const(4), xla::DExpr::Const(12)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "depth_to_space", std::move(graph), args,
+                                     &result));
+
+  xla::DExpr expected_height =
+      (xla::DExpr::Const(2) * xla::DExpr::Var(37)).simplify();
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Const(5)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  expected_height));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(8)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      3),
+                                  xla::DExpr::Const(3)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Const(5)));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1), expected_height));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(2), xla::DExpr::Const(8)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(3), xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, RollPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto shift = ops::Const<int32>(scope.WithOpName("shift"), 2, {});
+  auto axis = ops::Const<int32>(scope.WithOpName("axis"), 1, {});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("roll", "Roll")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(shift.node()->name(), 0, DT_INT32)
+                   .Input(axis.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Tshift", DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* roll = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, roll, 0);
+  scope.graph()->AddEdge(shift.node(), 0, roll, 1);
+  scope.graph()->AddEdge(axis.node(), 0, roll, 2);
+  TF_ASSERT_OK(scope.DoShapeInference(roll));
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(roll), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {6, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(21), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "roll",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(21)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
 }
 
 // Tests compilation of a graph where the _Retval node is not necessarily last
@@ -1113,6 +3663,13 @@ FunctionDef FillFn() {
       {{{"y"}, "Fill", {"dims", "x"}, {{"T", "$T"}}}});
 }
 
+FunctionDef IdentityFn() {
+  return FunctionDefHelper::Define(
+      "IdentityFn", {"x: T"}, {"y: T"},
+      {"T: {float, double, int32, int64}"},
+      {{{"y"}, "Identity", {"x"}, {{"T", "$T"}}}});
+}
+
 TEST_F(XlaCompilerTest, FunctionCallWithConstants) {
   // Certain operations in a function, "Fill" for example, requires the
   // operator's argument to be a compile-time constant instead of a parameter.
@@ -1154,6 +3711,53 @@ TEST_F(XlaCompilerTest, FunctionCallWithConstants) {
   XlaCompiler::CompilationResult result;
   TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "fill",
                                      std::move(graph), args, &result));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, FunctionCallPreservesDynamicExpressions) {
+  XlaCompiler compiler(DefaultOptions());
+
+  FunctionDefLibrary flib;
+  *flib.add_function() = IdentityFn();
+  TF_ASSERT_OK(flib_def_->AddFunctionDef(IdentityFn()));
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(scope.WithOpName("arg"), DT_INT32, 0);
+  TF_EXPECT_OK(scope.graph()->AddFunctionLibrary(flib));
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("identity_fn", "IdentityFn", flib_def_.get())
+                   .Input(arg.node()->name(), 0, DT_INT32)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* identity_fn = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(identity_fn));
+  scope.graph()->AddEdge(arg.node(), 0, identity_fn, 0);
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(identity_fn), 0);
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {9}, std::vector<xla::DExpr>{xla::DExpr::Var(2)});
+
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "identity_function", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(2)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(2)));
 }
 
 // Tests CompileFunction with a local function lookup failing, fails with

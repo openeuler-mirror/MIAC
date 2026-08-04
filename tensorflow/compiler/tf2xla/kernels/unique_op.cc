@@ -178,13 +178,16 @@ class UniqueOpBase : public XlaOpKernel {
     sort_keys.reserve(product + 1);
     std::vector<xla::PrimitiveType> sort_types;
     sort_types.reserve(product + 1);
+    xla::Shape leading_shape = xla::ShapeUtil::MakeShape(
+        input_shape.element_type(), {leading_size},
+        std::vector<xla::DExpr>{leading_expr});
     for (int64_t i = 0; i < product; ++i) {
       xla::XlaOp slice = xla::SliceInDim(aux, i, i + 1, 1, 1);
-      sort_keys.push_back(xla::Reshape(slice, {leading_size}, {leading_expr}));
+      sort_keys.push_back(xla::Reshape(leading_shape, slice));
       sort_types.push_back(input_shape.element_type());
     }
-    xla::Shape iota_shape =
-        xla::ShapeUtil::MakeShape(xla::S32, {leading_size}, {leading_expr});
+    xla::Shape iota_shape = xla::ShapeUtil::MakeShape(
+        xla::S32, {leading_size}, std::vector<xla::DExpr>{leading_expr});
     iota_shape.set_expression(0, leading_expr);
     auto iota = xla::Iota(ctx->builder(), iota_shape, 0);
     sort_keys.push_back(iota);
@@ -248,8 +251,7 @@ class UniqueOpBase : public XlaOpKernel {
         /*is_stable=*/true);
     auto mask_permute = xla::GetTupleElement(mask_sort, 1);
     permuted = xla::Gather(aux, mask_permute, gather_dim_numbers, {1, product});
-    auto result_data =
-        xla::Reshape(permuted, aux_shape.dimensions(), aux_shape.expressions());
+    auto result_data = xla::Reshape(aux_shape, permuted);
     result_data = MoveAxis(result_data, 0, axis, aux_shape);
     result_data = xla::SetDimensionSize(result_data, dynamic_size, axis);
     ctx->SetOutput(0, result_data);
