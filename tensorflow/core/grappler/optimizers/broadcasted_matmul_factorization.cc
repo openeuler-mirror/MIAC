@@ -66,10 +66,14 @@ const NodeDef* FindNode(const NodeIndex& nodes, const string& input) {
 const NodeDef* ResolveIdentitySource(string input, const NodeIndex& nodes) {
   const NodeDef* node = FindNode(nodes, input);
   std::size_t remaining = nodes.size();
+
   while (node != nullptr && node->op() == "Identity") {
-    if (remaining-- == 0 || node->input_size() < 1) return nullptr;
+    // Following more Identity nodes than the graph contains implies a cycle.
+    if (remaining == 0 || node->input_size() < 1) return nullptr;
+    --remaining;
     node = FindNode(nodes, node->input(0));
   }
+
   return node;
 }
 
