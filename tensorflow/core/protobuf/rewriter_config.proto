@@ -134,7 +134,7 @@ message RewriterConfig {
   // by the SavedModel loader.
   Toggle freeze_allowlisted_variables = 34;
   // Maximum tensor size in MiB for freezing allowlisted variables into Const
-  // nodes at SavedModel load time. A value of 0 means no size limit.
+  // nodes at SavedModel load time.
   // Supports fractional values, e.g. 1.5 for 1.5 MiB.
   // The value is converted to bytes by multiplying by 2^20 and truncating
   // toward zero, so the effective limit never exceeds the configured MiB.

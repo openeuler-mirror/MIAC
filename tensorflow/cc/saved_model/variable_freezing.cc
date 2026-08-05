@@ -712,7 +712,8 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
   }
   // Use the caller-provided limit, or fall back to the internal default.
   const int64_t effective_max_tensor_bytes =
-      max_tensor_bytes < 0 ? kDefaultMaxTensorBytes : max_tensor_bytes;
+      max_tensor_bytes <= 0 ? kDefaultMaxTensorBytes : max_tensor_bytes;
+  LOG(INFO) << " max_tensor_bytes=" << (effective_max_tensor_bytes >> 20) << "MB";
   // Snapshot the graph before any in-place rewrites for debugging.
   VLOG(2) << "[variable_freezing] graph before freeze:"
           << meta_graph_def->graph_def().DebugString();

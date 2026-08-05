@@ -272,6 +272,25 @@ absl::Status RunRestore(const RunOptions& run_options, const string& export_dir,
                  nullptr /* outputs */, &run_metadata, session);
 }
 
+// Freezes allowlisted read-only variables into Const nodes when the
+// `freeze_allowlisted_variables` rewrite option is enabled. This is a no-op
+// when the option is OFF. `max_tensor_mib` is converted from MiB to bytes
+absl::Status MaybeFreezeAllowlistedVariables(
+    const SessionOptions& session_options, const string& export_dir,
+    MetaGraphDef* meta_graph_def) {
+  const auto& rewrite_options =
+      session_options.config.graph_options().rewrite_options();
+  if (rewrite_options.freeze_allowlisted_variables() == RewriterConfig::OFF) {
+    return absl::OkStatus();
+  }
+  const double max_tensor_mib = rewrite_options.freeze_max_tensor_mib();
+  // Convert MiB to bytes.
+  const int64_t max_tensor_bytes =
+      static_cast<int64_t>(max_tensor_mib * (1LL << 20));
+  return internal::FreezeAllowlistedVariableReads(export_dir, meta_graph_def,
+                                                  max_tensor_bytes);
+}
+
 }  // namespace
 
 SavedModelBundleInterface::~SavedModelBundleInterface() = default;
@@ -303,17 +322,8 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
                                     SavedModelBundle* const bundle) {
   TF_RETURN_IF_ERROR(ReadMetaGraphDefFromSavedModel(export_dir, tags,
                                                     &bundle->meta_graph_def));
-  if (session_options.config.graph_options().rewrite_options()
-          .freeze_allowlisted_variables() != RewriterConfig::OFF) {
-    const double max_tensor_mib =
-        session_options.config.graph_options().rewrite_options()
-            .freeze_max_tensor_mib();
-    // Convert MiB to bytes; 0 means no limit.
-    const int64_t max_tensor_bytes =
-        static_cast<int64_t>(max_tensor_mib * (1LL << 20));
-    TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
-        export_dir, &bundle->meta_graph_def, max_tensor_bytes));
-  }
+  TF_RETURN_IF_ERROR(MaybeFreezeAllowlistedVariables(
+      session_options, export_dir, &bundle->meta_graph_def));
   TF_RETURN_IF_ERROR(
       ReadSavedModelDebugInfoIfPresent(export_dir, &bundle->debug_info));
   TF_RETURN_IF_ERROR(LoadMetagraphIntoSession(
@@ -451,17 +461,9 @@ absl::Status LoadSavedModelInternal(const SessionOptions& session_options,
   MetaGraphDef meta_graph_def;
   TF_RETURN_IF_ERROR(
       ReadMetaGraphDefFromSavedModel(export_dir, tags, &meta_graph_def));
-  if (session_options.config.graph_options().rewrite_options()
-          .freeze_allowlisted_variables() != RewriterConfig::OFF) {
-    const double max_tensor_mib =
-        session_options.config.graph_options().rewrite_options()
-            .freeze_max_tensor_mib();
-    // Convert MiB to bytes; 0 means no limit.
-    const int64_t max_tensor_bytes =
-        static_cast<int64_t>(max_tensor_mib * (1LL << 20));
-    TF_RETURN_IF_ERROR(internal::FreezeAllowlistedVariableReads(
-        export_dir, &meta_graph_def, max_tensor_bytes));
-  }
+  TF_RETURN_IF_ERROR(
+      MaybeFreezeAllowlistedVariables(session_options, export_dir,
+                                      &meta_graph_def));
   std::unique_ptr<Session> session;
   TF_RETURN_IF_ERROR(LoadGraphDefIntoSession(
       session_options, std::move(*meta_graph_def.mutable_graph_def()),
