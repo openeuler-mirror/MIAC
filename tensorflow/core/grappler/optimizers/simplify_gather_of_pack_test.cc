@@ -41,8 +41,15 @@ const NodeDef* FindNode(const GraphDef& graph, const string& name) {
   return nullptr;
 }
 
+NodeDef* FindMutableNode(GraphDef* graph, const string& name) {
+  for (NodeDef& node : *graph->mutable_node()) {
+    if (node.name() == name) return &node;
+  }
+  return nullptr;
+}
+
 GrapplerItem MakeGraph(const std::vector<int32>& indices = {0, 1},
-                       int gather_axis = 1) {
+                       int gather_axis = 1, bool add_pack_consumer = false) {
   Scope scope = Scope::NewRootScope();
   Output a = ops::Placeholder(scope.WithOpName("a"), DT_FLOAT,
                               ops::Placeholder::Shape({2, 128}));
@@ -52,14 +59,20 @@ GrapplerItem MakeGraph(const std::vector<int32>& indices = {0, 1},
                               ops::Placeholder::Shape({2, 128}));
   Output packed =
       ops::Stack(scope.WithOpName("packed"), {a, b, c}, ops::Stack::Axis(1));
-  Output gathered =
-      ops::GatherV2(scope.WithOpName("gathered"), packed,
-                    ops::Const(scope.WithOpName("indices"), test::AsTensor<int32>(indices)),
-                    ops::Const(scope.WithOpName("axis"), gather_axis));
+  Output gathered = ops::GatherV2(
+      scope.WithOpName("gathered"), packed,
+      ops::Const(scope.WithOpName("indices"), test::AsTensor<int32>(indices)),
+      ops::Const(scope.WithOpName("axis"), gather_axis));
   ops::Identity(scope.WithOpName("output"), gathered);
+  if (add_pack_consumer) {
+    ops::Identity(scope.WithOpName("packed_output"), packed);
+  }
 
   GrapplerItem item;
   item.fetch = {"output"};
+  if (add_pack_consumer) {
+    item.fetch.push_back("packed_output");
+  }
   TF_CHECK_OK(scope.ToGraphDef(&item.graph));
   return item;
 }
@@ -125,6 +138,75 @@ TEST_F(SimplifyGatherOfPackOptimizerTest, SkipsFedPack) {
   const NodeDef* gather = FindNode(optimized, "gathered");
   ASSERT_NE(gather, nullptr);
   EXPECT_EQ(gather->op(), "GatherV2");
+}
+
+TEST_F(SimplifyGatherOfPackOptimizerTest, SkipsNonzeroBatchDims) {
+  GrapplerItem item = MakeGraph();
+  NodeDef* gather = FindMutableNode(&item.graph, "gathered");
+  ASSERT_NE(gather, nullptr);
+  (*gather->mutable_attr())["batch_dims"].set_i(1);
+  gather->mutable_attr()->erase("_output_shapes");
+
+  SimplifyGatherOfPackOptimizer optimizer;
+  GraphDef optimized;
+  TF_ASSERT_OK(optimizer.Optimize(nullptr, item, &optimized));
+
+  const NodeDef* optimized_gather = FindNode(optimized, "gathered");
+  ASSERT_NE(optimized_gather, nullptr);
+  EXPECT_EQ(optimized_gather->op(), "GatherV2");
+  EXPECT_EQ(optimized_gather->attr().at("batch_dims").i(), 1);
+}
+
+TEST_F(SimplifyGatherOfPackOptimizerTest, SkipsOutOfRangeIndices) {
+  GrapplerItem item = MakeGraph(/*indices=*/{0, 3});
+
+  SimplifyGatherOfPackOptimizer optimizer;
+  GraphDef optimized;
+  TF_ASSERT_OK(optimizer.Optimize(nullptr, item, &optimized));
+
+  const NodeDef* gather = FindNode(optimized, "gathered");
+  ASSERT_NE(gather, nullptr);
+  EXPECT_EQ(gather->op(), "GatherV2");
+  ASSERT_EQ(gather->input_size(), 3);
+  EXPECT_EQ(gather->input(0), "packed");
+}
+
+TEST_F(SimplifyGatherOfPackOptimizerTest, PreservesPackWithAnotherConsumer) {
+  GrapplerItem item = MakeGraph(/*indices=*/{0, 1}, /*gather_axis=*/1,
+                                /*add_pack_consumer=*/true);
+  auto a = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 128}));
+  auto b = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 128}));
+  auto c = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 128}));
+  const auto expected =
+      EvaluateNodes(item.graph, item.fetch, {{"a", a}, {"b", b}, {"c", c}});
+  ASSERT_EQ(expected.size(), 2);
+
+  SimplifyGatherOfPackOptimizer optimizer;
+  GraphDef optimized;
+  OptimizeAndPrune(&optimizer, &item, &optimized);
+
+  const NodeDef* rewritten = FindNode(optimized, "gathered");
+  ASSERT_NE(rewritten, nullptr);
+  EXPECT_EQ(rewritten->op(), "Pack");
+  ASSERT_EQ(rewritten->input_size(), 2);
+  EXPECT_EQ(rewritten->input(0), "a");
+  EXPECT_EQ(rewritten->input(1), "b");
+
+  const NodeDef* original_pack = FindNode(optimized, "packed");
+  ASSERT_NE(original_pack, nullptr);
+  EXPECT_EQ(original_pack->op(), "Pack");
+  ASSERT_EQ(original_pack->input_size(), 3);
+  EXPECT_EQ(original_pack->input(2), "c");
+  const NodeDef* other_consumer = FindNode(optimized, "packed_output");
+  ASSERT_NE(other_consumer, nullptr);
+  ASSERT_EQ(other_consumer->input_size(), 1);
+  EXPECT_EQ(other_consumer->input(0), "packed");
+
+  const auto actual =
+      EvaluateNodes(optimized, item.fetch, {{"a", a}, {"b", b}, {"c", c}});
+  ASSERT_EQ(actual.size(), expected.size());
+  test::ExpectTensorNear<float>(actual[0], expected[0], 1e-6);
+  test::ExpectTensorNear<float>(actual[1], expected[1], 1e-6);
 }
 
 TEST_F(SimplifyGatherOfPackOptimizerTest, SupportsDuplicateIndices) {
