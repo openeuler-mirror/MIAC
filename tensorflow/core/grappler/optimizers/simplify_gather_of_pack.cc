@@ -101,10 +101,10 @@ bool NormalizeAxis(int64_t axis, int64_t rank, int64_t* normalized_axis) {
 
 void ForwardControlDependencies(const NodeDef& source, NodeDef* target,
                                 NodeMap* node_map) {
-  for (int i = source.input_size() - 1; i >= 0; --i) {
-    if (!IsControlInput(source.input(i))) break;
-    target->add_input(source.input(i));
-    node_map->AddOutput(NodeName(source.input(i)), target->name());
+  for (const string& input : source.input()) {
+    if (!IsControlInput(input)) continue;
+    target->add_input(input);
+    node_map->AddOutput(NodeName(input), target->name());
   }
 }
 
