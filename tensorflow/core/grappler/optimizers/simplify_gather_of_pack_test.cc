@@ -48,6 +48,15 @@ NodeDef* FindMutableNode(GraphDef* graph, const string& name) {
   return nullptr;
 }
 
+void SetOutputRank(NodeDef* node, int rank) {
+  AttrValue output_shapes;
+  TensorShapeProto* shape = output_shapes.mutable_list()->add_shape();
+  for (int i = 0; i < rank; ++i) {
+    shape->add_dim()->set_size(-1);
+  }
+  (*node->mutable_attr())["_output_shapes"] = std::move(output_shapes);
+}
+
 GrapplerItem MakeGraph(const std::vector<int32>& indices = {0, 1},
                        int gather_axis = 1, bool add_pack_consumer = false) {
   Scope scope = Scope::NewRootScope();
@@ -124,6 +133,38 @@ TEST_F(SimplifyGatherOfPackOptimizerTest, SkipsMismatchedAxis) {
   const NodeDef* gather = FindNode(optimized, "gathered");
   ASSERT_NE(gather, nullptr);
   EXPECT_EQ(gather->op(), "GatherV2");
+}
+
+TEST_F(SimplifyGatherOfPackOptimizerTest,
+       RewritesEquivalentNegativeGatherAxis) {
+  GrapplerItem item = MakeGraph(/*indices=*/{0, 1}, /*gather_axis=*/-2);
+  NodeDef* pack = FindMutableNode(&item.graph, "packed");
+  ASSERT_NE(pack, nullptr);
+  SetOutputRank(pack, /*rank=*/3);
+
+  auto a = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 128}));
+  auto b = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 128}));
+  auto c = GenerateRandomTensor<DT_FLOAT>(TensorShape({2, 128}));
+  const auto expected =
+      EvaluateNodes(item.graph, item.fetch, {{"a", a}, {"b", b}, {"c", c}});
+  ASSERT_EQ(expected.size(), 1);
+
+  SimplifyGatherOfPackOptimizer optimizer;
+  GraphDef optimized;
+  OptimizeAndPrune(&optimizer, &item, &optimized);
+
+  const NodeDef* rewritten = FindNode(optimized, "gathered");
+  ASSERT_NE(rewritten, nullptr);
+  EXPECT_EQ(rewritten->op(), "Pack");
+  ASSERT_EQ(rewritten->input_size(), 2);
+  EXPECT_EQ(rewritten->input(0), "a");
+  EXPECT_EQ(rewritten->input(1), "b");
+  EXPECT_EQ(rewritten->attr().at("axis").i(), 1);
+
+  const auto actual =
+      EvaluateNodes(optimized, item.fetch, {{"a", a}, {"b", b}});
+  ASSERT_EQ(actual.size(), expected.size());
+  test::ExpectTensorNear<float>(actual[0], expected[0], 1e-6);
 }
 
 TEST_F(SimplifyGatherOfPackOptimizerTest, SkipsFedPack) {

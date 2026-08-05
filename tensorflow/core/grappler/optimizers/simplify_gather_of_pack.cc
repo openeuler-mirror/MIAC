@@ -82,6 +82,23 @@ bool IntVectorValues(const Tensor& tensor, std::vector<int64_t>* values) {
   return false;
 }
 
+bool OutputRankFromShapesAttr(const NodeDef& node, int64_t* rank) {
+  const auto shapes_attr = node.attr().find("_output_shapes");
+  if (shapes_attr == node.attr().end() ||
+      shapes_attr->second.list().shape_size() != 1 ||
+      shapes_attr->second.list().shape(0).unknown_rank()) {
+    return false;
+  }
+  *rank = shapes_attr->second.list().shape(0).dim_size();
+  return *rank > 0;
+}
+
+bool NormalizeAxis(int64_t axis, int64_t rank, int64_t* normalized_axis) {
+  if (rank <= 0 || axis < -rank || axis >= rank) return false;
+  *normalized_axis = axis < 0 ? axis + rank : axis;
+  return true;
+}
+
 void ForwardControlDependencies(const NodeDef& source, NodeDef* target,
                                 NodeMap* node_map) {
   for (int i = source.input_size() - 1; i >= 0; --i) {
@@ -184,11 +201,27 @@ bool TrySimplify(NodeDef* gather,
     return skip("Pack is missing axis, N, or T");
   }
   const int64_t pack_axis = pack_axis_attr->second.i();
-  // Exact comparison handles the common positive-axis form and equal negative
-  // axes without requiring whole-graph shape inference.
-  if (pack_axis != axis) {
+  int64_t pack_output_rank = 0;
+  if (OutputRankFromShapesAttr(*source, &pack_output_rank)) {
+    int64_t normalized_pack_axis = 0;
+    int64_t normalized_gather_axis = 0;
+    if (!NormalizeAxis(pack_axis, pack_output_rank, &normalized_pack_axis) ||
+        !NormalizeAxis(axis, pack_output_rank, &normalized_gather_axis)) {
+      return skip("Pack or Gather axis is outside the valid range");
+    }
+    if (normalized_pack_axis != normalized_gather_axis) {
+      VLOG(1) << "[SimplifyGatherOfPack] skipping candidate " << gather->name()
+              << " over " << source->name()
+              << ": normalized axes differ (Pack axis " << pack_axis << " -> "
+              << normalized_pack_axis << ", Gather axis " << axis << " -> "
+              << normalized_gather_axis << ", output rank " << pack_output_rank
+              << ")";
+      return false;
+    }
+  } else if (pack_axis != axis) {
     VLOG(1) << "[SimplifyGatherOfPack] skipping candidate " << gather->name()
-            << " over " << source->name() << ": axes differ (Pack axis "
+            << " over " << source->name()
+            << ": axes differ and Pack output rank is unavailable (Pack axis "
             << pack_axis << ", Gather axis " << axis << ")";
     return false;
   }
