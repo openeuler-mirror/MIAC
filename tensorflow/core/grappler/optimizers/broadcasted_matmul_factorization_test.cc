@@ -218,6 +218,26 @@ TEST_F(BroadcastedMatMulFactorizationTest, SupportsRepeatedInputFirst) {
 }
 
 TEST_F(BroadcastedMatMulFactorizationTest,
+       PreservesExplicitOutputPortAndControlFanout) {
+  GrapplerItem item = MakeGraph(/*repeats=*/3);
+  NodeDef* result = FindNode(&item.graph, "result");
+  ASSERT_NE(result, nullptr);
+  result->set_input(0, "dense/projection:0");
+  result->add_input("^dense/projection");
+
+  BroadcastedMatMulFactorizationOptimizer optimizer;
+  GraphDef optimized;
+  TF_ASSERT_OK(optimizer.Optimize(nullptr, item, &optimized));
+
+  result = FindNode(&optimized, "result");
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->input(0),
+            "dense/projection/broadcast_factorization/output:0");
+  EXPECT_EQ(result->input(2),
+            "^dense/projection/broadcast_factorization/output");
+}
+
+TEST_F(BroadcastedMatMulFactorizationTest,
        RewritesFrozenIdentityWrappedWeight) {
   GrapplerItem item = MakeGraph(/*repeats=*/3, /*repeated_first=*/false,
                                 /*frozen_weight_read=*/true);

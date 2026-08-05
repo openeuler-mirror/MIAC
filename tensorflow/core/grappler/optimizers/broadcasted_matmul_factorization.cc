@@ -291,6 +291,8 @@ bool Analyze(const NodeDef& matmul, const NodeIndex& nodes,
                             properties, preserved, &repeated)) {
       continue;
     }
+    // Guarantees that later denominator is always positive.
+    if (repeated.repeats <= 1) continue;
 
     const int varying_index = 1 - repeated_index;
     int64_t varying_width;
@@ -437,8 +439,12 @@ void ReplaceFanouts(GraphDef* graph, const string& old_node,
   for (NodeDef& node : *graph->mutable_node()) {
     for (string& input : *node.mutable_input()) {
       if (NodeName(input) != old_node) continue;
-      input = !input.empty() && input[0] == '^' ? absl::StrCat("^", replacement)
-                                                : replacement;
+      if (IsControlInput(input)) {
+        input = absl::StrCat("^", replacement);
+      } else {
+        // Replace only the producer name, preserving an explicit output port.
+        input = absl::StrCat(replacement, input.substr(old_node.size()));
+      }
     }
   }
 }
