@@ -557,6 +557,9 @@ DynExpr* operator*(DynExpr& lhs, DynExpr& rhs) {
 DynExpr* operator*(int64_t k, DynExpr& rhs) {
   return new Mul(DynExpr::_(k), rhs.clone().release());
 }
+DynExpr* operator*(DynExpr& lhs, int64_t k) {
+  return new Mul(lhs.clone().release(), DynExpr::_(k));
+}
 DynExpr* operator/(DynExpr& lhs, DynExpr& rhs) {
   return new Div(lhs.clone().release(), rhs.clone().release());
 }

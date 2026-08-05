@@ -59,8 +59,11 @@ limitations under the License.
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/grappler/costs/graph_properties.h"
+#include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
@@ -375,6 +378,88 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressionsInAdd) {
               root_shape.expressions(0)->is_dynamic());
   EXPECT_TRUE(root_shape.expressions(1) &&
               root_shape.expressions(1)->is_constant());
+}
+
+TEST_F(XlaCompilerTest, TensorFlowAndXlaAgreeOnReshapeExpression) {
+  auto* flags = GetMarkForCompilationPassFlags();
+  bool old_dynamic_sizes = flags->tf_xla_enable_dynamic_sizes;
+  flags->tf_xla_enable_dynamic_sizes = true;
+  auto restore_dynamic_sizes = gtl::MakeCleanup([&] {
+    flags->tf_xla_enable_dynamic_sizes = old_dynamic_sizes;
+  });
+
+  Scope inference_scope = Scope::NewRootScope().ExitOnError();
+  auto placeholder = ops::Placeholder(
+      inference_scope.WithOpName("placeholder"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 24})));
+  auto inference_shape =
+      ops::Const(inference_scope.WithOpName("shape"), {-1, 12});
+  auto inferred_reshape = ops::Reshape(
+      inference_scope.WithOpName("reshape"), placeholder, inference_shape);
+
+  grappler::GrapplerItem item;
+  TF_ASSERT_OK(inference_scope.ToGraphDef(&item.graph));
+  grappler::GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_input_tensor_values=*/false,
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true));
+
+  const TensorShapeProto& inferred_input_shape =
+      properties.GetOutputProperties("placeholder").at(0).shape();
+  const TensorShapeProto& inferred_output_shape =
+      properties.GetOutputProperties("reshape").at(0).shape();
+  ASSERT_EQ(inferred_input_shape.expressions_size(), 2);
+  ASSERT_EQ(inferred_output_shape.expressions_size(), 2);
+  const xla::DExpr inferred_batch_expr =
+      DimExprFromProto(inferred_input_shape.expressions(0));
+  const xla::DExpr inferred_output_expr =
+      DimExprFromProto(inferred_output_shape.expressions(0));
+  ASSERT_TRUE(inferred_batch_expr->is_dynamic());
+  EXPECT_TRUE(xla::DynExpr::equal(
+      inferred_output_expr, inferred_batch_expr * xla::DExpr::Const(2)));
+
+  Scope compilation_scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(compilation_scope.WithOpName("arg"), DT_FLOAT, 0);
+  auto compilation_shape =
+      ops::Const(compilation_scope.WithOpName("shape"), {-1, 12});
+  auto reshape = ops::Reshape(compilation_scope.WithOpName("reshape"), arg,
+                              compilation_shape);
+  auto retval =
+      ops::_Retval(compilation_scope.WithOpName("retval"), reshape, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(compilation_scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 24},
+      std::vector<xla::DExpr>{inferred_batch_expr, xla::DExpr::Const(24)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "reshape",
+                                     std::move(graph), args, &result));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          LoadModuleFromHloProto(result.computation->proto()));
+  const xla::Shape& parameter_shape =
+      module->entry_computation()->parameter_instruction(0)->shape();
+  EXPECT_TRUE(xla::DynExpr::equal(parameter_shape.expressions(0),
+                                  inferred_batch_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(parameter_shape.expressions(1),
+                                  xla::DExpr::Const(24)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions(0), 16);
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0),
+                                  inferred_output_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
+                                  xla::DExpr::Const(12)));
 }
 
 // Tests compilation preserves dynamic shape expressions through scalar

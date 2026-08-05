@@ -1453,14 +1453,14 @@ class SymbolicShapeRefiner {
         IsInputArg(*node) ? input_arg_shared_symbol_id_
                           : GetOrCreateStableVarId(id);
 
-    DimensionHandle dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
+    DimensionHandle dim = c->UnknownDimWithExpr(
+        std::make_unique<DimExpr>(DimExpr::Var(var_id)));
 
     VLOG(1) << "[EXPR] GetUnknownOutputDim: node = " << node->name()
             << " op = " << node->op()
             << " out = " << index
             << " dim = " << dim_id
             << " -> Var(" << var_id << ")";
-
     // Create an unknown dim with Var(var_id) expression.
     unknown_dims_[id] = dim;
     return dim;
@@ -2544,7 +2544,8 @@ class SymbolicShapeManager {
         shape_inference::DimensionHandle dim =
             InferenceContext::DimKnownRank(actual_shape, j);
         int64_t d = dims_.GetMergedValue(dim);
-        auto* out_dim = properties->mutable_shape()->add_dim();
+        TensorShapeProto* output_shape = properties->mutable_shape();
+        auto* out_dim = output_shape->add_dim();
         out_dim->set_size(d < 0 ? -1 : d);
         void* root = dims_.RootId(dim);
         DimExpr* expr = nullptr;
@@ -2553,9 +2554,15 @@ class SymbolicShapeManager {
         } else {
           expr = ExprForDim(dim);
         }
+        ExpressionProto* output_expr = output_shape->add_expressions();
         if (expr != nullptr) {
-          expr->ToProto(out_dim->mutable_expr());
+          DimExprToProto(*expr, output_expr);
           // TODO: Apply simplification?
+        } else if (d >= 0) {
+          output_expr->set_constant_value(d);
+        } else {
+          DimExprToProto(DimExpr::Unknown(xla::kMissingExpressionSentinel),
+                         output_expr);
         }
       }
     }
@@ -2587,7 +2594,7 @@ class SymbolicShapeManager {
   // Get the variable ID from an expression, or -1 if not a variable.
   static int32_t GetVarId(const DimExpr* e) {
     if (!e || e->kind() != DimExpr::Kind::kVariable) return -1;
-    return static_cast<const Variable*>(e)->id();
+    return static_cast<const xla::Variable*>(e->get())->get_id();
   }
 
   static bool IsConst(const DimExpr* e) {
@@ -2601,7 +2608,7 @@ class SymbolicShapeManager {
   static bool IsPlaceHolder(const DimExpr* e) {
     if (!e) return false;
     if (e->kind() != DimExpr::Kind::kVariable) return false;
-    return static_cast<const Variable*>(e)->id() < 0;
+    return static_cast<const xla::Variable*>(e->get())->get_id() < 0;
   }
 
   static bool IsCompound(const DimExpr* e) {
@@ -2660,7 +2667,7 @@ class SymbolicShapeManager {
     if (it != const_exprs_.end()) {
       return it->second.get();
     }
-    auto expr = DimExpr::Cons(value);
+    auto expr = std::make_unique<DimExpr>(DimExpr::Const(value));
     DimExpr* expr_ptr = expr.get();
     const_exprs_.emplace(value, std::move(expr));
     return expr_ptr;

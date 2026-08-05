@@ -262,6 +262,13 @@ TEST_F(ShapeTest, DExprUnknownPropagatesThroughGtAndSelect) {
   EXPECT_TRUE(select.is_unknown());
 }
 
+TEST_F(ShapeTest, DExprConstantDivisionIsNotDynamic) {
+  const DExpr expr = DExpr::Const(7) / DExpr::Const(3);
+
+  EXPECT_FALSE(expr->is_dynamic());
+  EXPECT_EQ(expr->get_val(), 2);
+}
+
 TEST_F(ShapeTest, DeleteDimensions) {
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {5, 3, 2, 7, 9},
                                                     {2, 0, 1, 4, 3});

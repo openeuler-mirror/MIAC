@@ -110,87 +110,6 @@ xla::XlaOp GetScalarConst(const TensorProto& proto, xla::XlaBuilder* b) {
   return xla::XlaOp();
 }
 
-bool IsDynamicExpressionProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kVariableId:
-      return true;
-    case ExpressionProto::kAddNode:
-      return IsDynamicExpressionProto(proto.add_node().lhs()) ||
-             IsDynamicExpressionProto(proto.add_node().rhs());
-    case ExpressionProto::kSubNode:
-      return IsDynamicExpressionProto(proto.sub_node().lhs()) ||
-             IsDynamicExpressionProto(proto.sub_node().rhs());
-    case ExpressionProto::kMulNode:
-      return IsDynamicExpressionProto(proto.mul_node().lhs()) ||
-             IsDynamicExpressionProto(proto.mul_node().rhs());
-    case ExpressionProto::kDivNode:
-      return IsDynamicExpressionProto(proto.div_node().lhs()) ||
-             IsDynamicExpressionProto(proto.div_node().rhs());
-    case ExpressionProto::kMaxNode:
-      return IsDynamicExpressionProto(proto.max_node().lhs()) ||
-             IsDynamicExpressionProto(proto.max_node().rhs());
-    case ExpressionProto::kGtNode:
-      return IsDynamicExpressionProto(proto.gt_node().lhs()) ||
-             IsDynamicExpressionProto(proto.gt_node().rhs());
-    case ExpressionProto::kSelectNode:
-      return IsDynamicExpressionProto(proto.select_node().pred()) ||
-             IsDynamicExpressionProto(proto.select_node().on_true()) ||
-             IsDynamicExpressionProto(proto.select_node().on_false());
-    case ExpressionProto::kConstantValue:
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-      return false;
-  }
-}
-
-static xla::DExpr DimExprToDExpr(const DimExpr* e) {
-  if (e == nullptr) {
-    return xla::DExpr();
-  }
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      const auto* ac = static_cast<const Constant*>(e);
-      return xla::DExpr::Const(ac->value());
-    }
-    case DimExpr::Kind::kVariable: {
-      const auto* av = static_cast<const Variable*>(e);
-      return xla::DExpr::Var(av->id());
-    }
-    case DimExpr::Kind::kAdd: {
-      const auto* ee = static_cast<const ExprAdd*>(e);
-      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kSub: {
-      const auto* ee = static_cast<const ExprSub*>(e);
-      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      const auto* ee = static_cast<const ExprMul*>(e);
-      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      const auto* ee = static_cast<const ExprDiv*>(e);
-      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMax: {
-      const auto* ee = static_cast<const ExprMax*>(e);
-      return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
-                             DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kGt: {
-      auto* ee = static_cast<const ExprGt*>(e);
-      return xla::DExpr::Gt(DimExprToDExpr(ee->lhs()),
-                            DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kSelect: {
-      auto* ee = static_cast<const ExprSelect*>(e);
-      return xla::DExpr::Select(DimExprToDExpr(ee->pred()),
-                                DimExprToDExpr(ee->on_true()),
-                                DimExprToDExpr(ee->on_false()));
-    }
-  }
-  return xla::DExpr();
-}
-
 std::vector<xla::DExpr> BuildShapeContentsFromTensorShapeProto(
     const TensorShapeProto& shape) {
   std::vector<xla::DExpr> contents;
@@ -198,8 +117,7 @@ std::vector<xla::DExpr> BuildShapeContentsFromTensorShapeProto(
   for (int i = 0; i < shape.dim_size(); ++i) {
     xla::DExpr expr;
     if (i < shape.expressions_size()) {
-      auto tf_expr = DimExpr::FromProto(shape.expressions(i));
-      expr = DimExprToDExpr(tf_expr.get());
+      expr = DimExprFromProto(shape.expressions(i));
     }
     if (expr) {
       xla::StringPrinter printer;
@@ -224,6 +142,16 @@ bool CanAttachContentsFromTensorShapeProto(const TensorShape& tensor_shape,
   return (tensor_shape.dims() == 0 && contents.dim_size() == 1) ||
          (tensor_shape.dims() == 1 &&
           tensor_shape.dim_size(0) == contents.dim_size());
+}
+
+int64_t CountDynamicShapeContents(const TensorShapeProto& shape) {
+  int64_t dynamic_count = 0;
+  for (int i = 0; i < shape.expressions_size(); ++i) {
+    if (IsDynamicDimExpr(shape.expressions(i))) {
+      ++dynamic_count;
+    }
+  }
+  return dynamic_count;
 }
 
 class ConstOp : public XlaOpKernel {

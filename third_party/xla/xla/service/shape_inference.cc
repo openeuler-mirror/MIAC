@@ -3363,7 +3363,7 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
 
     auto new_expr =
         limit_expr - start_expr + DExpr::Const(stride) - DExpr::Const(1);
-    expressions.push_back(new_expr / DExpr::Const(stride));
+    expressions.push_back((new_expr / DExpr::Const(stride)).simplify());
   }
 
   std::vector<bool> is_dynamic(arg.dimensions_size());
