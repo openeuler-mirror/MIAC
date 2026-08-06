@@ -30,6 +30,7 @@ limitations under the License.
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "tensorflow/cc/saved_model/constants.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -544,9 +545,15 @@ absl::StatusOr<bool> LookupTensorForCheckpointKeys(
   for (const std::string& candidate_key : candidate_keys) {
     absl::Status status = reader->Lookup(candidate_key, tensor);
     if (status.ok()) {
+      VLOG(2) << "[variable_freezing] checkpoint lookup matched key="
+              << candidate_key << " tensor_bytes=" << tensor->TotalBytes()
+              << " dtype=" << DataTypeString(tensor->dtype())
+              << " shape=" << tensor->shape().DebugString();
       return true;
     }
     if (status.code() != absl::StatusCode::kNotFound) {
+      VLOG(2) << "[variable_freezing] checkpoint lookup failed key="
+              << candidate_key << " status=" << status;
       return status;
     }
   }
@@ -572,8 +579,16 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
         variable_it->second->op() != "VariableV2") {
       continue;
     }
-    if (!IsAllowlistedVariableName(variable_name)) continue;
-    if (frozen_values.find(variable_name) != frozen_values.end()) continue;
+    if (!IsAllowlistedVariableName(variable_name)) {
+      VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+              << variable_name << " reason=name_not_allowlisted";
+      continue;
+    }
+    if (frozen_values.find(variable_name) != frozen_values.end()) {
+      VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+              << variable_name << " reason=already_matched";
+      continue;
+    }
 
     // Default to the graph variable name, then refine it when the Assign input
     // comes from RestoreV2 by mapping that output index back to the matching
@@ -592,7 +607,7 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
       const auto tensor_names_const_it = node_map.find(tensor_names_const_name);
       if (tensor_names_const_it == node_map.end() ||
           tensor_names_const_it->second->op() != "Const") {
-        VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+        VLOG(1) << "[variable_freezing] skip VariableV2 graph_node="
                 << variable_name
                 << " reason=RestoreV2 tensor-names input is not Const";
         continue;
@@ -603,7 +618,7 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
       const absl::StatusOr<std::vector<std::string>> tensor_names_or =
           GetConstStringValues(*tensor_names_const_it->second);
       if (!tensor_names_or.ok()) {
-        VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+        VLOG(1) << "[variable_freezing] skip VariableV2 graph_node="
                 << variable_name
                 << " reason=failed to decode RestoreV2 tensor names: "
                 << tensor_names_or.status();
@@ -612,7 +627,7 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
       const std::vector<std::string>& tensor_names = *tensor_names_or;
       if (restore_output_index < 0 ||
           restore_output_index >= static_cast<int>(tensor_names.size())) {
-        VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+        VLOG(1) << "[variable_freezing] skip VariableV2 graph_node="
                 << variable_name << " reason=invalid RestoreV2 output index "
                 << restore_output_index;
         continue;
@@ -621,20 +636,31 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVariableV2Values(
     }
 
     Tensor tensor;
-    // Try the resolved tensor name plus the standard V1/V2 checkpoint key
-    // suffixes, tolerating NotFound so a single unmatched variable does not
-    // abort the whole freezing pass. This mirrors the resource-variable path.
+    // Try the resolved tensor name using both plain and object-based checkpoint
+    // key conventions, tolerating NotFound so a single unmatched variable does
+    // not abort the whole freezing pass. This mirrors the resource-variable
+    // path.
     std::vector<std::string> candidate_keys = {
         tensor_name, absl::StrCat(tensor_name, "/.ATTRIBUTES/VARIABLE_VALUE"),
         variable_name,
         absl::StrCat(variable_name, "/.ATTRIBUTES/VARIABLE_VALUE")};
     TF_ASSIGN_OR_RETURN(bool found, LookupTensorForCheckpointKeys(
                                         reader, candidate_keys, &tensor));
-    if (!found || !ShouldFreezeTensor(tensor, max_tensor_bytes)) {
+    if (!found) {
+      VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+              << variable_name << " reason=checkpoint_key_not_found"
+              << " candidate_keys=" << absl::StrJoin(candidate_keys, ",");
+      continue;
+    }
+    if (!ShouldFreezeTensor(tensor, max_tensor_bytes)) {
+      VLOG(1) << "[variable_freezing] skip VariableV2 graph_node="
+              << variable_name << " reason=tensor_too_large"
+              << " tensor_bytes=" << tensor.TotalBytes()
+              << " max_tensor_bytes=" << max_tensor_bytes;
       continue;
     }
     if (!IsSafeVariableV2ToFreeze(*variable_it->second, tensor, fanouts)) {
-      VLOG(2) << "[variable_freezing] skip VariableV2 graph_node="
+      VLOG(1) << "[variable_freezing] skip VariableV2 graph_node="
               << variable_name << " reason=unsafe_or_incompatible";
       continue;
     }
@@ -664,22 +690,38 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVarHandleValues(
         shared_name_it != node.attr().end() ? shared_name_it->second.s() : "";
     if ((!node.name().empty() && !IsAllowlistedVariableName(node.name())) &&
         (shared_name.empty() || !IsAllowlistedVariableName(shared_name))) {
+      VLOG(2) << "[variable_freezing] skip VarHandleOp graph_node="
+              << node.name() << " shared_name=" << shared_name
+              << " reason=name_not_allowlisted";
       continue;
     }
 
     Tensor tensor;
     // Try the common checkpoint naming conventions for this handle until one
     // matches, filling `tensor` when successful.
-    TF_ASSIGN_OR_RETURN(bool found,
-                        LookupTensorForCheckpointKeys(
-                            reader, CandidateCheckpointKeys(node), &tensor));
+    const std::vector<std::string> candidate_keys =
+        CandidateCheckpointKeys(node);
+    TF_ASSIGN_OR_RETURN(bool found, LookupTensorForCheckpointKeys(
+                                        reader, candidate_keys, &tensor));
     // Skip handles that have no checkpoint entry or whose tensor is too large
     // to freeze into the graph.
-    if (!found || !ShouldFreezeTensor(tensor, max_tensor_bytes)) {
+    if (!found) {
+      VLOG(2) << "[variable_freezing] skip VarHandleOp graph_node="
+              << node.name() << " shared_name=" << shared_name
+              << " reason=checkpoint_key_not_found"
+              << " candidate_keys=" << absl::StrJoin(candidate_keys, ",");
+      continue;
+    }
+    if (!ShouldFreezeTensor(tensor, max_tensor_bytes)) {
+      VLOG(1) << "[variable_freezing] skip VarHandleOp graph_node="
+              << node.name() << " shared_name=" << shared_name
+              << " reason=tensor_too_large"
+              << " tensor_bytes=" << tensor.TotalBytes()
+              << " max_tensor_bytes=" << max_tensor_bytes;
       continue;
     }
     if (!IsSafeVarHandleToFreeze(node, tensor, fanouts)) {
-      VLOG(2) << "[variable_freezing] skip VarHandleOp graph_node="
+      VLOG(1) << "[variable_freezing] skip VarHandleOp graph_node="
               << node.name() << " reason=unsafe_or_incompatible";
       continue;
     }
@@ -697,6 +739,9 @@ absl::StatusOr<FrozenValueMap> LoadFrozenVarHandleValues(
 absl::Status RewriteTopLevelReadNodes(GraphDef* graph_def,
                                       const FrozenValueMap& frozen_values) {
   TF_ASSIGN_OR_RETURN(const auto node_map, BuildNodeMap(*graph_def));
+  int rewritten_read_variable_ops = 0;
+  int rewritten_identities = 0;
+  absl::flat_hash_set<std::string> rewritten_sources;
   for (NodeDef& node : *graph_def->mutable_node()) {
     // Identity is included because graphs often forward a variable read through
     // an Identity before the value reaches real consumers.
@@ -709,11 +754,27 @@ absl::Status RewriteTopLevelReadNodes(GraphDef* graph_def,
     source_name = ResolveForwardedInputName(source_name, node_map);
     const auto frozen_it = frozen_values.find(source_name);
     if (frozen_it == frozen_values.end()) continue;
-    if (!IsTensorCompatibleWithNode(frozen_it->second, node)) continue;
+    if (!IsTensorCompatibleWithNode(frozen_it->second, node)) {
+      VLOG(1) << "[variable_freezing] skip rewrite top-level node="
+              << node.name() << " op=" << node.op() << " source=" << source_name
+              << " reason=incompatible_read_node";
+      continue;
+    }
     VLOG(2) << "[variable_freezing] rewrite top-level node=" << node.name()
             << " op=" << node.op() << " source=" << source_name;
+    if (node.op() == "ReadVariableOp") {
+      ++rewritten_read_variable_ops;
+    } else {
+      ++rewritten_identities;
+    }
+    rewritten_sources.insert(source_name);
     ReplaceNodeWithConst(frozen_it->second, &node);
   }
+  VLOG(1) << "[variable_freezing] rewrite summary matched_variables="
+          << frozen_values.size()
+          << " rewritten_sources=" << rewritten_sources.size()
+          << " rewritten_read_variable_ops=" << rewritten_read_variable_ops
+          << " rewritten_identities=" << rewritten_identities;
   return absl::OkStatus();
 }
 
@@ -728,17 +789,22 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
   // Use the caller-provided limit, or fall back to the internal default.
   const int64_t effective_max_tensor_bytes =
       max_tensor_bytes <= 0 ? kDefaultMaxTensorBytes : max_tensor_bytes;
-  LOG(INFO) << " max_tensor_bytes=" << (effective_max_tensor_bytes >> 20) << "MB";
+  LOG(INFO) << " [variable_freezing] max_tensor_bytes="
+            << effective_max_tensor_bytes << " max_tensor_mib="
+            << static_cast<double>(effective_max_tensor_bytes) /
+                   static_cast<double>(1LL << 20)
+            << " limit_source="
+            << (max_tensor_bytes <= 0 ? "default" : "caller");
   // Snapshot the graph before any in-place rewrites for debugging.
-  VLOG(2) << "[variable_freezing] graph before freeze:"
+  VLOG(3) << "[variable_freezing] graph before freeze:"
           << meta_graph_def->graph_def().DebugString();
 
   GraphDef* graph_def = meta_graph_def->mutable_graph_def();
-  const bool has_variable_v2 = GraphContainsOp(*graph_def, "VariableV2");
-  const bool has_var_handle = GraphContainsOp(*graph_def, "VarHandleOp");
-  if (!has_variable_v2 && !has_var_handle) {
-    VLOG(2) << "[variable_freezing] export_dir=" << export_dir
-            << " matched_v1=0 matched_total=0";
+  const bool has_variableV2 = GraphContainsOp(*graph_def, "VariableV2");
+  const bool has_varHandleOp = GraphContainsOp(*graph_def, "VarHandleOp");
+  if (!has_variableV2 && !has_varHandleOp) {
+    VLOG(1) << "[variable_freezing] export_dir=" << export_dir
+            << " No variables found in graph; skipping freeze pass";
     return absl::OkStatus();
   }
 
@@ -754,29 +820,32 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
   // Collect freezeable values from both legacy VariableV2 graphs and
   // resource-variable graphs, then merge them into one lookup table.
   // OPs logic can be found here tensorflow/core/ops/state_ops.cc
-  FrozenValueMap v1_frozen_values;
-  if (has_variable_v2) {
+  FrozenValueMap variableV2_frozen_values;
+  if (has_variableV2) {
     TF_ASSIGN_OR_RETURN(const auto node_map, BuildNodeMap(*graph_def));
     TF_ASSIGN_OR_RETURN(
-        FrozenValueMap loaded_v1_frozen_values,
+        FrozenValueMap loaded_variableV2_frozen_values,
         LoadFrozenVariableV2Values(reader.get(), *graph_def, node_map, fanouts,
                                    effective_max_tensor_bytes));
-    v1_frozen_values = std::move(loaded_v1_frozen_values);
+    variableV2_frozen_values = std::move(loaded_variableV2_frozen_values);
   }
 
   FrozenValueMap frozen_values;
-  if (has_var_handle) {
+  FrozenValueMap::size_type matched_varHandleOp = 0;
+  if (has_varHandleOp) {
     TF_ASSIGN_OR_RETURN(
-        FrozenValueMap loaded_var_handle_values,
+        FrozenValueMap loaded_varHandleOp_values,
         LoadFrozenVarHandleValues(reader.get(), *graph_def, fanouts,
                                   effective_max_tensor_bytes));
-    frozen_values = std::move(loaded_var_handle_values);
+    frozen_values = std::move(loaded_varHandleOp_values);
+    matched_varHandleOp = frozen_values.size();
   }
-  for (auto& entry : v1_frozen_values) {
+  for (auto& entry : variableV2_frozen_values) {
     frozen_values[entry.first] = std::move(entry.second);
   }
   LOG(INFO) << "[variable_freezing] export_dir=" << export_dir
-            << " matched_v1=" << v1_frozen_values.size()
+            << " matched_variableV2=" << variableV2_frozen_values.size()
+            << " matched_varHandleOp=" << matched_varHandleOp
             << " matched_total=" << frozen_values.size();
   // Leave the graph untouched when no allowlisted checkpoint tensors matched.
   if (frozen_values.empty()) {
@@ -784,7 +853,7 @@ absl::Status FreezeAllowlistedVariableReads(const std::string& export_dir,
   }
   // Rewrite direct top-level reads.
   TF_RETURN_IF_ERROR(RewriteTopLevelReadNodes(graph_def, frozen_values));
-  VLOG(2) << "[variable_freezing] graph after freeze:\n"
+  VLOG(3) << "[variable_freezing] graph after freeze:\n"
           << meta_graph_def->graph_def().DebugString();
   return absl::OkStatus();
 }
