@@ -10,8 +10,10 @@
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/literal_util.h"
@@ -23,7 +25,13 @@
 namespace xla {
 namespace {
 
-using RuntimeValueCache = std::vector<std::pair<DExpr, HloInstruction*>>;
+struct RuntimeValueCacheEntry {
+  DExpr expr;
+  int32_t carrier_bound;
+  HloInstruction* runtime_value;
+};
+
+using RuntimeValueCache = std::vector<RuntimeValueCacheEntry>;
 
 absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
     HloInstruction* constant_instr, RuntimeValueCache* runtime_value_cache) {
@@ -67,12 +75,22 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
   TF_RET_CHECK(carrier_bound <= std::numeric_limits<int32_t>::max() &&
                carrier_bound >= std::numeric_limits<int32_t>::min())
       << "GetExpressionValue carriers must fit in s32, got " << carrier_bound;
+  const int32_t carrier_bound_s32 = static_cast<int32_t>(carrier_bound);
 
   HloComputation* computation = constant_instr->parent();
   HloInstruction* runtime_value = nullptr;
-  for (const auto& [cached_expr, cached_value] : *runtime_value_cache) {
-    if (cached_expr == expr) {
-      runtime_value = cached_value;
+  for (RuntimeValueCacheEntry& cached : *runtime_value_cache) {
+    if (cached.expr == expr) {
+      // The runtime value depends only on the expression, but upper-bound
+      // inference uses the carrier. Keep the largest bound seen so the cached
+      // instruction is independent of traversal order.
+      if (carrier_bound_s32 > cached.carrier_bound) {
+        HloInstruction* carrier = cached.runtime_value->mutable_operand(0);
+        *Cast<HloConstantInstruction>(carrier)->mutable_literal() =
+            LiteralUtil::CreateR1<int32_t>({carrier_bound_s32});
+        cached.carrier_bound = carrier_bound_s32;
+      }
+      runtime_value = cached.runtime_value;
       break;
     }
   }
@@ -80,8 +98,7 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
   if (runtime_value == nullptr) {
     HloInstruction* carrier = computation->AddInstruction(
         HloInstruction::CreateConstant(
-            LiteralUtil::CreateR1<int32_t>(
-                {static_cast<int32_t>(carrier_bound)})));
+            LiteralUtil::CreateR1<int32_t>({carrier_bound_s32})));
     ExpressionProto expr_proto;
     expr.to_proto(&expr_proto);
 
@@ -89,7 +106,8 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
         HloInstruction::CreateCustomCall(
             ShapeUtil::MakeShape(S32, {}), {carrier}, "GetExpressionValue"));
     runtime_value->set_contents({std::move(expr_proto)});
-    runtime_value_cache->emplace_back(expr, runtime_value);
+    runtime_value_cache->push_back(
+        RuntimeValueCacheEntry{expr, carrier_bound_s32, runtime_value});
   }
   if (shape.element_type() == S64) {
     runtime_value = computation->AddInstruction(HloInstruction::CreateConvert(
