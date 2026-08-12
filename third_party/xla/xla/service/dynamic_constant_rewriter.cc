@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
@@ -26,12 +27,12 @@ namespace xla {
 namespace {
 
 struct RuntimeValueCacheEntry {
-  DExpr expr;
   int32_t carrier_bound;
   HloInstruction* runtime_value;
 };
 
-using RuntimeValueCache = std::vector<RuntimeValueCacheEntry>;
+using RuntimeValueCache =
+    absl::flat_hash_map<std::string, RuntimeValueCacheEntry>;
 
 absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
     HloInstruction* constant_instr, RuntimeValueCache* runtime_value_cache) {
@@ -77,37 +78,38 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
       << "GetExpressionValue carriers must fit in s32, got " << carrier_bound;
   const int32_t carrier_bound_s32 = static_cast<int32_t>(carrier_bound);
 
+  DExpr canonical_expr = expr.simplify();
+  ExpressionProto expr_proto;
+  canonical_expr.to_proto(&expr_proto);
+  std::string cache_key = expr_proto.SerializeAsString();
+
   HloComputation* computation = constant_instr->parent();
   HloInstruction* runtime_value = nullptr;
-  for (RuntimeValueCacheEntry& cached : *runtime_value_cache) {
-    if (cached.expr == expr) {
-      // The runtime value depends only on the expression, but upper-bound
-      // inference uses the carrier. Keep the largest bound seen so the cached
-      // instruction is independent of traversal order.
-      if (carrier_bound_s32 > cached.carrier_bound) {
-        HloInstruction* carrier = cached.runtime_value->mutable_operand(0);
-        *Cast<HloConstantInstruction>(carrier)->mutable_literal() =
-            LiteralUtil::CreateR1<int32_t>({carrier_bound_s32});
-        cached.carrier_bound = carrier_bound_s32;
-      }
-      runtime_value = cached.runtime_value;
-      break;
+  auto cached = runtime_value_cache->find(cache_key);
+  if (cached != runtime_value_cache->end()) {
+    // The runtime value depends only on the expression, but upper-bound
+    // inference uses the carrier. Keep the largest bound seen so the cached
+    // instruction is independent of traversal order.
+    if (carrier_bound_s32 > cached->second.carrier_bound) {
+      HloInstruction* carrier = cached->second.runtime_value->mutable_operand(0);
+      *Cast<HloConstantInstruction>(carrier)->mutable_literal() =
+          LiteralUtil::CreateR1<int32_t>({carrier_bound_s32});
+      cached->second.carrier_bound = carrier_bound_s32;
     }
+    runtime_value = cached->second.runtime_value;
   }
 
   if (runtime_value == nullptr) {
     HloInstruction* carrier = computation->AddInstruction(
         HloInstruction::CreateConstant(
             LiteralUtil::CreateR1<int32_t>({carrier_bound_s32})));
-    ExpressionProto expr_proto;
-    expr.to_proto(&expr_proto);
-
     runtime_value = computation->AddInstruction(
         HloInstruction::CreateCustomCall(
             ShapeUtil::MakeShape(S32, {}), {carrier}, "GetExpressionValue"));
     runtime_value->set_contents({std::move(expr_proto)});
-    runtime_value_cache->push_back(
-        RuntimeValueCacheEntry{expr, carrier_bound_s32, runtime_value});
+    runtime_value_cache->emplace(
+        std::move(cache_key),
+        RuntimeValueCacheEntry{carrier_bound_s32, runtime_value});
   }
   if (shape.element_type() == S64) {
     runtime_value = computation->AddInstruction(HloInstruction::CreateConvert(

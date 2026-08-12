@@ -99,5 +99,33 @@ TEST_F(DynamicConstantRewriterTest,
   }
 }
 
+TEST_F(DynamicConstantRewriterTest, ReusesEquivalentRuntimeExpressions) {
+  HloComputation::Builder builder(TestName());
+  auto make_dynamic_constant = [&builder](const DExpr& expr) {
+    HloInstruction* constant = builder.AddInstruction(
+        HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(32)));
+    ExpressionProto expression;
+    expr.to_proto(&expression);
+    constant->set_contents({std::move(expression)});
+    return constant;
+  };
+
+  HloInstruction* first =
+      make_dynamic_constant(DExpr::Var(1) + DExpr::Const(1));
+  HloInstruction* second =
+      make_dynamic_constant(DExpr::Const(1) + DExpr::Var(1));
+  builder.AddInstruction(HloInstruction::CreateTuple({first, second}));
+
+  std::unique_ptr<HloModule> module = CreateNewVerifiedModule();
+  HloComputation* computation =
+      module->AddEntryComputation(builder.Build());
+
+  ASSERT_TRUE(DynamicConstantRewriter().Run(module.get()).value());
+
+  HloInstruction* root = computation->root_instruction();
+  ASSERT_EQ(root->operand_count(), 2);
+  EXPECT_EQ(root->operand(0), root->operand(1));
+}
+
 }  // namespace
 }  // namespace xla
