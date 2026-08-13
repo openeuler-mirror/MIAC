@@ -2072,6 +2072,33 @@ TEST_F(AlgebraicSimplifierTest,
           m::Broadcast(m::Divide(m::ConstantScalar(1), m::Parameter(1))))));
 }
 
+TEST_F(AlgebraicSimplifierTest,
+       DivideByBroadcastedRuntimeScalarPreservesResultLayout) {
+  const char* kModuleStr = R"(
+    HloModule m
+    test {
+      p0 = f32[2,3]{1,0} parameter(0)
+      p1 = f32[] parameter(1)
+      b = f32[2,3]{1,0} broadcast(p1), dimensions={}
+      ROOT d = f32[2,3]{0,1} divide(p0, b)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+
+  AlgebraicSimplifierOptions options = default_options_;
+  options.set_enable_divide_by_broadcast_reciprocal(true);
+  ASSERT_TRUE(AlgebraicSimplifier(options).Run(m.get()).value());
+
+  HloInstruction* root = m->entry_computation()->root_instruction();
+  EXPECT_THAT(
+      root,
+      GmockMatch(m::Multiply(
+          m::Parameter(0),
+          m::Broadcast(m::Divide(m::ConstantScalar(1), m::Parameter(1))))));
+  EXPECT_TRUE(LayoutUtil::Equal(root->shape().layout(),
+                                LayoutUtil::MakeLayout({0, 1})));
+}
+
 // pow(pow(A, X), Y) => pow(A, X*Y)
 TEST_F(AlgebraicSimplifierTest, PowerOfPower) {
   auto m = CreateNewVerifiedModule();

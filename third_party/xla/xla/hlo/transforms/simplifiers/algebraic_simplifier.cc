@@ -2387,10 +2387,10 @@ absl::Status AlgebraicSimplifierVisitor::HandleDivide(HloInstruction* divide) {
     HloInstruction* reciprocal_broadcast =
         divide->mutable_operand(1)->AddInstruction(
             HloInstruction::CreateBroadcast(divide->shape(), reciprocal, {}));
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * multiply,
-        MakeBinaryHlo(HloOpcode::kMultiply, a, reciprocal_broadcast));
-    return ReplaceInstruction(divide, multiply);
+    return ReplaceWithNewInstruction(
+        divide, HloInstruction::CreateBinary(divide->shape(),
+                                             HloOpcode::kMultiply, a,
+                                             reciprocal_broadcast));
   }
 
   // A / Const => A * (1 / Const)
