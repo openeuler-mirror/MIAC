@@ -70,20 +70,32 @@ class TileOp : public XlaOpKernel {
     std::vector<xla::DExpr> output_exprs(input_shape.dims());
 
     auto expr_sizes = input_shape.get_filled_expressions();
+    const auto& multiples_contents =
+        ctx->InputExpression("multiples").contents();
 
     for (int64_t i = 0; i < input_shape.dims(); ++i) {
       OP_REQUIRES(ctx, multiples_bounds[i] >= 0,
                   errors::InvalidArgument("Expected multiples[", i,
                                           "] >= 0, but got ", output_dims[i]));
       output_dims[i] = input_shape.dim_size(i) * multiples_bounds[i];
-      output_exprs[i] =
-          expr_sizes[i] * xla::DExpr::Const(multiples_bounds[i]);
+      const xla::DExpr multiple_expr =
+          i < multiples_contents.size() && multiples_contents[i] &&
+                  multiples_contents[i]->is_dynamic()
+              ? multiples_contents[i]
+              : xla::DExpr::Const(multiples_bounds[i]);
+      output_exprs[i] = (expr_sizes[i] * multiple_expr).simplify();
     }
 
     std::vector<bool> multiples_are_dynamic;
 
     OP_REQUIRES_OK(ctx, ctx->ResolveInputDynamismIntoPredVector(
                             1, &multiples_are_dynamic));
+    for (int64_t i = 0; i < multiples_are_dynamic.size(); ++i) {
+      if (i < multiples_contents.size() && multiples_contents[i] &&
+          multiples_contents[i]->is_dynamic()) {
+        multiples_are_dynamic[i] = true;
+      }
+    }
 
     bool all_multiples_are_static = absl::c_all_of(
         multiples_are_dynamic, [](bool dynamic) { return !dynamic; });

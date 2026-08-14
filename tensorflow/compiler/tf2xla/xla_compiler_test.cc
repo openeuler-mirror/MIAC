@@ -456,6 +456,71 @@ TEST_F(XlaCompilerDynamicSizesTest,
                                   xla::DExpr::Const(12)));
 }
 
+TEST_F(XlaCompilerTest, ShapeValueChainPreservesExpressionThroughTile) {
+  auto* flags = GetMarkForCompilationPassFlags();
+  const bool old_dynamic_sizes = flags->tf_xla_enable_dynamic_sizes;
+  const bool old_symbolic_content = flags->tf_xla_enable_symbolic_content;
+  flags->tf_xla_enable_dynamic_sizes = true;
+  flags->tf_xla_enable_symbolic_content = true;
+  SetTensorShapeExpressionsEnabledForTesting(true);
+  auto restore_flags = gtl::MakeCleanup([&] {
+    SetTensorShapeExpressionsEnabledForTesting(std::nullopt);
+    flags->tf_xla_enable_dynamic_sizes = old_dynamic_sizes;
+    flags->tf_xla_enable_symbolic_content = old_symbolic_content;
+  });
+
+  // Shape turns the dynamic input dimension into the symbolic value A.
+  // Slicing, squeezing, and packing must preserve it as {A, 1}, which Tile
+  // then uses as the shape of a repeated static row.
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(scope.WithOpName("arg"), DT_FLOAT, 0);
+  auto input_shape = ops::Shape(scope.WithOpName("input_shape"), arg);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0}, {1});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {1}, {1});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1}, {1});
+  auto first_dim_vector = ops::StridedSlice(
+      scope.WithOpName("first_dim_vector"), input_shape, begin, end, strides);
+  auto first_dim = ops::Squeeze(scope.WithOpName("first_dim"),
+                                first_dim_vector, ops::Squeeze::Axis({0}));
+  auto one = ops::Const<int32>(scope.WithOpName("one"), 1, {});
+  auto multiples = ops::Stack(scope.WithOpName("multiples"),
+                              std::vector<Output>{first_dim, one});
+  auto base_row = ops::Const<float>(
+      scope.WithOpName("base_row"),
+      {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+       1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+      {1, 24});
+  auto tile = ops::Tile(scope.WithOpName("tile"), base_row, multiples);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), tile, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  // Compile with a physical bound of 8 while keeping its logical size as A.
+  const xla::DExpr input_expr = xla::DExpr::Var(1);
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 24},
+      std::vector<xla::DExpr>{input_expr, xla::DExpr::Const(24)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "tile",
+                                     std::move(graph), args, &result));
+
+  // The physical output remains bounded by 8, but its first dimension must
+  // still describe the runtime value A rather than the bound.
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions(0), 8);
+  EXPECT_EQ(result_shape.dimensions(1), 24);
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), input_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
+                                  xla::DExpr::Const(24)));
+}
+
 // Tests compilation preserves dynamic shape expressions through scalar
 // broadcasting in binary ops that use the explicit tf2xla broadcast helper.
 TEST_F(XlaCompilerTest,
