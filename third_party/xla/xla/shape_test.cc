@@ -16,6 +16,8 @@ limitations under the License.
 #include "xla/shape.h"
 
 #include <cstdint>
+#include <optional>
+#include <set>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -267,6 +269,46 @@ TEST_F(ShapeTest, DExprConstantDivisionIsNotDynamic) {
 
   EXPECT_FALSE(expr->is_dynamic());
   EXPECT_EQ(expr->get_val(), 2);
+}
+
+TEST_F(ShapeTest, DExprSubstitutionReplacesEveryVariableOccurrence) {
+  const DExpr a = DExpr::Var(1);
+  const DExpr b = DExpr::Var(2);
+  const DExpr expr = (a + b) * (a - b);
+
+  const DExpr substituted = expr.substitute(1, DExpr::Const(7));
+
+  EXPECT_EQ(substituted, (DExpr::Const(7) + b) * (DExpr::Const(7) - b));
+  const std::set<int> remaining_ids = substituted->get_all_ids();
+  EXPECT_EQ(remaining_ids.size(), 1);
+  EXPECT_EQ(remaining_ids.count(2), 1);
+  EXPECT_EQ(expr->get_all_ids().size(), 2);
+}
+
+TEST_F(ShapeTest, DExprSolveInvertsNestedSingleVariableArithmetic) {
+  const DExpr a = DExpr::Var(1);
+  const DExpr expr = ((3 * a) + 6) / 3;
+
+  const std::optional<int64_t> solved = expr->solve(8);
+
+  ASSERT_TRUE(solved.has_value());
+  EXPECT_EQ(*solved, 6);
+  EXPECT_FALSE((a + DExpr::Var(2))->solve(8).has_value());
+}
+
+TEST_F(ShapeTest, DExprRoundTripPreservesRepeatedVariableStructure) {
+  const DExpr a = DExpr::Var(1);
+  const DExpr b = DExpr::Var(2);
+  const DExpr expr = (a + b) * (a - b);
+  ExpressionProto proto;
+
+  expr.to_proto(&proto);
+  const DExpr decoded = DExprFromProto(proto);
+  ExpressionProto round_tripped_proto;
+  decoded.to_proto(&round_tripped_proto);
+
+  EXPECT_EQ(proto.SerializeAsString(),
+            round_tripped_proto.SerializeAsString());
 }
 
 TEST_F(ShapeTest, DeleteDimensions) {
