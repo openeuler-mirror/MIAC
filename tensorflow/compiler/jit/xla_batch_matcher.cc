@@ -73,52 +73,54 @@ std::vector<int64_t> XlaBatchMatcher::parse_single_item(const std::string& item)
   return batch_list;
 }
 
-void XlaBatchMatcher::print_all_batches() {
+void XlaBatchMatcher::print_all_batches(const std::string& cluster_key,
+                                       const std::vector<int64_t>& batches) {
   std::ostringstream oss;
-  oss << "[XLA_BATCH_INFO] Valid batch list update: ";
-  for (size_t i = 0; i < all_batches_.size(); ++i) {
+  oss << "[XLA_BATCH_INFO] cluster_key=" << cluster_key
+      << " valid batch list update: ";
+  for (size_t i = 0; i < batches.size(); ++i) {
     if (i > 0) oss << ", ";
-    oss << all_batches_[i];
+    oss << batches[i];
   }
   LOG(INFO) << oss.str();
 }
 
-// Parse environment variable config into deduplicated, sorted batch list
-// For example, export XLA_COMPILE_BATCH_SIZES="10:100:10, 977"
+// Parse environment variable config into a seed batch list used to initialize
+// each cluster-key state.
 void XlaBatchMatcher::parse_env_config() {
-  // If the env var not set or is empty, filled with the nearest power of two by default
+  // If the env var not set or is empty, leave seed empty and let per-cluster
+  // logic generate factor-preserving padded batches.
   if (env_str_.empty()) {
     VLOG(2) << "[XLA_BATCH_WARN] Env var " << "--tf_xla_compile_batch_sizes" <<
-        "is empty, filled with the nearest power of two by default";
+        "is empty, will use factor-preserving padding by default";
     return;
   }
 
-  // Split config by commas
+  // Parse into the default seed state.
+  ClusterState& seed = clusters_[""];
+
   std::stringstream ss(env_str_);
   std::string item;
   while (std::getline(ss, item, ',')) {
     std::string trimmed_item = trim(item);
     if (trimmed_item.empty()) continue;
 
-    // Parse single item (skip on failure to avoid breaking other items)
     try {
       std::vector<int64_t> item_batches = parse_single_item(trimmed_item);
-      all_batches_.insert(all_batches_.end(), item_batches.begin(), item_batches.end());
+      seed.all_batches.insert(seed.all_batches.end(), item_batches.begin(),
+                              item_batches.end());
     } catch (const std::exception& e) {
-      LOG(INFO) << "[XLA_BATCH_WARN] Failed to parse config item, skipping: " <<
-        trimmed_item << " (" << e.what() << ")";
+      LOG(INFO) << "[XLA_BATCH_WARN] Failed to parse config item, skipping: "
+                << trimmed_item << " (" << e.what() << ")";
     }
   }
 
-  if (!all_batches_.empty()) {
-    std::sort(all_batches_.begin(), all_batches_.end());
-    auto last = std::unique(all_batches_.begin(), all_batches_.end());
-    all_batches_.erase(last, all_batches_.end());
+  if (!seed.all_batches.empty()) {
+    std::sort(seed.all_batches.begin(), seed.all_batches.end());
+    auto last = std::unique(seed.all_batches.begin(), seed.all_batches.end());
+    seed.all_batches.erase(last, seed.all_batches.end());
+    print_all_batches("<seed>", seed.all_batches);
   }
-
-  // Print parsed result
-  if (!all_batches_.empty()) print_all_batches();
-  return;
 }
 
 // Calculate the smallest power of two greater than the real batch
@@ -135,43 +137,104 @@ static int64_t GetNextPowerOfTwo(int64_t real_batch) {
   return power;
 }
 
-int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch) {
+// Small/large multipliers for padding are configurable via environment variables:
+// TF_XLA_BATCH_SMALL_FACTOR (default 10) and TF_XLA_BATCH_LARGE_FACTOR (default 2).
+static int64_t GetEnvFactorOrDefault(const char* name, int64_t def) {
+  const char* val = std::getenv(name);
+  if (val == nullptr) return def;
+  int64_t parsed = 0;
+  if (!absl::SimpleAtoi(val, &parsed) || parsed <= 0) {
+    LOG(WARNING) << "[XLA_BATCH_WARN] Failed to parse env var " << name
+                 << "=\"" << val << "\", using default: " << def;
+    return def;
+  }
+  return parsed;
+}
+
+static int64_t GetFactorPreservingBatch(int64_t real_batch) {
+  // Cache env values in function-local statics (thread-safe since C++11).
+  static const int64_t small_factor =
+      GetEnvFactorOrDefault("TF_XLA_BATCH_SMALL_FACTOR", 10);
+  static const int64_t large_factor =
+      GetEnvFactorOrDefault("TF_XLA_BATCH_LARGE_FACTOR", 2);
+
+  const int64_t k = (real_batch < 10) ? small_factor : large_factor;
+  // Guard overflow / max range.
+  if (real_batch > kMaxBatch / k) {
+    LOG(WARNING) << "[XLA_BATCH_ERR] Out of valid range: " << real_batch;
+    return real_batch;
+  }
+  return real_batch * k;
+}
+
+int64_t XlaBatchMatcher::find_min_larger_batch(ClusterState* state,
+                                              int64_t real_batch) {
   if (real_batch <= 0 || real_batch > kMaxBatch) {
     LOG(INFO) << "[XLA_BATCH_WARN] Out of valid range: " << real_batch;
     return real_batch;
   }
 
-  if (all_batches_.empty()) {
-    // Return the next power of two directly without modifying all_batches_
-    return GetNextPowerOfTwo(real_batch);
-  }
-
-  // Edge case 1: Real value < the smallest batch, use smallest
-  if (real_batch < all_batches_.front()) {
-    return all_batches_.front();
-  }
-  // Edge case 2: Real value ≥ the largest batch, use the nearest power of two
-  if (real_batch > all_batches_.back()) {
-    int64_t val = GetNextPowerOfTwo(real_batch);
-    all_batches_.emplace_back(val);
-    print_all_batches();
+  // 1) If there is no configured candidate list, do not use power-of-two.
+  if (state->all_batches.empty()) {
+    const int val = GetFactorPreservingBatch(real_batch);
+    state->all_batches.push_back(val);
+    state->updated = true;
     return val;
   }
 
-  // Find first batch larger than real value (binary search via lower_bound)
-  auto it = std::lower_bound(all_batches_.begin(), all_batches_.end(), real_batch);
-  return (it != all_batches_.end()) ? *it : all_batches_.back();
+  // 2) Prefer a configured candidate strictly larger than real_batch.
+  auto ub = std::upper_bound(state->all_batches.begin(), state->all_batches.end(),
+                             real_batch);
+  if (ub != state->all_batches.end()) {
+    return *ub;
+  }
+
+  // 3) real_batch > all_batches_.back(): generate a factor-preserving padded
+  // batch, write it back, keep list sorted/unique.
+  const int64_t val = GetFactorPreservingBatch(real_batch);
+  auto insert_pos =
+      std::lower_bound(state->all_batches.begin(), state->all_batches.end(), val);
+  if (insert_pos == state->all_batches.end() || *insert_pos != val) {
+    state->all_batches.insert(insert_pos, val);
+    state->updated = true;
+  }
+  return val;
+}
+
+int64_t XlaBatchMatcher::get_xla_compile_batch(const std::string& cluster_key,
+                                              int64_t real_batch) {
+  // Lazily initialize per-key state from the seed ("" key) to preserve previous
+  // behavior when an env list is provided.
+  ClusterState& state = clusters_[cluster_key];
+  state.updated = false;
+  if (state.all_batches.empty()) {
+    auto it = clusters_.find("");
+    if (it != clusters_.end()) {
+      state.all_batches = it->second.all_batches;
+    }
+  }
+
+  const int64_t selected = find_min_larger_batch(&state, real_batch);
+
+  if (state.updated) {
+    VLOG(2) << "[XLA_BATCH_INFO] cluster_key=" << cluster_key
+            << " real batch: " << real_batch
+            << " -> selected compile batch: " << selected;
+    print_all_batches(cluster_key, state.all_batches);
+  }
+
+  return selected;
 }
 
 int64_t XlaBatchMatcher::get_xla_compile_batch(int64_t real_batch) {
-  // Match target batch size
-  int64_t selected = find_min_larger_batch(real_batch);
-  if (real_batch != last_batch_ || all_batches_.empty()) {
-    last_batch_ = real_batch;
-    VLOG(2) << "[XLA_BATCH_INFO] Real batch: " << real_batch
-      << " -> Selected compile batch: " << selected;
-  }
-  return selected;
+  return get_xla_compile_batch("", real_batch);
+}
+
+std::vector<int64_t> XlaBatchMatcher::get_all_batches(
+    const std::string& cluster_key) {
+  auto it = clusters_.find(cluster_key);
+  if (it == clusters_.end()) return {};
+  return it->second.all_batches;
 }
 
 }  // namespace tensorflow

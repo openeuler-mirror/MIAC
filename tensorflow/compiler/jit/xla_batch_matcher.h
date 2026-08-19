@@ -10,6 +10,9 @@
 #include <stdexcept>
 #include <cctype>
 #include <cstdint>
+#include <utility>
+
+#include "absl/container/flat_hash_map.h"
 
 namespace tensorflow {
 
@@ -21,18 +24,32 @@ class XlaBatchMatcher {
   public:
     XlaBatchMatcher();
     virtual ~XlaBatchMatcher() = default;
+
+    // Per-cluster-key API (recommended): isolates padding candidates per cluster.
+    int64_t get_xla_compile_batch(const std::string& cluster_key,
+                                 int64_t real_batch);
+
+    // Backward-compatible API: uses a default (global) key.
     int64_t get_xla_compile_batch(int64_t real_batch);
-    std::vector<int64_t> get_all_batches() { return all_batches_; }
+
+    // For debugging.
+    std::vector<int64_t> get_all_batches(const std::string& cluster_key);
 
   private:
-    void parse_env_config();
-    void print_all_batches();
-    std::vector<int64_t> parse_single_item(const std::string& item);
-    int64_t find_min_larger_batch(int64_t real_batch);
+    struct ClusterState {
+      std::vector<int64_t> all_batches;
+      bool updated = false;
+    };
 
-    std::vector<int64_t> all_batches_;
+    void parse_env_config();
+    void print_all_batches(const std::string& cluster_key,
+                           const std::vector<int64_t>& batches);
+    std::vector<int64_t> parse_single_item(const std::string& item);
+
+    int64_t find_min_larger_batch(ClusterState* state, int64_t real_batch);
+
+    absl::flat_hash_map<std::string, ClusterState> clusters_;
     std::string env_str_;
-    int64_t last_batch_ = -1;
 };
 
 }  // namespace tensorflow
