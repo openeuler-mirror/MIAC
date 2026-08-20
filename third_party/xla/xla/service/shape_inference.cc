@@ -4151,7 +4151,8 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
         ShapeUtil::HumanString(pred));
   }
 
-  Shape full_rank_shape = ShapeUtil::IsScalar(pred) ? on_true : pred;
+  const bool pred_is_scalar = ShapeUtil::IsScalar(pred);
+  Shape full_rank_shape = pred_is_scalar ? on_true : pred;
   Shape result = ShapeUtil::ChangeElementType(
       full_rank_shape,
       ShapeUtil::HigherPrecisionElementType(on_true, on_false));
@@ -4175,17 +4176,22 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
     }
     const DExpr& on_true_expr = on_true.expressions(dimension);
     const DExpr& on_false_expr = on_false.expressions(dimension);
+    const DExpr& pred_expr =
+        pred_is_scalar ? on_true_expr : pred.expressions(dimension);
     const bool has_dynamic_expression =
         (on_true_expr && on_true_expr->is_dynamic()) ||
-        (on_false_expr && on_false_expr->is_dynamic());
+        (on_false_expr && on_false_expr->is_dynamic()) ||
+        (!pred_is_scalar && pred_expr && pred_expr->is_dynamic());
     if (has_dynamic_expression) {
       if (!on_true_expr || !on_false_expr ||
-          !DynExpr::equal(on_true_expr, on_false_expr)) {
+          !DynExpr::equal(on_true_expr, on_false_expr) ||
+          (!pred_is_scalar &&
+           (!pred_expr || !DynExpr::equal(pred_expr, on_true_expr)))) {
         return InvalidArgument(
             "Select operands have mismatched expressions in dimension %d: "
-            "on_true=%s, on_false=%s.",
-            dimension, ShapeUtil::HumanString(on_true),
-            ShapeUtil::HumanString(on_false));
+            "pred=%s, on_true=%s, on_false=%s.",
+            dimension, ShapeUtil::HumanString(pred),
+            ShapeUtil::HumanString(on_true), ShapeUtil::HumanString(on_false));
       }
       result.set_expression(dimension, on_true_expr);
     }
