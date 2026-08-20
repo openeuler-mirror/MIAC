@@ -164,11 +164,11 @@ class ReshapeOp : public XlaOpKernel {
               input, xla::Zero(ctx->builder(), input_xla_shape->element_type()),
               0, 0, padded_input_num - input_num_elements);
           input_shape.set_dim(0, padded_input_num);
-          missing_expr =
-              (input_num_elements_expr + (product - 1)) / product;
-          missing_expr = missing_expr.simplify();
+          // This expression only approximates the padded size: the true value
+          // uses ceil(input_num_elements / product) * product, which we do not
+          // model symbolically here.
           xla::DExpr padded_input_num_expr =
-              (missing_expr * xla::DExpr::Const(product))
+              ((input_num_elements_expr / product_expr) * product_expr)
                   .simplify();
           input_shape.set_expression(0, padded_input_num_expr);
         }
