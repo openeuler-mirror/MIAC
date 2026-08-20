@@ -951,7 +951,11 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     };
     for (Node* n : graph_->op_nodes()) {
       bool mark_shape_derived = false;
-      if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+      auto is_shape_like = [](const Node* node) {
+        const string& t = node->type_string();
+        return t == "Shape" || t == "ShapeN" || t == "Size";
+      };
+      if (is_shape_like(n)) {
         mark_shape_derived = has_dynamic_input_expression(n);
       } else if (n->type_string() == "Cast") {
         for (const Edge* edge : n->in_edges()) {
@@ -959,9 +963,7 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
             continue;
           }
           const Node* src = edge->src();
-          if ((src->type_string() == "Shape" ||
-               src->type_string() == "ShapeN") &&
-              has_dynamic_input_expression(src)) {
+          if (is_shape_like(src) && has_dynamic_input_expression(src)) {
             mark_shape_derived = true;
             break;
           }
