@@ -100,6 +100,7 @@ class DExpr {
   static DExpr Adopt(DynExpr* expr) { return DExpr(std::unique_ptr<DynExpr>(expr)); }
   static DExpr Const(int64_t value) { return Adopt(DynExpr::_(value)); }
   static DExpr Var(int var_id) { return Adopt(DynExpr::V(var_id)); }
+  bool has_value() const { return expr_ != nullptr; }
   bool is_unknown() const {
     return expr_ != nullptr && expr_->kind() == DExprKind::kUnknown;
   }

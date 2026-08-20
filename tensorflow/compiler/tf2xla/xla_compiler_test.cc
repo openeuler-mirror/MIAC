@@ -1099,11 +1099,10 @@ TEST_F(XlaCompilerDynamicSizesTest, WhereBuildsDynamicIndexMatrixShape) {
   EXPECT_EQ(result_shape.dimensions_size(), 2);
   EXPECT_EQ(result_shape.dimensions(1), 3);
   // The number of true elements is data-dependent and cannot reuse an input
-  // dimension expression. Its expression therefore remains the static upper
-  // bound while SetDimensionSize records the runtime length.
+  // dimension expression. SetDimensionSize records the runtime length while
+  // the physical dimension remains the static upper bound.
   EXPECT_TRUE(result_shape.is_dynamic_dimension(0));
-  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0),
-                                  xla::DExpr::Const(8 * 4 * 6)));
+  EXPECT_TRUE(result_shape.expressions(0).is_unknown());
   EXPECT_TRUE(
       xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Const(3)));
 }
