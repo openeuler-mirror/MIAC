@@ -73,9 +73,9 @@ int LoadInputArgSharedSymbolId() {
   absl::Status status =
       ReadInt64FromEnvVar(kInputArgSharedSymbolIdEnvVar, -1, &symbol_id);
   if (!status.ok()) {
-    LOG(WARNING) << "Failed to read " << kInputArgSharedSymbolIdEnvVar
-                 << ": " << status
-                 << ". Falling back to default shared symbol id -1.";
+    VLOG(1) << "Failed to read " << kInputArgSharedSymbolIdEnvVar
+            << ": " << status
+            << ". Falling back to default shared symbol id -1.";
     return -1;
   }
   return static_cast<int>(symbol_id);
