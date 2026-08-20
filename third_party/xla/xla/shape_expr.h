@@ -588,8 +588,27 @@ class MaxExpr : public DynExpr {
     ids.merge(rhs->get_all_ids());
     return ids;
   }
-  // Max is not invertible: either operand may have produced the result.
   std::optional<int64_t> solve(int64_t x) override {
+    auto solve_dynamic_branch = [x](DynExpr* dynamic,
+                                    DynExpr* constant)
+        -> std::optional<int64_t> {
+      if (constant->kind() != DExprKind::kConstant ||
+          dynamic->get_all_ids().size() != 1) {
+        return std::nullopt;
+      }
+      const int64_t bound = constant->get_val();
+      // max(expr, bound) selects expr only when the result exceeds bound.
+      // Equality is ambiguous because either branch may have produced it.
+      return x > bound ? dynamic->solve(x) : std::nullopt;
+    };
+
+    if (auto result = solve_dynamic_branch(lhs.get(), rhs.get())) {
+      return result;
+    }
+    if (auto result = solve_dynamic_branch(rhs.get(), lhs.get())) {
+      return result;
+    }
+
     StringPrinter printer;
     print(&printer);
     LOG(WARNING) << "Cannot solve Max dynamic shape expression for value " << x

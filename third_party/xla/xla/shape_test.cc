@@ -198,7 +198,6 @@ TEST_F(ShapeTest, DExprSolveRejectsZeroDivisor) {
 TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   DExpr expr = DExpr::Max(DExpr::Var(1), DExpr::Const(4));
   EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
-  EXPECT_FALSE(expr->solve(7).has_value());
 
   DExpr clamped = DExpr::Max(DExpr::Var(1), DExpr::Const(0));
   EXPECT_EQ("A", DExprToString(clamped.simplify()));
@@ -224,6 +223,19 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   ExpressionProto proto;
   expr.to_proto(&proto);
   EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprMaxPartiallySolvesSelectedDynamicBranch) {
+  DExpr expr = DExpr::Max(DExpr::Var(1) - 2, DExpr::Const(0));
+  EXPECT_EQ(100, expr->solve(98));
+
+  DExpr reversed = DExpr::Max(DExpr::Const(0), DExpr::Var(1) - 2);
+  EXPECT_EQ(100, reversed->solve(98));
+
+  // A result equal to the constant bound may come from either branch.
+  EXPECT_FALSE(expr->solve(0).has_value());
+  // A result below the constant bound cannot be produced by Max.
+  EXPECT_FALSE(expr->solve(-1).has_value());
 }
 
 TEST_F(ShapeTest, DExprSelectUsesDynamicPredicate) {
