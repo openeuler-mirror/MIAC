@@ -4790,6 +4790,11 @@ XlaOp XlaBuilder::SetDimensionSize(XlaOp operand, XlaOp val,
     TF_ASSIGN_OR_RETURN(Shape shape,
                         ShapeInference::InferSetDimensionSizeShape(
                             *operand_shape, *val_shape, dimension));
+    TF_ASSIGN_OR_RETURN(const std::vector<DExpr>* val_contents,
+                        GetInstructionContents(val));
+    shape.set_expression(
+        dimension, val_contents->size() == 1 ? val_contents->front()
+                                             : DExpr::Unknown());
     return SetDimensionSizeInternal(shape, operand, val, dimension);
   });
 }

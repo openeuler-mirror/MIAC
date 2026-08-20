@@ -193,7 +193,7 @@ absl::StatusOr<XlaOp> CompileWhereWithSort(XlaOpKernelContext* ctx) {
   for (int64_t i = 0; i < iota_shape.dimensions().size(); ++i) {
     XlaOp index_single_dim = xla::GetTupleElement(sorted, i + 1);
     to_concat.push_back(xla::Reshape(index_single_dim, {flattened_size, 1},
-                                     {xla::DExpr::Unknown(),
+                                     {flattened_expr,
                                       xla::DExpr::Const(1)}));
   }
 
@@ -327,7 +327,7 @@ absl::StatusOr<XlaOp> CompileWhereWithPrefixSum(XlaOpKernelContext* ctx) {
               std::vector<int64_t>{flattened_size,
                                    iota_shape.dimensions_size()},
               std::vector<xla::DExpr>{
-                  xla::DExpr::Unknown(),
+                  flattened_expr,
                   xla::DExpr::Const(iota_shape.dimensions_size())})),
       /*scatter_indices=*/out_idxs, /*updates=*/iotas,
       /*update_computation=*/assn_computation, scatter_dnums,
