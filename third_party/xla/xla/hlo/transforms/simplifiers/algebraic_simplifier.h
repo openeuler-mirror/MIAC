@@ -318,6 +318,15 @@ class AlgebraicSimplifierOptions {
   }
   bool enable_fast_math() const { return enable_fast_math_; }
 
+  // If true, replace elementwise division by a broadcast scalar with
+  // multiplication by a broadcast scalar reciprocal.
+  void set_enable_divide_by_broadcast_reciprocal(bool enable) {
+    enable_divide_by_broadcast_reciprocal_ = enable;
+  }
+  bool enable_divide_by_broadcast_reciprocal() const {
+    return enable_divide_by_broadcast_reciprocal_;
+  }
+
   void set_enable_broadcast_degenerate_dimension(
       bool enable_broadcast_degenerate_dimension) {
     enable_broadcast_degenerate_dimension_ =
@@ -396,6 +405,7 @@ class AlgebraicSimplifierOptions {
   bool use_convert_constant_folding_{false};
   bool disable_dynamic_slice_to_slice_conversion_{false};
   bool enable_fast_math_{false};
+  bool enable_divide_by_broadcast_reciprocal_{false};
   bool enable_broadcast_degenerate_dimension_{true};
   bool enable_remove_no_op_reduce_precision_{false};
   bool enable_onednn_support_{false};
