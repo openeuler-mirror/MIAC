@@ -51,6 +51,22 @@ std::string ShapeDimExprDebugString(const TensorShapeProto& shape, int dim) {
   return expr ? expr->DebugString() : "";
 }
 
+void ExpectVariableId(const TensorShapeProto& shape, int dim,
+                      int expected_var_id) {
+  ASSERT_GT(shape.dim_size(), dim);
+  const auto& expr = shape.dim(dim).expr();
+  EXPECT_EQ(expr.node_type_case(), ExpressionProto::kVariableId);
+  EXPECT_EQ(expr.variable_id(), expected_var_id);
+}
+
+void ExpectNotVariableId(const TensorShapeProto& shape, int dim,
+                         int unexpected_var_id) {
+  ASSERT_GT(shape.dim_size(), dim);
+  const auto& expr = shape.dim(dim).expr();
+  ASSERT_EQ(expr.node_type_case(), ExpressionProto::kVariableId);
+  EXPECT_NE(expr.variable_id(), unexpected_var_id);
+}
+
 using shape_inference::InferenceContext;
 using shape_inference::ShapeAndType;
 using shape_inference::ShapeHandle;
@@ -2014,6 +2030,158 @@ TEST_F(GraphPropertiesTest, SymbolicShapes) {
   const auto shape_j = properties.GetOutputProperties("j").at(0).shape();
   ASSERT_EQ(1, shape_j.dim_size());
   EXPECT_EQ(shape_j.dim(0).size(), shape_a.dim(1).size());
+}
+
+TEST_F(GraphPropertiesTest, SymbolicInputShapesShareSameSymbol) {
+  GrapplerItem item;
+
+  AttrValue shape_a_attr;
+  TensorShapeProto* shape_a_proto = shape_a_attr.mutable_list()->add_shape();
+  shape_a_proto->add_dim()->set_size(-1);
+  shape_a_proto->add_dim()->set_size(-1);
+  TF_ASSERT_OK(NodeDefBuilder("a", "_Arg")
+                   .Attr("T", DT_FLOAT)
+                   .Attr("index", 0)
+                   .Attr("_output_shapes", shape_a_attr)
+                   .Finalize(item.graph.add_node()));
+
+  AttrValue shape_b_attr;
+  TensorShapeProto* shape_b_proto = shape_b_attr.mutable_list()->add_shape();
+  shape_b_proto->add_dim()->set_size(-1);
+  TF_ASSERT_OK(NodeDefBuilder("b", "_Arg")
+                   .Attr("T", DT_FLOAT)
+                   .Attr("index", 1)
+                   .Attr("_output_shapes", shape_b_attr)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("c", "Identity")
+                   .Input(NodeDefBuilder::NodeOut("a", 0, DT_FLOAT))
+                   .Attr("T", DT_FLOAT)
+                   .Finalize(item.graph.add_node()));
+  TF_ASSERT_OK(NodeDefBuilder("d", "Identity")
+                   .Input(NodeDefBuilder::NodeOut("b", 0, DT_FLOAT))
+                   .Attr("T", DT_FLOAT)
+                   .Finalize(item.graph.add_node()));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(false));
+
+  const auto shape_a = properties.GetOutputProperties("a").at(0).shape();
+  const auto shape_b = properties.GetOutputProperties("b").at(0).shape();
+  const auto shape_c = properties.GetOutputProperties("c").at(0).shape();
+  const auto shape_d = properties.GetOutputProperties("d").at(0).shape();
+
+  ASSERT_EQ(2, shape_a.dim_size());
+  ASSERT_EQ(1, shape_b.dim_size());
+  ExpectVariableId(shape_a, 0, -1);
+  ExpectVariableId(shape_a, 1, -1);
+  ExpectVariableId(shape_b, 0, -1);
+  ExpectVariableId(shape_c, 0, -1);
+  ExpectVariableId(shape_c, 1, -1);
+  ExpectVariableId(shape_d, 0, -1);
+}
+
+TEST_F(GraphPropertiesTest, SymbolicNonInputShapesDoNotShareInputSymbol) {
+  GrapplerItem item;
+
+  AttrValue input_shape_attr;
+  TensorShapeProto* input_shape_proto =
+      input_shape_attr.mutable_list()->add_shape();
+  input_shape_proto->add_dim()->set_size(-1);
+  input_shape_proto->add_dim()->set_size(-1);
+  TF_ASSERT_OK(NodeDefBuilder("input", "_Arg")
+                   .Attr("T", DT_FLOAT)
+                   .Attr("index", 0)
+                   .Attr("_output_shapes", input_shape_attr)
+                   .Finalize(item.graph.add_node()));
+
+  AttrValue reshape_shape_attr;
+  TensorShapeProto* reshape_shape_proto =
+      reshape_shape_attr.mutable_list()->add_shape();
+  reshape_shape_proto->add_dim()->set_size(2);
+  TF_ASSERT_OK(NodeDefBuilder("target_shape", "_Arg")
+                   .Attr("T", DT_INT32)
+                   .Attr("index", 1)
+                   .Attr("_output_shapes", reshape_shape_attr)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("reshaped", "Reshape")
+                   .Input(NodeDefBuilder::NodeOut("input", 0, DT_FLOAT))
+                   .Input(
+                       NodeDefBuilder::NodeOut("target_shape", 0, DT_INT32))
+                   .Attr("T", DT_FLOAT)
+                   .Attr("Tshape", DT_INT32)
+                   .Finalize(item.graph.add_node()));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(false));
+
+  const auto input_shape = properties.GetOutputProperties("input").at(0).shape();
+  const auto reshaped_shape =
+      properties.GetOutputProperties("reshaped").at(0).shape();
+
+  ASSERT_EQ(2, input_shape.dim_size());
+  ASSERT_EQ(2, reshaped_shape.dim_size());
+  ExpectVariableId(input_shape, 0, -1);
+  ExpectVariableId(input_shape, 1, -1);
+  ExpectNotVariableId(reshaped_shape, 0, -1);
+  ExpectNotVariableId(reshaped_shape, 1, -1);
+}
+
+TEST_F(GraphPropertiesTest, SymbolicInputShapesShareOnlyDynamicDims) {
+  GrapplerItem item;
+
+  AttrValue shape_a_attr;
+  TensorShapeProto* shape_a_proto = shape_a_attr.mutable_list()->add_shape();
+  shape_a_proto->add_dim()->set_size(4);
+  shape_a_proto->add_dim()->set_size(-1);
+  TF_ASSERT_OK(NodeDefBuilder("a", "_Arg")
+                   .Attr("T", DT_FLOAT)
+                   .Attr("index", 0)
+                   .Attr("_output_shapes", shape_a_attr)
+                   .Finalize(item.graph.add_node()));
+
+  AttrValue shape_b_attr;
+  TensorShapeProto* shape_b_proto = shape_b_attr.mutable_list()->add_shape();
+  shape_b_proto->add_dim()->set_size(-1);
+  shape_b_proto->add_dim()->set_size(8);
+  TF_ASSERT_OK(NodeDefBuilder("b", "_Arg")
+                   .Attr("T", DT_FLOAT)
+                   .Attr("index", 1)
+                   .Attr("_output_shapes", shape_b_attr)
+                   .Finalize(item.graph.add_node()));
+
+  TF_ASSERT_OK(NodeDefBuilder("c", "Identity")
+                   .Input(NodeDefBuilder::NodeOut("a", 0, DT_FLOAT))
+                   .Attr("T", DT_FLOAT)
+                   .Finalize(item.graph.add_node()));
+  TF_ASSERT_OK(NodeDefBuilder("d", "Identity")
+                   .Input(NodeDefBuilder::NodeOut("b", 0, DT_FLOAT))
+                   .Attr("T", DT_FLOAT)
+                   .Finalize(item.graph.add_node()));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(false));
+
+  const auto shape_a = properties.GetOutputProperties("a").at(0).shape();
+  const auto shape_b = properties.GetOutputProperties("b").at(0).shape();
+  const auto shape_c = properties.GetOutputProperties("c").at(0).shape();
+  const auto shape_d = properties.GetOutputProperties("d").at(0).shape();
+
+  ASSERT_EQ(2, shape_a.dim_size());
+  ASSERT_EQ(2, shape_b.dim_size());
+  ASSERT_EQ(2, shape_c.dim_size());
+  ASSERT_EQ(2, shape_d.dim_size());
+
+  EXPECT_EQ(shape_a.dim(0).size(), 4);
+  EXPECT_EQ(shape_b.dim(1).size(), 8);
+  EXPECT_EQ(shape_c.dim(0).size(), 4);
+  EXPECT_EQ(shape_d.dim(1).size(), 8);
+
+  ExpectVariableId(shape_a, 1, -1);
+  ExpectVariableId(shape_b, 0, -1);
+  ExpectVariableId(shape_c, 1, -1);
+  ExpectVariableId(shape_d, 0, -1);
 }
 
 TEST_F(GraphPropertiesTest, DoNotValidateColocationConstraints) {
