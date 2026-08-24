@@ -132,7 +132,7 @@ message RewriterConfig {
   // when the gather indexes the pack axis (default is ON).
   Toggle simplify_gather_of_pack = 33;
   // Factorize MatMul inputs that concatenate varying rows with a broadcasted
-  // input, so the broadcasted contribution is computed once (default is OFF).
+  // input, so the broadcasted contribution is computed once (default is ON).
   Toggle broadcasted_matmul_factorization = 34;
   // Optimizers registered by plugin (default is ON)
   Toggle use_plugin_optimizers = 28;

@@ -921,8 +921,7 @@ absl::Status MetaOptimizer::OptimizeGraph(Cluster* cluster, GrapplerItem&& item,
   } else {
     TF_RETURN_IF_ERROR(InitializeOptimizersByName(device_types, &optimizers));
   }
-  if (cfg_.broadcasted_matmul_factorization() == RewriterConfig::ON &&
-      !cfg_.disable_meta_optimizer() &&
+  if (cfg_.broadcasted_matmul_factorization() != RewriterConfig::OFF &&
       std::none_of(optimizers.begin(), optimizers.end(),
                    [](const std::unique_ptr<GraphOptimizer>& optimizer) {
                      return optimizer->name() ==
@@ -1394,7 +1393,7 @@ bool MetaOptimizerEnabled(const ConfigProto& cfg) {
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_mkl()) ||
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_cpu()) ||
          rewrite_cfg.simplify_gather_of_pack() != RewriterConfig::OFF ||
-         rewrite_cfg.broadcasted_matmul_factorization() == RewriterConfig::ON ||
+         rewrite_cfg.broadcasted_matmul_factorization() != RewriterConfig::OFF ||
          !rewrite_cfg.optimizers().empty() ||
          !rewrite_cfg.custom_optimizers().empty();
 }
