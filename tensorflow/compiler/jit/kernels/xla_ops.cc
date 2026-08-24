@@ -427,7 +427,8 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
       return xla::DExpr::Const(ac->value());
     }
     case DimExpr::Kind::kVariable: {
-      return xla::DExpr::Var(1);
+      auto* av = static_cast<const Variable*>(e);
+      return xla::DExpr::Var(av->id());
     }
     case DimExpr::Kind::kAdd: {
       auto* ee = static_cast<const ExprAdd*>(e);
@@ -512,6 +513,19 @@ absl::Status CompileToLocalExecutable(
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     std::optional<xla::DExpr> dynamic_dim_expr;
+    std::optional<xla::DExpr> shared_dynamic_subexpr;
+    auto normalize_dynamic_expr = [&](xla::DExpr expr) {
+      if (!expr || !expr->is_dynamic()) {
+        return expr;
+      }
+      if (!shared_dynamic_subexpr.has_value()) {
+        shared_dynamic_subexpr =
+            expr.find_smallest_subexpression_covering_all_variables();
+      }
+      return expr
+          .replace_subexpression(*shared_dynamic_subexpr, xla::DExpr::Var(1))
+          .simplify();
+    };
     auto maybe_attach_shape_contents_from_attrs =
         [&](int arg_index, const auto& attr_map,
             const std::string& node_name) {
@@ -558,7 +572,9 @@ absl::Status CompileToLocalExecutable(
             xla::ExpressionProto expr;
             const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
             if (dim_expr && dim_expr->is_dynamic()) {
-              dim_expr->to_proto(&expr);
+              xla::DExpr normalized_expr =
+                  normalize_dynamic_expr(dim_expr);
+              normalized_expr->to_proto(&expr);
             } else if (arg.constant_value.dtype() == DT_INT32) {
               expr.set_constant_value(arg.constant_value.flat<int32>()(i));
             } else if (arg.constant_value.dtype() == DT_INT64) {
@@ -614,14 +630,14 @@ absl::Status CompileToLocalExecutable(
             record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
-                  xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
+                  xla_batch_matcher->get_xla_compile_batch(function.name(), shp.dim_size(idx));
             }
 
             std::vector<xla::DExpr> dyn_exprs;
             for (int d : shp.dim_sizes()) {
               dyn_exprs.push_back(xla::DExpr::Const(d));
             }
-            dyn_exprs[idx] = xla::DExpr::Var(1);
+            dyn_exprs[idx] = *dynamic_dim_expr;
             shp.set_expressions(std::move(dyn_exprs));
             continue;
           }
@@ -637,6 +653,7 @@ absl::Status CompileToLocalExecutable(
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.
               auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
+              e = normalize_dynamic_expr(e).simplify();
               if (e->is_dynamic()) {
                 std::optional<int64_t> solved_value =
                     e->solve(shp.dim_size(idx));
@@ -654,8 +671,10 @@ absl::Status CompileToLocalExecutable(
                           << shp.dim_size(idx) << " to " << var_value;
                 }
                 record_dynamic_dim_value(var_value, e);
+                VLOG(1) << "Filled batch for function " << function.name()
+                          << " with value " << var_value;
                 filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(var_value);
+                    xla_batch_matcher->get_xla_compile_batch(function.name(), var_value);
                 break;
               }
             }
@@ -668,6 +687,7 @@ absl::Status CompileToLocalExecutable(
           for (int j = 0; j < exp.size(); ++j) {
             auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
             if (e->is_dynamic()) {
+              e = normalize_dynamic_expr(e);
               dyn_exprs[j] = e;
             }
           }
@@ -771,7 +791,17 @@ absl::Status CompileToLocalExecutable(
             int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
-            xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
+            const std::set<int> ids = e->get_all_ids();
+            if (ids.size() != 1) {
+              return errors::InvalidArgument(
+                  "Dynamic shape padding expected exactly one dynamic "
+                  "variable for argument ",
+                  i, ", dimension ", j, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(e));
+            }
+            const int substitute_var_id = *ids.begin();
+            xla::DExpr subst_expr =
+                e.substitute(substitute_var_id, padded_expr).simplify();
             if (!subst_expr->is_constant()) {
               return errors::InvalidArgument(
                   "Dynamic shape padding substitution did not produce an "
@@ -1380,12 +1410,35 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       }
     }
   
-    if (dyn_vals.size() == 1) {
-      run_options.set_batch_size(*(dyn_vals.begin()));
+    std::optional<std::set<int>> expected_dyn_ids;
+    bool mismatched_dyn_ids = false;
+    for (int i = 0; i < comp_result->xla_input_shapes.size(); i++) {
+      const auto& xla_shape = closure.compilation_result()->xla_input_shapes[i];
+      if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
+      for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
+        const auto& expr = xla_shape.expressions(dim);
+        if (!(expr && expr->is_dynamic())) {
+          continue;
+        }
+        std::set<int> ids = expr->get_all_ids();
+        if (!expected_dyn_ids.has_value()) {
+          expected_dyn_ids = ids;
+        } else if (*expected_dyn_ids != ids) {
+          mismatched_dyn_ids = true;
+        }
+      }
+    }
+    if (dyn_vals.size() == 1 && expected_dyn_ids.has_value() &&
+        expected_dyn_ids->size() == 1 && !mismatched_dyn_ids) {
+      run_options.set_batch_size(*dyn_vals.begin());
       is_set = true;
-    } else {
-      // Found multiple variables
-      VLOG(1) << "Warning: Found multiple variables";
+    } else if (dyn_vals.size() > 1) {
+      const std::string error_message =
+          "Failed to recover a unique XLA dynamic batch size from runtime "
+          "input expressions. Refusing to run the XLA cluster with an invalid "
+          "batch size.";
+      ctx->CtxFailure(errors::InvalidArgument(error_message));
+      return;
     }
     
     if (!is_set) {

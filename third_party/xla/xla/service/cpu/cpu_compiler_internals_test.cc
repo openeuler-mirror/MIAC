@@ -27,7 +27,10 @@ limitations under the License.
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Casting.h"
 #include "xla/backends/cpu/codegen/emitters/cpu_fusion_emitter_config.h"
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/service/llvm_compiler.h"
 #include "xla/tests/hlo_test_base.h"
@@ -162,6 +165,45 @@ TEST_F(CpuCompilerInternalsTest, JustOneDylibWithThunks) {
   EXPECT_EQ(max_seen, 0) << "max dylib_index(" << max_seen
                          << ") != 0, but only "
                          << "one dylib is allowed.";
+}
+
+TEST_F(CpuCompilerInternalsTest, SharesBroadcastScalarReciprocal) {
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
+                          ParseAndReturnVerifiedModule(R"(
+    HloModule test
+    ENTRY main {
+      p0 = f32[16] parameter(0)
+      p1 = f32[16] parameter(1)
+      scalar = f32[] parameter(2)
+      broadcast = f32[16] broadcast(scalar), dimensions={}
+      divide0 = f32[16] divide(p0, broadcast)
+      divide1 = f32[16] divide(p1, broadcast)
+      ROOT result = f32[16] add(divide0, divide1)
+    }
+  )"));
+  DebugOptions& debug_options =
+      hlo_module->mutable_config().mutable_debug_options();
+  debug_options.set_xla_cpu_enable_fast_math(true);
+  debug_options.set_xla_cpu_fast_math_honor_division(false);
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> optimized_module,
+                          GetOptimizedModule(std::move(hlo_module)));
+
+  int64_t divide_count = 0;
+  int64_t scalar_divide_count = 0;
+  for (const HloComputation* computation : optimized_module->computations()) {
+    for (const HloInstruction* instruction : computation->instructions()) {
+      if (instruction->opcode() != HloOpcode::kDivide) {
+        continue;
+      }
+      ++divide_count;
+      if (instruction->shape().dimensions().empty()) {
+        ++scalar_divide_count;
+      }
+    }
+  }
+  EXPECT_EQ(divide_count, 1);
+  EXPECT_EQ(scalar_divide_count, 1);
 }
 
 }  // namespace

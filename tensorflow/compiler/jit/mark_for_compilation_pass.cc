@@ -25,6 +25,7 @@ limitations under the License.
 #include <optional>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -267,10 +268,18 @@ class MarkForCompilationPassImpl {
       dim_vars_.insert(dim_vars.begin(), dim_vars.end());
     }
     const std::set<int>& dim_vars() const { return dim_vars_; }
+    void add_dim_expr(const xla::DExpr& dim_expr) {
+      dim_exprs_.push_back(dim_expr);
+    }
+    void merge_dim_exprs(const std::vector<xla::DExpr>& dim_exprs) {
+      dim_exprs_.insert(dim_exprs_.end(), dim_exprs.begin(), dim_exprs.end());
+    }
+    const std::vector<xla::DExpr>& dim_exprs() const { return dim_exprs_; }
 
    private:
     int annotated_id_ = -1;
     std::set<int> dim_vars_;
+    std::vector<xla::DExpr> dim_exprs_;
     int chain_id_ = -1;
     int cluster_size_ = 1;
     int cycles_graph_node_id_;
@@ -345,6 +354,10 @@ class MarkForCompilationPassImpl {
 
   absl::Status AssignAnnotatedClusterIDs();
   absl::Status AssignDimVars();
+  std::optional<std::string> CheckDynamicExpressionCompatibility(
+      absl::Span<const xla::DExpr> exprs);
+  bool DynamicNodeExpressionsAreCompatible(const Node& node,
+                                           std::string* reason);
   void collectInputNodes(std::set<Node*> &path_nodes);
   void collectMergeNodes(const std::vector<Node*>& nodeSet,
                          std::set<Node*> &merger_nodes);
@@ -645,6 +658,8 @@ void MarkForCompilationPassImpl::Cluster::Merge(Cluster* other) {
 
   merge_dim_vars(other->dim_vars_);
   other->dim_vars_.clear();
+  merge_dim_exprs(other->dim_exprs_);
+  other->dim_exprs_.clear();
 
   resource_var_operation_node_ids_.reserve(
       resource_var_operation_node_ids_.size() +
@@ -783,6 +798,140 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   return xla::DExpr();
 }
 
+std::string DExprToString(const xla::DExpr& expr) {
+  std::ostringstream oss;
+  oss << expr.get();
+  return oss.str();
+}
+
+std::optional<std::string> CheckDynamicExpressionCompatibilityImpl(
+    absl::Span<const xla::DExpr> exprs) {
+  const xla::DExpr* anchor_source = nullptr;
+  for (const xla::DExpr& expr : exprs) {
+    if (expr && expr->is_dynamic() && !expr->get_all_ids().empty()) {
+      anchor_source = &expr;
+      break;
+    }
+  }
+  if (anchor_source == nullptr) {
+    return std::nullopt;
+  }
+
+  const std::set<int> expected_ids = (*anchor_source)->get_all_ids();
+  std::optional<xla::DExpr> expected_core;
+  if (expected_ids.size() > 1) {
+    expected_core =
+        anchor_source->find_smallest_subexpression_covering_all_variables();
+  }
+  int replacement_id = std::numeric_limits<int>::min();
+  while (expected_ids.count(replacement_id) != 0) {
+    ++replacement_id;
+  }
+  const std::set<int> replacement_ids = {replacement_id};
+
+  for (const xla::DExpr& expr : exprs) {
+    if (!expr || !expr->is_dynamic() || expr->get_all_ids().empty()) {
+      continue;
+    }
+    const std::set<int> expr_ids = expr->get_all_ids();
+    if (expr_ids != expected_ids) {
+      return absl::StrCat(
+          "dynamic expressions do not share the same variable ids: "
+          "expected={",
+          absl::StrJoin(expected_ids, ", "), "}, expr=",
+          DExprToString(expr), ", ids={",
+          absl::StrJoin(expr_ids, ", "), "}");
+    }
+    if (!expected_core.has_value()) {
+      continue;
+    }
+    const xla::DExpr core =
+        expr.find_smallest_subexpression_covering_all_variables();
+    if (!(core == *expected_core)) {
+      return absl::StrCat(
+          "dynamic expressions do not share the same clusterable core: "
+          "expected=",
+          DExprToString(*expected_core), ", expr=", DExprToString(expr),
+          ", core=", DExprToString(core));
+    }
+    const xla::DExpr normalized =
+        expr.replace_subexpression(core, xla::DExpr::Var(replacement_id))
+            .simplify();
+    if (normalized->get_all_ids() != replacement_ids) {
+      return absl::StrCat(
+          "dynamic expression core does not cover every variable occurrence: "
+          "expr=",
+          DExprToString(expr), ", core=", DExprToString(core));
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<std::string>
+MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
+    absl::Span<const xla::DExpr> exprs) {
+  return CheckDynamicExpressionCompatibilityImpl(exprs);
+}
+
+bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
+    const Node& node, std::string* reason) {
+  std::vector<xla::DExpr> node_exprs;
+
+  for (const Edge* edge : node.in_edges()) {
+    if (edge->IsControlEdge()) {
+      continue;
+    }
+
+    const Node* src = edge->src();
+    auto it = expr_map.find(src->name());
+    if (it == expr_map.end()) {
+      continue;
+    }
+
+    const int output_index = edge->src_output();
+    if (output_index < 0 ||
+        output_index >= static_cast<int>(it->second.size())) {
+      continue;
+    }
+
+    for (const auto& expr_ptr : it->second[output_index]) {
+      if (expr_ptr == nullptr) {
+        continue;
+      }
+      xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+      if (!dyn || !dyn->is_dynamic() || dyn->get_all_ids().empty()) {
+        continue;
+      }
+      node_exprs.push_back(std::move(dyn));
+    }
+  }
+
+  auto output_it = expr_map.find(node.name());
+  if (output_it != expr_map.end()) {
+    for (const auto& output_exprs : output_it->second) {
+      for (const auto& expr_ptr : output_exprs) {
+        if (expr_ptr == nullptr) {
+          continue;
+        }
+        xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+        if (!dyn || !dyn->is_dynamic() || dyn->get_all_ids().empty()) {
+          continue;
+        }
+        node_exprs.push_back(std::move(dyn));
+      }
+    }
+  }
+
+  const std::optional<std::string> incompatibility =
+      CheckDynamicExpressionCompatibility(node_exprs);
+  if (!incompatibility.has_value()) {
+    return true;
+  }
+  *reason = *incompatibility;
+  return false;
+}
+
 // Runs Grappler static inference and logs any ExpressionProto found in output
 // tensor shapes (from GraphProperties, not from _output_shapes attrs).
 void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
@@ -792,6 +941,8 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
   using tensorflow::TensorShapeProto;
   using tensorflow::grappler::GraphProperties;
   using tensorflow::grappler::GrapplerItem;
+
+  expr_map.clear();
 
   GraphDef graph_def;
   graph.ToGraphDef(&graph_def);
@@ -884,6 +1035,10 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   TF_RET_CHECK(!initialized_ && !edges_contracted_ && !clusters_created_);
   initialized_ = true;
 
+  if (debug_options_.enable_dynamic_sizes) {
+    LogExpressionsViaGraphProperties(*graph_);
+  }
+
   TF_RETURN_IF_ERROR(FindCompilationCandidates());
 
   if (compilation_candidates_.empty()) {
@@ -921,7 +1076,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(AssignAnnotatedClusterIDs());
   }
   if (debug_options_.enable_dynamic_sizes) {
-    LogExpressionsViaGraphProperties(*graph_);
     TF_RETURN_IF_ERROR(AssignDimVars());
     auto has_dynamic_input_expression = [&](const Node* n) {
       for (const Edge* edge : n->in_edges()) {
@@ -951,7 +1105,11 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     };
     for (Node* n : graph_->op_nodes()) {
       bool mark_shape_derived = false;
-      if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+      auto is_shape_like = [](const Node* node) {
+        const string& t = node->type_string();
+        return t == "Shape" || t == "ShapeN" || t == "Size";
+      };
+      if (is_shape_like(n)) {
         mark_shape_derived = has_dynamic_input_expression(n);
       } else if (n->type_string() == "Cast") {
         for (const Edge* edge : n->in_edges()) {
@@ -959,9 +1117,7 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
             continue;
           }
           const Node* src = edge->src();
-          if ((src->type_string() == "Shape" ||
-               src->type_string() == "ShapeN") &&
-              has_dynamic_input_expression(src)) {
+          if (is_shape_like(src) && has_dynamic_input_expression(src)) {
             mark_shape_derived = true;
             break;
           }
@@ -1722,6 +1878,15 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
+    if (debug_options_.enable_dynamic_sizes) {
+      std::string reason;
+      if (!DynamicNodeExpressionsAreCompatible(*node, &reason)) {
+        VLOG(1) << "Rejecting " << node->name()
+                << " from XLA clustering: " << reason;
+        continue;
+      }
+    }
+
     if (compile_time_const_nodes[node->id()]) {
       const OpDef* op_def;
       TF_RETURN_IF_ERROR(
@@ -1906,10 +2071,29 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
       for (auto& pDim: (it->second)[output_index]) {
         DimExpr * d= pDim.get();
         xla::DExpr dyn = DimExprToDExpr(d);
+        if (!dyn || !dyn->is_dynamic()) {
+          continue;
+        }
+        cluster->add_dim_expr(dyn);
         auto new_ids = dyn->get_all_ids();
         for (auto id : new_ids) {
           cluster->add_dim_var(id);
           VLOG(2) << "Add dim var " << id << " to cluster of node "<< node_name;
+        }
+      }
+    }
+    auto output_it = expr_map.find(node_name);
+    if (output_it != expr_map.end()) {
+      for (const auto& output_exprs : output_it->second) {
+        for (const auto& expr_ptr : output_exprs) {
+          if (expr_ptr == nullptr) {
+            continue;
+          }
+          xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+          if (!dyn || !dyn->is_dynamic()) {
+            continue;
+          }
+          cluster->add_dim_expr(dyn);
         }
       }
     }
@@ -2157,29 +2341,13 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
   }
 
   if (debug_options_.enable_dynamic_sizes) {
-    if (from->dim_vars().size() > 1 || to->dim_vars().size() > 1) {
-      std::string from_str = "from_vars: ";
-      for (auto id : from->dim_vars()) {
-        from_str += std::to_string(id) + ", ";
-      }
-      std::string to_str = "to_vars: ";
-      for (auto id : to->dim_vars()) {
-        to_str += std::to_string(id) + ", ";
-      }
-      return LogNotContractableAndReturnFalse(
-        from, to, absl::StrCat("the two nodes have multiple dynamic dimensions: ",
-        from_str, " and ", to_str));
-    }
-    if (from->dim_vars().size() == 1 && to->dim_vars().size() == 1 &&
-        from->dim_vars() != to->dim_vars()) {
-      return LogNotContractableAndReturnFalse(
-        from, to,
-        absl::StrCat("the two nodes have different dynamic dimensions: ",
-                     from->dim_vars().size() == 1
-                       ? std::to_string(*from->dim_vars().begin()) : "none",
-                     " and ",
-                     to->dim_vars().size() == 1
-                       ? std::to_string(*to->dim_vars().begin()) : "none"));
+    std::vector<xla::DExpr> combined_exprs = from->dim_exprs();
+    combined_exprs.insert(combined_exprs.end(), to->dim_exprs().begin(),
+                          to->dim_exprs().end());
+    std::optional<std::string> incompatibility =
+        CheckDynamicExpressionCompatibility(combined_exprs);
+    if (incompatibility.has_value()) {
+      return LogNotContractableAndReturnFalse(from, to, *incompatibility);
     }
   }
 
@@ -2673,6 +2841,11 @@ absl::flat_hash_map<string, std::vector<string>>* GetAllowlistTable() {
 namespace testing {
 void ResetClusterSequenceNumber() {
   ClusterSequenceNumberGenerator::Global().Reset();
+}
+
+std::optional<std::string> CheckDynamicExpressionCompatibilityForTest(
+    absl::Span<const xla::DExpr> exprs) {
+  return CheckDynamicExpressionCompatibilityImpl(exprs);
 }
 
 absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {

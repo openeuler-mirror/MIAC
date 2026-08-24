@@ -316,6 +316,9 @@ class SizeOp : public XlaOpKernel {
     auto size = xla::One(builder, ctx->output_xla_type(0));
 
     const int rank = input_shape.dims();
+    // Accumulated symbolic content for the running product. Start with 1.
+    xla::DExpr prod_expr = xla::DExpr::Const(static_cast<int32>(1));
+
     for (int64_t dim = 0; dim < rank; ++dim) {
       OP_REQUIRES(
           ctx,
@@ -326,12 +329,57 @@ class SizeOp : public XlaOpKernel {
               "on all dimensions, found ",
               input_shape.dim_size(dim), " elements on dimension ", dim)));
 
-      size = xla::Mul(size, xla::ConvertElementType(
-                                xla::GetDimensionSize(ctx->Input(0), dim),
-                                ctx->output_xla_type(0)));
+      // Preserve symbolic/dynamic content for this dimension.
+      xla::DExpr expr = input_shape.get_filled_expression(dim);
+      bool this_dynamic = (expr && expr->is_dynamic());
+      std::vector<xla::DExpr> content = {
+          this_dynamic ? expr
+                       : xla::DExpr::Unknown(xla::kUnknownContentSentinel)};
+
+      xla::XlaOp dim_size = xla::GetDimensionSize(ctx->Input(0), dim);
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(dim_size, content));
+      }
+
+      xla::XlaOp converted = xla::ConvertElementType(dim_size, ctx->output_xla_type(0));
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(converted, content));
+      }
+
+      // Update running product.
+      size = xla::Mul(size, converted);
+
+      // Update the accumulated symbolic product expression.
+      // factor is the symbolic content for the current dimension's size.
+      xla::DExpr factor =
+          (content.size() > 0 && content[0])
+              ? content[0]
+              : xla::DExpr::Unknown(xla::kUnknownContentSentinel);
+      if (prod_expr && factor) {
+        prod_expr = (prod_expr * factor).simplify();
+      } else {
+        prod_expr = xla::DExpr::Unknown(xla::kUnknownContentSentinel);
+      }
+
+      // Attach symbolic content to the intermediate product if enabled.
+      if (SymbolicContentEnabled()) {
+        std::vector<xla::DExpr> prod_content = {prod_expr};
+        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(size, prod_content));
+      }
     }
 
-    ctx->SetOutput(0, size);
+    // Set output: include symbolic content if requested.
+    if (SymbolicContentEnabled()) {
+      XlaExpression output = XlaExpression::XlaOp(size, ctx->expected_output_dtype(0));
+      // If we accumulated a prod_expr, use it; otherwise fall back to
+      // conservative Unknown/Const behavior.
+      if (prod_expr) {
+        output.set_contents({prod_expr});
+      }
+      ctx->SetOutputExpression(0, output);
+    } else {
+      ctx->SetOutput(0, size);
+    }
   }
 };
 

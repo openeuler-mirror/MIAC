@@ -20,9 +20,16 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_MARK_FOR_COMPILATION_PASS_H_
 #define TENSORFLOW_COMPILER_JIT_MARK_FOR_COMPILATION_PASS_H_
 
+#include <optional>
+
 #include "absl/container/flat_hash_set.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/jit/compilability_check_util.h"
 #include "tensorflow/core/common_runtime/optimization_registry.h"
+
+namespace xla {
+class DExpr;
+}
 
 namespace tensorflow {
 
@@ -57,6 +64,11 @@ void ResetClusterSequenceNumber();
 
 // Return a list of operation that we choose not to put into the allowlist.
 absl::flat_hash_set<string> GetKnownXLAAllowlistOp();
+
+// Returns an explanation when dynamic expressions cannot use the same
+// cluster-level dynamic value.
+std::optional<std::string> CheckDynamicExpressionCompatibilityForTest(
+    absl::Span<const xla::DExpr> exprs);
 }  // namespace testing
 }  // namespace tensorflow
 

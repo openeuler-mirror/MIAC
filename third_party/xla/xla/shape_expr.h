@@ -141,6 +141,12 @@ class DExpr {
   DExpr substitute(int id, const DExpr& value) const {
     return expr_ == nullptr ? DExpr() : Adopt(expr_->substitute(id, value.get()));
   }
+  // Returns the smallest subtree containing every variable in this expression.
+  // The expression must contain at least one variable.
+  DExpr find_smallest_subexpression_covering_all_variables() const;
+  // Replaces every subtree equivalent to `target` with `replacement`.
+  DExpr replace_subexpression(const DExpr& target,
+                              const DExpr& replacement) const;
 
   template <typename H>
   friend H AbslHashValue(H h, const DExpr& expr) {
