@@ -126,6 +126,8 @@ class TileOp : public XlaOpKernel {
             xla::Slice(ctx->Input("multiples"), {i}, {i + 1}, {1});
         dynamic_dim_size = xla::Reshape(dynamic_dim_size, {});
         dynamic_dim_size = xla::ConvertElementType(dynamic_dim_size, xla::S32);
+        dynamic_dim_size =
+            xla::Mul(xla::GetDimensionSize(input, i), dynamic_dim_size);
         result = xla::SetDimensionSize(result, dynamic_dim_size, i);
       }
     }

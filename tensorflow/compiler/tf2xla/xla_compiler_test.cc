@@ -470,8 +470,8 @@ TEST_F(XlaCompilerTest, ShapeValueChainPreservesExpressionThroughTile) {
   });
 
   // Shape turns the dynamic input dimension into the symbolic value A.
-  // Slicing, squeezing, and packing must preserve it as {A, 1}, which Tile
-  // then uses as the shape of a repeated static row.
+  // Slicing, squeezing, and packing must preserve it as {A, 1}. Tile applies
+  // that multiplier to a non-unit input dimension, producing 2*A.
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto arg = ops::_Arg(scope.WithOpName("arg"), DT_FLOAT, 0);
   auto input_shape = ops::Shape(scope.WithOpName("input_shape"), arg);
@@ -485,11 +485,8 @@ TEST_F(XlaCompilerTest, ShapeValueChainPreservesExpressionThroughTile) {
   auto one = ops::Const<int32>(scope.WithOpName("one"), 1, {});
   auto multiples = ops::Stack(scope.WithOpName("multiples"),
                               std::vector<Output>{first_dim, one});
-  auto base_row = ops::Const<float>(
-      scope.WithOpName("base_row"),
-      {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-       1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-      {1, 24});
+  auto base_row = ops::Const<float>(scope.WithOpName("base_row"), 1.0f,
+                                    {2, 24});
   auto tile = ops::Tile(scope.WithOpName("tile"), base_row, multiples);
   auto retval = ops::_Retval(scope.WithOpName("retval"), tile, 0);
   std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
@@ -509,16 +506,31 @@ TEST_F(XlaCompilerTest, ShapeValueChainPreservesExpressionThroughTile) {
   TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "tile",
                                      std::move(graph), args, &result));
 
-  // The physical output remains bounded by 8, but its first dimension must
-  // still describe the runtime value A rather than the bound.
+  // The physical output is bounded by 2*8, and its first dimension describes
+  // the runtime value 2*A rather than only the multiplier A.
   const xla::Shape& result_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
-  EXPECT_EQ(result_shape.dimensions(0), 8);
+  EXPECT_EQ(result_shape.dimensions(0), 16);
   EXPECT_EQ(result_shape.dimensions(1), 24);
-  EXPECT_TRUE(
-      xla::DynExpr::equal(result_shape.expressions(0), input_expr));
+  const xla::DExpr expected_expr =
+      (xla::DExpr::Const(2) * input_expr).simplify();
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0), expected_expr));
   EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
                                   xla::DExpr::Const(24)));
+
+  auto hlo = result.computation->proto();
+  TF_ASSERT_OK_AND_ASSIGN(auto module, LoadModuleFromHloProto(hlo));
+  const xla::HloInstruction* set_dimension_size = nullptr;
+  for (const xla::HloInstruction* instruction :
+       module->entry_computation()->instructions()) {
+    if (instruction->opcode() == xla::HloOpcode::kSetDimensionSize) {
+      ASSERT_EQ(set_dimension_size, nullptr);
+      set_dimension_size = instruction;
+    }
+  }
+  ASSERT_NE(set_dimension_size, nullptr);
+  EXPECT_EQ(set_dimension_size->operand(1)->opcode(),
+            xla::HloOpcode::kMultiply);
 }
 
 // Tests compilation preserves dynamic shape expressions through scalar
