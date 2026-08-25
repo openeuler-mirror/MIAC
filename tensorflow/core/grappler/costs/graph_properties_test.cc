@@ -2648,6 +2648,31 @@ TEST_F(GraphPropertiesTest, ValuePropagationThroughArithmeticOps) {
   ExpectTensorValues({20, 24}, c_plus_b_plus_2a_prop.value());
 }
 
+TEST_F(GraphPropertiesTest, DefaultArithmeticShapeValuePropagation) {
+  tensorflow::Scope scope = tensorflow::Scope::NewRootScope();
+  Output input = ops::Placeholder(
+      scope.WithOpName("input"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 7})));
+  Output input_shape = ops::Shape(scope.WithOpName("input_shape"), input);
+  Output increment = ops::Const(scope.WithOpName("increment"), {1, 1}, {2});
+  Output adjusted_shape =
+      ops::Add(scope.WithOpName("adjusted_shape"), input_shape, increment);
+  Output zero = ops::Const(scope.WithOpName("zero"), 0.0f, {});
+  Output filled =
+      ops::Fill(scope.WithOpName("filled"), adjusted_shape, zero);
+
+  GrapplerItem item;
+  TF_ASSERT_OK(scope.ToGraphDef(&item.graph));
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(false));
+
+  const TensorShapeProto& inferred_shape =
+      properties.GetOutputProperties("filled").at(0).shape();
+  ASSERT_EQ(2, inferred_shape.dim_size());
+  EXPECT_EQ(-1, inferred_shape.dim(0).size());
+  EXPECT_EQ(8, inferred_shape.dim(1).size());
+}
+
 TEST_F(GraphPropertiesTest,
        DynamicArithmeticFallsBackToTensorValueInference) {
   tensorflow::Scope scope = tensorflow::Scope::NewRootScope();
