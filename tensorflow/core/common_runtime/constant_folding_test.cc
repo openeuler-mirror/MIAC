@@ -940,6 +940,91 @@ TEST_F(ConstantFoldingTest, FoldPackKeepsSymbolicContentsAligned) {
   EXPECT_EQ(contents_proto.dim(1).size(), 977);
 }
 
+TEST_F(ConstantFoldingTest, FoldPackWithNegativeShapeValuePreservesContents) {
+  Graph g(OpRegistry::Global());
+  Scope s = Scope::NewRootScope();
+  auto arg = ops::_Arg(s.WithOpName("arg"), DT_FLOAT, 0);
+  auto shape = ops::Shape(s.WithOpName("shape"), arg);
+  auto dynamic_value = ops::GatherV2(
+      s.WithOpName("dynamic_value"), shape,
+      ops::Const(s.WithOpName("index"), 0),
+      ops::Const(s.WithOpName("axis"), 0));
+  auto infer_dimension = ops::Const(s.WithOpName("infer_dimension"), -1);
+  auto pack = ops::Stack(s.WithOpName("pack"),
+                         OutputList{infer_dimension, dynamic_value},
+                         ops::Stack::Axis(0));
+  auto send = ops::_Send(s.WithOpName("send"), pack, "send", "sender", 0,
+                         "receiver");
+  TF_ASSERT_OK(s.ToGraph(&g));
+
+  std::unordered_map<string, Node*> index_by_name = g.BuildNodeNameIndex();
+  Node* arg_node = index_by_name.at("arg");
+  arg_node->AddAttr("_output_shapes",
+                    std::vector<TensorShapeProto>{MakeDynamicShapeProto977x16()});
+
+  PartialTensorShape partial_shape({977, 16});
+  std::unordered_map<string, std::vector<PartialTensorShape>> shape_map;
+  shape_map[arg_node->name()].push_back(partial_shape);
+
+  ConstantFoldingOptions opts;
+  opts.shape_map = &shape_map;
+  bool was_mutated = false;
+  TF_ASSERT_OK(
+      ConstantFold(opts, nullptr, Env::Default(), nullptr, &g, &was_mutated));
+
+  index_by_name = g.BuildNodeNameIndex();
+  const Edge* send_input = nullptr;
+  TF_ASSERT_OK(index_by_name.at("send")->input_edge(0, &send_input));
+  Node* folded = send_input->src();
+  ASSERT_TRUE(folded->IsConstant());
+  ExpectNodeEqual<int32>(folded, {-1, 977}, {2});
+
+  string serialized_contents_proto;
+  TF_ASSERT_OK(GetNodeAttr(folded->attrs(),
+                           "_user_inferred_value_contents",
+                           &serialized_contents_proto));
+  TensorShapeProto contents_proto;
+  ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));
+  ASSERT_EQ(contents_proto.dim_size(), 2);
+  ASSERT_EQ(contents_proto.expressions_size(), 2);
+  EXPECT_EQ(contents_proto.dim(0).size(), -1);
+  EXPECT_FALSE(IsDynamicDimExpr(contents_proto.expressions(0)));
+  EXPECT_EQ(contents_proto.dim(1).size(), 977);
+  EXPECT_TRUE(IsDynamicDimExpr(contents_proto.expressions(1)));
+}
+
+TEST_F(ConstantFoldingTest, DoNotFoldValueChangingCastWithDynamicContents) {
+  Graph g(OpRegistry::Global());
+  Scope s = Scope::NewRootScope();
+  auto arg = ops::_Arg(s.WithOpName("arg"), DT_FLOAT, 0);
+  auto shape = ops::Shape(s.WithOpName("shape"), arg);
+  auto as_bool = ops::Cast(s.WithOpName("as_bool"), shape, DT_BOOL);
+  auto as_int = ops::Cast(s.WithOpName("as_int"), as_bool, DT_INT32);
+  auto send = ops::_Send(s.WithOpName("send"), as_int, "send", "sender", 0,
+                         "receiver");
+  TF_ASSERT_OK(s.ToGraph(&g));
+
+  std::unordered_map<string, Node*> index_by_name = g.BuildNodeNameIndex();
+  Node* arg_node = index_by_name.at("arg");
+  arg_node->AddAttr("_output_shapes",
+                    std::vector<TensorShapeProto>{MakeDynamicShapeProto977x16()});
+
+  PartialTensorShape partial_shape({977, 16});
+  std::unordered_map<string, std::vector<PartialTensorShape>> shape_map;
+  shape_map[arg_node->name()].push_back(partial_shape);
+
+  ConstantFoldingOptions opts;
+  opts.shape_map = &shape_map;
+  bool was_mutated = false;
+  TF_ASSERT_OK(
+      ConstantFold(opts, nullptr, Env::Default(), nullptr, &g, &was_mutated));
+
+  index_by_name = g.BuildNodeNameIndex();
+  const Edge* send_input = nullptr;
+  TF_ASSERT_OK(index_by_name.at("send")->input_edge(0, &send_input));
+  EXPECT_EQ(send_input->src()->name(), "as_int");
+}
+
 TEST_F(ConstantFoldingTest, DoNotFoldUnsupportedDynamicContentsTransform) {
   Graph g(OpRegistry::Global());
   Scope s = Scope::NewRootScope();

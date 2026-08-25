@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <atomic>
+#include <limits>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -285,8 +286,38 @@ bool TryGetFoldedValueContents(const Node* node, int output_index,
                                      input_contents, visiting);
   };
 
-  if (node->IsIdentity() || node->type_string() == "Cast") {
+  if (node->IsIdentity()) {
     return recurse_input(0, out_contents);
+  }
+
+  if (node->type_string() == "Cast") {
+    DataType src_type;
+    DataType dst_type;
+    if (!GetNodeAttr(node->attrs(), "SrcT", &src_type).ok() ||
+        !GetNodeAttr(node->attrs(), "DstT", &dst_type).ok()) {
+      return false;
+    }
+
+    TensorShapeProto input_contents;
+    if (!recurse_input(0, &input_contents)) {
+      return false;
+    }
+    if (src_type == dst_type ||
+        (src_type == DT_INT32 && dst_type == DT_INT64)) {
+      *out_contents = std::move(input_contents);
+      return true;
+    }
+    if (src_type == DT_INT64 && dst_type == DT_INT32) {
+      for (const auto& dim : input_contents.dim()) {
+        if (dim.size() < std::numeric_limits<int32>::min() ||
+            dim.size() > std::numeric_limits<int32>::max()) {
+          return false;
+        }
+      }
+      *out_contents = std::move(input_contents);
+      return true;
+    }
+    return false;
   }
 
   TensorShapeProto input_contents;

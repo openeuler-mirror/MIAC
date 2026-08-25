@@ -560,19 +560,29 @@ absl::Status CompileToLocalExecutable(
             inferred_shape_proto = inferred_shape_it->second.shape();
           }
 
-          TensorShape inferred_shape(inferred_shape_proto);
+          const int64_t content_count = inferred_shape_proto.dim_size();
           if (!((TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
-                 arg.constant_value.NumElements() == inferred_shape.dims()) ||
+                 arg.constant_value.NumElements() == content_count) ||
                 (TensorShapeUtils::IsScalar(arg.constant_value.shape()) &&
-                 inferred_shape.dims() == 1))) {
+                 content_count == 1))) {
             return;
           }
 
           arg.constant_value_expressions.clear();
-          arg.constant_value_expressions.reserve(inferred_shape.dims());
-          for (int64_t i = 0; i < inferred_shape.dims(); ++i) {
+          arg.constant_value_expressions.reserve(content_count);
+          for (int64_t i = 0; i < content_count; ++i) {
             xla::ExpressionProto expr;
-            const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
+            xla::DExpr dim_expr =
+                xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+            if (i < inferred_shape_proto.expressions_size()) {
+              xla::ExpressionProto expression_proto;
+              if (!expression_proto.ParseFromString(
+                      inferred_shape_proto.expressions(i).SerializeAsString())) {
+                arg.constant_value_expressions.clear();
+                return;
+              }
+              dim_expr = xla::DExprFromProto(expression_proto);
+            }
             if (dim_expr && dim_expr->is_dynamic()) {
               xla::DExpr normalized_expr =
                   normalize_dynamic_expr(dim_expr);
