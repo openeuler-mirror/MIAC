@@ -211,6 +211,8 @@ struct DynamicSolveEvidence {
   int64_t solved_value;
   int64_t observed_value;
   std::string expr;
+  // Shape-tensor values may equal 1 without representing a broadcast operand.
+  bool may_be_broadcast_singleton;
 };
 
 struct DynamicSolveSelection {
@@ -229,7 +231,8 @@ DynamicSolveSelection SelectDynamicSolveEvidence(
   for (const Candidate& candidate : candidates) {
     const DynamicSolveEvidence& evidence = candidate.evidence;
     selection.expressions.insert(evidence.expr);
-    if (evidence.observed_value == 1) {
+    if (evidence.may_be_broadcast_singleton &&
+        evidence.observed_value == 1) {
       selection.singleton_values.insert(evidence.solved_value);
     } else {
       selection.nonsingleton_values.insert(evidence.solved_value);
@@ -343,7 +346,8 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
         variable_ids_to_candidates[simplified_expr->get_all_ids()].push_back(
             Candidate{
                 DynamicSolveEvidence{*solved_value, shape.dim_size(dim),
-                                     expr_string},
+                                     expr_string,
+                                     /*may_be_broadcast_singleton=*/true},
                 IgnoredDynamicArgumentOccurrence{
                     IgnoredDynamicArgumentOccurrence::Source::kShapeDimension,
                     arg_index,
@@ -380,8 +384,8 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
       const std::string expr_string = DExprToString(simplified_expr);
       variable_ids_to_candidates[simplified_expr->get_all_ids()].push_back(
           Candidate{
-              DynamicSolveEvidence{*solved_value, *observed_value,
-                                   expr_string},
+              DynamicSolveEvidence{*solved_value, *observed_value, expr_string,
+                                   /*may_be_broadcast_singleton=*/false},
               IgnoredDynamicArgumentOccurrence{
                   IgnoredDynamicArgumentOccurrence::Source::
                       kConstantValueElement,
@@ -403,7 +407,8 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
     } else if (selection.chosen_value.has_value() &&
                !selection.nonsingleton_values.empty()) {
       for (const auto& candidate : candidates) {
-        if (candidate.evidence.observed_value == 1 &&
+        if (candidate.evidence.may_be_broadcast_singleton &&
+            candidate.evidence.observed_value == 1 &&
             candidate.evidence.solved_value != *selection.chosen_value) {
           VLOG(1) << "Ignoring singleton-derived dynamic "
                   << "occurrence during XLA signature filtering: "
@@ -601,7 +606,9 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeShapes(
           " solved_dynamic_value=", *dyn_val);
       variable_ids_to_candidates[simplified_expr->get_all_ids()].push_back(
           DynamicSolveCandidate{
-              DynamicSolveEvidence{*dyn_val, size, expr_string}, context});
+              DynamicSolveEvidence{*dyn_val, size, expr_string,
+                                   /*may_be_broadcast_singleton=*/true},
+              context});
     }
   }
 
@@ -613,7 +620,8 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeShapes(
     std::vector<std::string> singleton_contexts;
     std::vector<std::string> nonsingleton_contexts;
     for (const auto& candidate : candidates) {
-      if (candidate.evidence.observed_value == 1) {
+      if (candidate.evidence.may_be_broadcast_singleton &&
+          candidate.evidence.observed_value == 1) {
         singleton_contexts.push_back(candidate.context);
       } else {
         nonsingleton_contexts.push_back(candidate.context);

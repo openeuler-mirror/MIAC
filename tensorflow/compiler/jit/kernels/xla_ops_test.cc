@@ -59,6 +59,18 @@ XlaArgument MakeDynamicArgument(int64_t observed_size,
   return arg;
 }
 
+XlaArgument MakeDynamicConstantArgument(int32 observed_value) {
+  XlaArgument arg;
+  arg.kind = XlaArgument::kConstant;
+  arg.type = DT_INT32;
+  arg.shape = TensorShape({1});
+  arg.constant_value = Tensor(DT_INT32, TensorShape({1}));
+  arg.constant_value.flat<int32>()(0) = observed_value;
+  arg.constant_value_expressions.resize(1);
+  arg.constant_value_expressions[0].set_variable_id(1);
+  return arg;
+}
+
 xla::Shape MakeDynamicXlaInput(xla::DExpr leading_expr) {
   xla::Shape shape;
   shape.set_element_type(xla::F32);
@@ -212,6 +224,22 @@ TEST(DynamicSolveFilterTest, RejectsConflictingNonSingletonEvidence) {
   std::vector<XlaArgument> args = {
       MakeDynamicArgument(240),
       MakeDynamicArgument(720),
+  };
+
+  DynamicSolveFilterDecision decision =
+      AnalyzeIgnoredDynamicArgumentOccurrences(args);
+
+  EXPECT_FALSE(decision.can_run);
+  EXPECT_TRUE(decision.ignored_occurrences.empty());
+  EXPECT_NE(decision.diagnostic.find("conflicting non-singleton candidates"),
+            std::string::npos);
+}
+
+TEST(DynamicSolveFilterTest,
+     DoesNotIgnoreSingletonConstantValueEvidence) {
+  std::vector<XlaArgument> args = {
+      MakeDynamicConstantArgument(1),
+      MakeDynamicArgument(240),
   };
 
   DynamicSolveFilterDecision decision =
