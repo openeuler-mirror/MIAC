@@ -16,7 +16,6 @@ limitations under the License.
 #include "xla/shape.h"
 
 #include <cstdint>
-
 #include <vector>
 
 #include <gtest/gtest.h>
