@@ -16,8 +16,7 @@ limitations under the License.
 #include "xla/shape.h"
 
 #include <cstdint>
-#include <optional>
-#include <set>
+
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -58,10 +57,10 @@ class ShapeTest : public ::testing::Test {
   const Shape nested_tuple_ =
       ShapeUtil::MakeTupleShape({tuple_, matrix_, token_});
   const Shape dynamic_matrix_ =
-      ShapeUtil::MakeShape(S32, {5, 2}, std::vector<bool>{true, false}, {});
+      ShapeUtil::MakeShape(S32, {5, 2}, {true, false}, {});
   const Shape unbounded_ =
       ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784},
-                           std::vector<bool>{true, false}, {});
+                           {true, false}, {});
 };
 
 // Tests that if the dynamic_dimensions parameter is empty in the Shape
@@ -122,7 +121,7 @@ TEST_F(ShapeTest, ShapeToString) {
 
 TEST_F(ShapeTest, DynamicShapeToString) {
   Shape array_shape =
-      ShapeUtil::MakeShape(F32, {23, 44, 55}, std::vector<bool>{true, false, true}, {});
+      ShapeUtil::MakeShape(F32, {23, 44, 55}, {true, false, true}, {});
   EXPECT_EQ("f32[<=23,44,<=55]", array_shape.ToString());
 
   array_shape.set_dynamic_dimension(2, false);
