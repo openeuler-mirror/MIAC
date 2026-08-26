@@ -77,6 +77,15 @@ bool CompatibleDimensionSizes(int64_t size_a, int64_t size_b) {
          size_a == size_b;
 }
 
+DExpr SymbolicElementsIn(const Shape& shape) {
+  DExpr product = DExpr::Const(1);
+  for (int64_t i = 0; i < shape.dimensions_size(); ++i) {
+    const DExpr& expr = shape.expressions(i);
+    product = product * (expr ? expr : DExpr::Const(shape.dimensions(i)));
+  }
+  return product.simplify();
+}
+
 absl::Status ExpectArray(const Shape& shape, absl::string_view op_type) {
   if (!shape.IsArray()) {
     return InvalidArgument("Expected array argument for %s, but got %s.",
@@ -217,11 +226,14 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
           window.DebugString());
     }
 
-    if (IsUnboundedDynamicSize(ShapeUtil::GetDimension(base_shape, i))) {
+    const int64_t input_dimension = ShapeUtil::GetDimension(base_shape, i);
+    const DExpr& input_expression = base_shape.expressions(i);
+
+    if (IsUnboundedDynamicSize(input_dimension)) {
       output_dimensions[i] = Shape::kUnboundedSize;
     } else {
       const int64_t dilated_base = window_util::DilatedBound(
-          ShapeUtil::GetDimension(base_shape, i), dim.base_dilation());
+          input_dimension, dim.base_dilation());
       const int64_t padded_dilated_base =
           dim.padding_low() + dilated_base + dim.padding_high();
       const int64_t dilated_window =
@@ -231,7 +243,20 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
           padded_dilated_base, dilated_window, dim.stride());
     }
     output_is_dynamic[i] = base_shape.is_dynamic_dimension(i);
-    output_expressions[i] = base_shape.expressions(i);
+    if (input_expression && input_expression->is_constant()) {
+      output_expressions[i] = DExpr::Const(output_dimensions[i]);
+      continue;
+    }
+
+    DExpr dilated_base_expr =
+        ((dim.base_dilation() * (input_expression - 1)) + 1).simplify();
+    DExpr padded_dilated_base_expr =
+        (dilated_base_expr + dim.padding_low() + dim.padding_high()).simplify();
+    DExpr dilated_window_expr =
+        DExpr::Const(window_util::DilatedBound(dim.size(), dim.window_dilation()));
+    output_expressions[i] =
+        (((padded_dilated_base_expr - dilated_window_expr) / dim.stride()) + 1)
+            .simplify();
   }
 
   return ShapeUtil::MakeValidatedShape(element_type, output_dimensions,
@@ -2467,11 +2492,13 @@ ShapeInference::InferScalarBroadcastShape(absl::Span<const Shape> shapes) {
 
   std::vector<bool> dynamic_dimensions(input_spatial_dims.size());
   std::vector<DExpr> expressions(input_spatial_dims.size());
-  for (auto it = input_spatial_dims.begin(); it != input_spatial_dims.end();
-       ++it) {
-    dynamic_dimensions[it - input_spatial_dims.begin()] =
-        IsUnboundedDynamicSize(*it);
-    expressions[it - input_spatial_dims.begin()] = DExpr::Unknown(70);
+  for (int i = 0; i < input_spatial_dims.size(); ++i) {
+    const int64_t input_spatial_dimension =
+        dnums.input_spatial_dimensions(i);
+    dynamic_dimensions[i] = IsUnboundedDynamicSize(input_spatial_dims[i]);
+    expressions[i] = lhs.expressions(input_spatial_dimension)
+                         ? lhs.expressions(input_spatial_dimension)
+                         : DExpr::Const(input_spatial_dims[i]);
   }
   Shape base_shape = ShapeUtil::MakeShape(
       lhs.element_type(), input_spatial_dims, dynamic_dimensions,
@@ -3909,6 +3936,16 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
         ShapeUtil::ElementsIn(inferred_shape),
         ShapeUtil::HumanString(inferred_shape));
   }
+  if (!expressions.empty()) {
+    DExpr input_elements = SymbolicElementsIn(operand);
+    DExpr output_elements = SymbolicElementsIn(inferred_shape);
+    if (!DynExpr::equal(input_elements.get(), output_elements.get())) {
+      return InvalidArgument(
+          "Reshape operation has mismatched symbolic element counts: "
+          "from=%s to=%s.",
+          ShapeUtil::HumanString(operand), ShapeUtil::HumanString(inferred_shape));
+    }
+  }
 
   std::vector<int64_t> indices(operand.dimensions_size());
   std::iota(indices.begin(), indices.end(), 0);
@@ -4114,7 +4151,8 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
         ShapeUtil::HumanString(pred));
   }
 
-  Shape full_rank_shape = ShapeUtil::IsScalar(pred) ? on_true : pred;
+  const bool pred_is_scalar = ShapeUtil::IsScalar(pred);
+  Shape full_rank_shape = pred_is_scalar ? on_true : pred;
   Shape result = ShapeUtil::ChangeElementType(
       full_rank_shape,
       ShapeUtil::HigherPrecisionElementType(on_true, on_false));
@@ -4135,6 +4173,27 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
                       pred.is_dynamic_dimension(dimension)) ||
                          on_true.is_dynamic_dimension(dimension) ||
                          on_false.is_dynamic_dimension(dimension));
+    }
+    const DExpr& on_true_expr = on_true.expressions(dimension);
+    const DExpr& on_false_expr = on_false.expressions(dimension);
+    const DExpr& pred_expr =
+        pred_is_scalar ? on_true_expr : pred.expressions(dimension);
+    const bool has_dynamic_expression =
+        (on_true_expr && on_true_expr->is_dynamic()) ||
+        (on_false_expr && on_false_expr->is_dynamic()) ||
+        (!pred_is_scalar && pred_expr && pred_expr->is_dynamic());
+    if (has_dynamic_expression) {
+      if (!on_true_expr || !on_false_expr ||
+          !DynExpr::equal(on_true_expr, on_false_expr) ||
+          (!pred_is_scalar &&
+           (!pred_expr || !DynExpr::equal(pred_expr, on_true_expr)))) {
+        return InvalidArgument(
+            "Select operands have mismatched expressions in dimension %d: "
+            "pred=%s, on_true=%s, on_false=%s.",
+            dimension, ShapeUtil::HumanString(pred),
+            ShapeUtil::HumanString(on_true), ShapeUtil::HumanString(on_false));
+      }
+      result.set_expression(dimension, on_true_expr);
     }
   }
   if (result.has_layout()) {

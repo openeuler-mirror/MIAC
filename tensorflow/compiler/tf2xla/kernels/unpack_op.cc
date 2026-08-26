@@ -60,14 +60,21 @@ class UnpackOp : public XlaOpKernel {
     std::vector<int64_t> start_indices(input_shape.dims(), 0);
     std::vector<int64_t> limit_indices(input_shape.dims());
     std::vector<int64_t> strides(input_shape.dims(), 1);
+    std::vector<xla::DExpr> start_exprs(input_shape.dims(), xla::DExpr::Const(0));
+    std::vector<xla::DExpr> limit_exprs;
+    limit_exprs.reserve(input_shape.dims());
     for (int i = 0; i < input_shape.dims(); ++i) {
       limit_indices[i] = input_shape.dim_size(i);
+      limit_exprs.push_back(input_shape.get_filled_expression(i));
     }
 
     for (int i = 0; i < num; ++i) {
       start_indices[axis] = i;
       limit_indices[axis] = i + 1;
-      auto slice = xla::Slice(input, start_indices, limit_indices, strides);
+      start_exprs[axis] = xla::DExpr::Const(i);
+      limit_exprs[axis] = xla::DExpr::Const(i + 1);
+      auto slice = xla::Slice(input, start_indices, limit_indices, start_exprs,
+                              limit_exprs, strides);
       // Reshape to drop the 'axis' dimension.
       auto result = xla::Reshape(slice, output_shape.dim_sizes(),
                                  output_shape.get_filled_expressions());

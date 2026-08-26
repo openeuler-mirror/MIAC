@@ -30,8 +30,6 @@ namespace tensorflow {
 
 namespace {
 
-const bool kTensorShapeExpressionsEnabled = TensorShapeExpressionsEnabled();
-
 xla::DExpr DExprFromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case ExpressionProto::kConstantValue:
@@ -246,7 +244,7 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
     for (const auto& d : proto.dim()) {
       AddDim(d.size());
     }
-    if (kTensorShapeExpressionsEnabled) {
+    if (TensorShapeExpressionsEnabled()) {
       for (const auto& e : proto.expressions()) {
         AddExpression(DExprFromProto(e));
       }
@@ -290,7 +288,7 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
         }
       }
     }
-    if (kTensorShapeExpressionsEnabled) {
+    if (TensorShapeExpressionsEnabled()) {
       for (const auto& e : proto.expressions()) {
         out->AddExpression(DExprFromProto(e));
       }
@@ -480,7 +478,7 @@ void TensorShapeRep::Clear() {
 }
 
 void TensorShapeRep::set_expression(int d, xla::DExpr expr) {
-  if (!kTensorShapeExpressionsEnabled) {
+  if (!TensorShapeExpressionsEnabled()) {
     expressions_.clear();
     return;
   }
@@ -493,7 +491,7 @@ void TensorShapeRep::set_expression(int d, xla::DExpr expr) {
 }
 
 void TensorShapeRep::AddExpression(xla::DExpr expr) {
-  if (!kTensorShapeExpressionsEnabled) {
+  if (!TensorShapeExpressionsEnabled()) {
     return;
   }
   CHECK_LT(expressions_.size(), ndims_byte());
@@ -503,7 +501,7 @@ void TensorShapeRep::AddExpression(xla::DExpr expr) {
 }
 
 void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
-  if (!kTensorShapeExpressionsEnabled) {
+  if (!TensorShapeExpressionsEnabled()) {
     expressions_.clear();
     return;
   }
@@ -931,7 +929,7 @@ void TensorShapeBase<Shape>::AsProto(TensorShapeProto* proto) const {
     for (int i = 0; i < dims(); i++) {
       proto->add_dim()->set_size(dim_size(i));
     }
-    if (kTensorShapeExpressionsEnabled) {
+    if (TensorShapeExpressionsEnabled()) {
       for (int i = 0; i < get_expressions().size(); i++) {
         ExpressionProto* eproto = proto->add_expressions();
         ExprToProto(get_expression(i), eproto);
@@ -998,7 +996,7 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
     first = false;
   }
   strings::StrAppend(&s, "]");
-  if (kTensorShapeExpressionsEnabled) {
+  if (TensorShapeExpressionsEnabled()) {
     strings::StrAppend(&s, "<");
     first = true;
     for (const auto& e : proto.expressions()) {

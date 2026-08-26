@@ -373,6 +373,27 @@ class StridedSliceOp : public XlaOpKernel {
       if (!dimensions_to_reverse.empty()) {
         slice = xla::Rev(slice, dimensions_to_reverse);
       }
+      for (int i = 0; i < partial_processing_shape.dims(); ++i) {
+        partial_processing_shape.set_expression(
+            i, ((slice_end_expr[i] - slice_begin_expr[i] +
+                 xla::DExpr::Const(slice_strides[i]) - xla::DExpr::Const(1)) /
+                xla::DExpr::Const(slice_strides[i]))
+                   .simplify());
+      }
+      for (int i = 0; i < partial_final_shape.dims(); ++i) {
+        int64_t processing_index = shape_spec.output_to_processing_mapping[i];
+        partial_final_shape.set_expression(
+            i, processing_index == -1
+                   ? xla::DExpr::Const(partial_final_shape.dim_size(i))
+                   : partial_processing_shape.get_filled_expression(
+                         processing_index));
+      }
+      OP_REQUIRES(
+          ctx, partial_final_shape.AsTensorShape(&final_shape),
+          InvalidArgument("XLA can't deduce compile time constant output "
+                          "shape for strided slice: ",
+                          partial_final_shape.DebugString(),
+                          ", output shape must be a compile-time constant"));
       slice = enable_dynamic_sizes
                   ? xla::Slice(slice, slice_begin, slice_end, slice_begin_expr,
                                slice_end_expr, slice_strides)

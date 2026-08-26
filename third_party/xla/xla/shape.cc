@@ -308,7 +308,7 @@ void Shape::add_dimensions(int64_t value, bool is_dynamic, DExpr expr) {
   }
   UnsafeAddDimension(
       value, is_dynamic,
-      expr ? std::move(expr) : DExpr::Const(value));
+      expr.has_value() ? std::move(expr) : DExpr::Const(value));
 }
 
 void Shape::set_dynamic_dimension(int dimension, bool is_dynamic) {
@@ -321,7 +321,8 @@ void Shape::set_dynamic_dimension(int dimension, bool is_dynamic) {
 void Shape::set_expression(int dimension, DExpr e) {
   auto& state = array_state();
   state.expressions[dimension] =
-      e ? std::move(e) : DExpr::Const(state.dimensions[dimension]);
+      e.has_value() ? std::move(e)
+                    : DExpr::Const(state.dimensions[dimension]);
 }
 
 void Shape::set_expressions(std::vector<DExpr> exps) {
@@ -332,7 +333,7 @@ void Shape::set_expressions(std::vector<DExpr> exps) {
     state.expressions[i] = i < exps.size()
                                ? std::move(exps[i])
                                : DExpr::Const(state.dimensions[i]);
-    if (!state.expressions[i]) {
+    if (!state.expressions[i].has_value()) {
       state.expressions[i] = DExpr::Const(state.dimensions[i]);
     }
   }
@@ -376,7 +377,8 @@ void Shape::UnsafeAddDimension(int64_t value, bool is_dynamic, DExpr exp) {
       << "where the shape is " << ToString();
   state.dimensions.push_back(value);
   state.dynamic_dimensions.push_back(is_dynamic);
-  state.expressions.push_back(exp ? std::move(exp) : DExpr::Const(value));
+  state.expressions.push_back(
+      exp.has_value() ? std::move(exp) : DExpr::Const(value));
 }
 
 bool Shape::is_static() const {

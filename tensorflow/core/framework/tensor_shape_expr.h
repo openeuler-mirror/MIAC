@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -217,6 +218,10 @@ DimExpr* SimplifyExpr(DimExpr* expr,
 // Returns whether TensorShape should preserve symbolic expressions. The
 // Shape-expression support follows the `tf_xla_enable_dynamic_sizes` flag.
 bool TensorShapeExpressionsEnabled();
+
+// Overrides TensorShapeExpressionsEnabled for tests. Passing std::nullopt
+// restores the default environment-derived behavior.
+void SetTensorShapeExpressionsEnabledForTesting(std::optional<bool> enabled);
 
 // Returns true if the expression proto depends on a symbolic variable.
 bool IsDynamicDimExpr(const ExpressionProto& proto);

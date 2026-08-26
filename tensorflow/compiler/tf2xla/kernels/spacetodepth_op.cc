@@ -67,6 +67,7 @@ class SpaceToDepthOp : public XlaOpKernel {
     OP_REQUIRES_OK(ctx, input_xla_shape.status());
     absl::Span<const int64_t> input_shape =
         input_xla_shape.value().dimensions();
+    const xla::Shape& input_shape_with_exprs = input_xla_shape.value();
     int input_rank = input_shape.size();
 
     static const int kRequiredDims = 4;
@@ -80,9 +81,13 @@ class SpaceToDepthOp : public XlaOpKernel {
     std::vector<int64_t> reshaped_shape;
     std::vector<int64_t> transpose_order;
     std::vector<int64_t> output_shape;
+    std::vector<xla::DExpr> reshaped_exprs;
+    std::vector<xla::DExpr> output_exprs;
     reshaped_shape.reserve(input_rank);
     transpose_order.reserve(input_rank);
     output_shape.reserve(input_rank);
+    reshaped_exprs.reserve(input_rank + num_spatial_dims);
+    output_exprs.reserve(input_rank);
     if (data_format == FORMAT_NHWC) {
       int64_t block_elems = 1;
       for (int i = 0; i < num_spatial_dims; ++i) {
@@ -94,11 +99,18 @@ class SpaceToDepthOp : public XlaOpKernel {
       }
 
       reshaped_shape.push_back(input_shape[0]);
+      reshaped_exprs.push_back(input_shape_with_exprs.expressions(0));
       for (int i = 0; i < num_spatial_dims; ++i) {
         reshaped_shape.push_back(input_shape[1 + i] / block_size_);
+        reshaped_exprs.push_back(
+            (input_shape_with_exprs.expressions(1 + i) /
+             xla::DExpr::Const(block_size_))
+                .simplify());
         reshaped_shape.push_back(block_size_);
+        reshaped_exprs.push_back(xla::DExpr::Const(block_size_));
       }
       reshaped_shape.push_back(input_shape[feature_dim]);
+      reshaped_exprs.push_back(input_shape_with_exprs.expressions(feature_dim));
 
       transpose_order.push_back(0);
       for (int i = 0; i < num_spatial_dims; ++i) {
@@ -110,10 +122,19 @@ class SpaceToDepthOp : public XlaOpKernel {
       transpose_order.push_back(feature_dim + num_spatial_dims);
 
       output_shape.push_back(input_shape[0]);
+      output_exprs.push_back(input_shape_with_exprs.expressions(0));
       for (int i = 0; i < num_spatial_dims; ++i) {
         output_shape.push_back(input_shape[1 + i] / block_size_);
+        output_exprs.push_back(
+            (input_shape_with_exprs.expressions(1 + i) /
+             xla::DExpr::Const(block_size_))
+                .simplify());
       }
       output_shape.push_back(input_shape[feature_dim] * block_elems);
+      output_exprs.push_back(
+          (input_shape_with_exprs.expressions(feature_dim) *
+           xla::DExpr::Const(block_elems))
+              .simplify());
     } else {
       // FORMAT_NCHW
       int64_t block_elems = 1;
@@ -126,10 +147,17 @@ class SpaceToDepthOp : public XlaOpKernel {
       }
 
       reshaped_shape.push_back(input_shape[0]);
+      reshaped_exprs.push_back(input_shape_with_exprs.expressions(0));
       reshaped_shape.push_back(input_shape[feature_dim]);
+      reshaped_exprs.push_back(input_shape_with_exprs.expressions(feature_dim));
       for (int i = 0; i < num_spatial_dims; ++i) {
         reshaped_shape.push_back(input_shape[2 + i] / block_size_);
+        reshaped_exprs.push_back(
+            (input_shape_with_exprs.expressions(2 + i) /
+             xla::DExpr::Const(block_size_))
+                .simplify());
         reshaped_shape.push_back(block_size_);
+        reshaped_exprs.push_back(xla::DExpr::Const(block_size_));
       }
 
       transpose_order.push_back(0);
@@ -142,9 +170,18 @@ class SpaceToDepthOp : public XlaOpKernel {
       }
 
       output_shape.push_back(input_shape[0]);
+      output_exprs.push_back(input_shape_with_exprs.expressions(0));
       output_shape.push_back(input_shape[feature_dim] * block_elems);
+      output_exprs.push_back(
+          (input_shape_with_exprs.expressions(feature_dim) *
+           xla::DExpr::Const(block_elems))
+              .simplify());
       for (int i = 0; i < num_spatial_dims; ++i) {
         output_shape.push_back(input_shape[2 + i] / block_size_);
+        output_exprs.push_back(
+            (input_shape_with_exprs.expressions(2 + i) /
+             xla::DExpr::Const(block_size_))
+                .simplify());
       }
     }
 
@@ -156,7 +193,7 @@ class SpaceToDepthOp : public XlaOpKernel {
     //       input_shape[1] / block_size_, block_size_,
     //       input_shape[2] / block_size_, block_size_,
     //       depth]
-    xla::XlaOp reshaped = xla::Reshape(input, reshaped_shape);
+    xla::XlaOp reshaped = xla::Reshape(input, reshaped_shape, reshaped_exprs);
 
     // 2. Permute dimensions of `reshaped` to produce
     //    `permuted_reshaped` of shape:
@@ -176,7 +213,7 @@ class SpaceToDepthOp : public XlaOpKernel {
     //       input_shape[2] / block_size_,
     //       block_size_ * block_size_ * depth]
     //
-    xla::XlaOp output = xla::Reshape(permuted_reshaped, output_shape);
+    xla::XlaOp output = xla::Reshape(permuted_reshaped, output_shape, output_exprs);
 
     // If this used to be a vectorized format turn it back now.
     if (data_format != data_format_) {

@@ -1122,7 +1122,9 @@ TEST(XlaBuilderTest, DynamicParameter) {
 
 TEST(XlaBuilderTest, SetDimensionSize) {
   XlaBuilder b(TestName());
-  auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {10}), "p0");
+  auto p0 = Parameter(
+      &b, 0,
+      ShapeUtil::MakeShape(F32, {10}, {DExpr::Var(1)}), "p0");
   auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
   auto set_dim_size = SetDimensionSize(p0, p1, 0);
   TF_ASSERT_OK_AND_ASSIGN(const auto module,
@@ -1130,6 +1132,23 @@ TEST(XlaBuilderTest, SetDimensionSize) {
   const Shape& root_shape =
       module->entry_computation()->root_instruction()->shape();
   EXPECT_TRUE(root_shape.is_dynamic_dimension(0));
+  EXPECT_TRUE(root_shape.expressions(0).is_unknown());
+}
+
+TEST(XlaBuilderTest, SetDimensionSizeUsesSizeExpression) {
+  XlaBuilder b(TestName());
+  auto p0 = Parameter(
+      &b, 0,
+      ShapeUtil::MakeShape(F32, {10}, {DExpr::Var(1)}), "p0");
+  auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
+  ASSERT_TRUE(b.SetInstructionContents(p1, {DExpr::Var(2)}).ok());
+  auto set_dim_size = SetDimensionSize(p0, p1, 0);
+  TF_ASSERT_OK_AND_ASSIGN(const auto module,
+                          BuildHloModule(b, /*root=*/set_dim_size));
+  const Shape& root_shape =
+      module->entry_computation()->root_instruction()->shape();
+  EXPECT_TRUE(root_shape.is_dynamic_dimension(0));
+  EXPECT_TRUE(DynExpr::equal(root_shape.expressions(0), DExpr::Var(2)));
 }
 
 TEST(XlaBuilderTest, RemoveDynamicDimension) {

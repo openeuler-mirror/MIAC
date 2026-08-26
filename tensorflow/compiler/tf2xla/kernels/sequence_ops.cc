@@ -143,7 +143,7 @@ absl::StatusOr<xla::XlaOp> CreateRangeTensor(
           ? xla::Iota(builder,
                       xla::ShapeUtil::MakeShape(
                           xla::primitive_util::NativeToPrimitiveType<T>(),
-                          {size}, {size_expr}),
+                          {size}, std::vector<xla::DExpr>{size_expr}),
                       /*iota_dimension=*/0)
           : xla::Iota(builder, xla::primitive_util::NativeToPrimitiveType<T>(),
                       size);

@@ -104,7 +104,7 @@ class DynamicPartitionOp : public XlaOpKernel {
     xla::XlaOp valid_element = xla::Lt(input_index, dynamic_input_count);
     xla::XlaOp invalid_partition =
         xla::Broadcast(xla::ConstantR0<int32>(ctx->builder(), num_partitions_),
-                {input_count});
+                       {input_count}, partition_1d_shape.expressions());
     partitions_1d = xla::Select(valid_element, partitions_1d, invalid_partition);
 
     std::vector<xla::XlaOp> to_sort = {partitions_1d, data_1d};
@@ -213,11 +213,12 @@ class DynamicPartitionOp : public XlaOpKernel {
       {CollapseExpressions(flattened_partition_exprs)});
     xla::Shape data_1d_shape = xla::ShapeUtil::MakeShape(
         data_shape.element_type(), {input_count},
-        {xla::DExpr::Const(input_count)});
+        std::vector<xla::DExpr>{CollapseExpressions(data_exprs)});
 
     xla::Shape partitions_1d_shape = xla::ShapeUtil::MakeShape(
         partition_shape.element_type(), {input_count},
-        {xla::DExpr::Const(input_count)});
+        std::vector<xla::DExpr>{
+            CollapseExpressions(flattened_partition_exprs)});
 
     std::vector<xla::XlaOp> output, partition_length;
     std::tie(output, partition_length) = DynamicPartition1D(
