@@ -175,7 +175,9 @@ TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
 
   EXPECT_EQ((replacement + 2) * (replacement + 3),
             expr.replace_subexpression(shared_core, replacement));
-TEST_F(ShapeTest, DExprSubstitutionSimplifiesConstantDivision) {
+}
+
+  TEST_F(ShapeTest, DExprSubstitutionSimplifiesConstantDivision) {
   DExpr expr = (DExpr::Var(1) + 1) / 2;
   DExpr evaluated = expr.substitute(1, DExpr::Const(100)).simplify();
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
