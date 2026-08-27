@@ -6,12 +6,15 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/literal_util.h"
@@ -23,8 +26,16 @@
 namespace xla {
 namespace {
 
+struct RuntimeValueCacheEntry {
+  int32_t carrier_bound;
+  HloInstruction* runtime_value;
+};
+
+using RuntimeValueCache =
+    absl::flat_hash_map<std::string, RuntimeValueCacheEntry>;
+
 absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
-    HloInstruction* constant_instr) {
+    HloInstruction* constant_instr, RuntimeValueCache* runtime_value_cache) {
   TF_RET_CHECK(constant_instr->opcode() == HloOpcode::kConstant);
   TF_RET_CHECK(constant_instr->has_contents());
 
@@ -65,19 +76,41 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
   TF_RET_CHECK(carrier_bound <= std::numeric_limits<int32_t>::max() &&
                carrier_bound >= std::numeric_limits<int32_t>::min())
       << "GetExpressionValue carriers must fit in s32, got " << carrier_bound;
+  const int32_t carrier_bound_s32 = static_cast<int32_t>(carrier_bound);
+
+  DExpr canonical_expr = expr.simplify();
+  ExpressionProto expr_proto;
+  canonical_expr.to_proto(&expr_proto);
+  std::string cache_key = expr_proto.SerializeAsString();
 
   HloComputation* computation = constant_instr->parent();
-  HloInstruction* carrier = computation->AddInstruction(
-      HloInstruction::CreateConstant(
-          LiteralUtil::CreateR1<int32_t>(
-              {static_cast<int32_t>(carrier_bound)})));
-  ExpressionProto expr_proto;
-  expr.to_proto(&expr_proto);
+  HloInstruction* runtime_value = nullptr;
+  auto cached = runtime_value_cache->find(cache_key);
+  if (cached != runtime_value_cache->end()) {
+    // The runtime value depends only on the expression, but upper-bound
+    // inference uses the carrier. Keep the largest bound seen so the cached
+    // instruction is independent of traversal order.
+    if (carrier_bound_s32 > cached->second.carrier_bound) {
+      HloInstruction* carrier = cached->second.runtime_value->mutable_operand(0);
+      *Cast<HloConstantInstruction>(carrier)->mutable_literal() =
+          LiteralUtil::CreateR1<int32_t>({carrier_bound_s32});
+      cached->second.carrier_bound = carrier_bound_s32;
+    }
+    runtime_value = cached->second.runtime_value;
+  }
 
-  HloInstruction* runtime_value = computation->AddInstruction(
-      HloInstruction::CreateCustomCall(
-          ShapeUtil::MakeShape(S32, {}), {carrier}, "GetExpressionValue"));
-  runtime_value->set_contents({std::move(expr_proto)});
+  if (runtime_value == nullptr) {
+    HloInstruction* carrier = computation->AddInstruction(
+        HloInstruction::CreateConstant(
+            LiteralUtil::CreateR1<int32_t>({carrier_bound_s32})));
+    runtime_value = computation->AddInstruction(
+        HloInstruction::CreateCustomCall(
+            ShapeUtil::MakeShape(S32, {}), {carrier}, "GetExpressionValue"));
+    runtime_value->set_contents({std::move(expr_proto)});
+    runtime_value_cache->emplace(
+        std::move(cache_key),
+        RuntimeValueCacheEntry{carrier_bound_s32, runtime_value});
+  }
   if (shape.element_type() == S64) {
     runtime_value = computation->AddInstruction(HloInstruction::CreateConvert(
         ShapeUtil::MakeShape(S64, {}), runtime_value));
@@ -112,6 +145,7 @@ absl::StatusOr<bool> DynamicConstantRewriter::Run(
   bool changed = false;
   for (HloComputation* computation :
        module->MakeNonfusionComputations(execution_threads)) {
+    RuntimeValueCache runtime_value_cache;
     std::vector<HloInstruction*> marked_constants;
     for (HloInstruction* instruction : computation->MakeInstructionPostOrder()) {
       if (instruction->opcode() == HloOpcode::kConstant) {
@@ -133,7 +167,8 @@ absl::StatusOr<bool> DynamicConstantRewriter::Run(
         continue;
       }
       TF_ASSIGN_OR_RETURN(HloInstruction * replacement,
-                          BuildDynamicConstantReplacement(constant_instr));
+                          BuildDynamicConstantReplacement(
+                              constant_instr, &runtime_value_cache));
       VLOG(1) << "Rewriting marked constant " << constant_instr->name()
               << " into " << replacement->name() << " ("
               << HloOpcodeString(replacement->opcode()) << ")";
