@@ -228,7 +228,8 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
 
     const int64_t input_dimension = ShapeUtil::GetDimension(base_shape, i);
     const DExpr& input_expression = base_shape.expressions(i);
-
+    const int64_t dilated_window =
+        window_util::DilatedBound(dim.size(), dim.window_dilation());
     if (IsUnboundedDynamicSize(input_dimension)) {
       output_dimensions[i] = Shape::kUnboundedSize;
     } else {
@@ -236,9 +237,6 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
           input_dimension, dim.base_dilation());
       const int64_t padded_dilated_base =
           dim.padding_low() + dilated_base + dim.padding_high();
-      const int64_t dilated_window =
-          window_util::DilatedBound(dim.size(), dim.window_dilation());
-
       output_dimensions[i] = window_util::StridedBound(
           padded_dilated_base, dilated_window, dim.stride());
     }
@@ -248,15 +246,20 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
       continue;
     }
 
-    DExpr dilated_base_expr =
-        ((dim.base_dilation() * (input_expression - 1)) + 1).simplify();
+    DExpr dilated_base_expr = input_expression;
+    if (dim.base_dilation() != 1) {
+      dilated_base_expr =
+          DExpr::Max((dim.base_dilation() * (input_expression - 1)) + 1,
+                     DExpr::Const(0))
+              .simplify();
+    }
     DExpr padded_dilated_base_expr =
         (dilated_base_expr + dim.padding_low() + dim.padding_high()).simplify();
-    DExpr dilated_window_expr =
-        DExpr::Const(window_util::DilatedBound(dim.size(), dim.window_dilation()));
+    DExpr strided_bound_expr =
+        (padded_dilated_base_expr - dilated_window + 1 + dim.stride() - 1) /
+        dim.stride();
     output_expressions[i] =
-        (((padded_dilated_base_expr - dilated_window_expr) / dim.stride()) + 1)
-            .simplify();
+        DExpr::Max(strided_bound_expr, DExpr::Const(0)).simplify();
   }
 
   return ShapeUtil::MakeValidatedShape(element_type, output_dimensions,

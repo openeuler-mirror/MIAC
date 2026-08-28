@@ -1,6 +1,7 @@
 #ifndef TENSORFLOW_CORE_FRAMEWORK_TENSOR_SHAPE_EXPR_H_
 #define TENSORFLOW_CORE_FRAMEWORK_TENSOR_SHAPE_EXPR_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -18,6 +19,9 @@ class ExprAdd;
 class ExprSub;
 class ExprMul;
 class ExprDiv;
+class ExprMax;
+class ExprGt;
+class ExprSelect;
 
 // DimExpr: Base class for symbolic expressions representing dynamic dimension
 // sizes. These expressions form a DAG that tracks how unknown dimensions relate
@@ -27,6 +31,9 @@ class ExprDiv;
 //   - Var(sym_id): A symbolic variable representing an unknown dimension
 //   - Const(k): A known constant value
 //   - Add/Sub/Mul/Div(lhs, rhs): Binary arithmetic operations
+//   - Max(lhs, rhs): Maximum of two expressions
+//   - Gt(lhs, rhs): Integer predicate (1 if lhs > rhs, otherwise 0)
+//   - Select(pred, on_true, on_false): Conditional expression
 //
 // INVARIANT: An unknown dimension is not just -1, it is -1 + Var(sym).
 class DimExpr {
@@ -38,6 +45,9 @@ class DimExpr {
     kSub,
     kMul,
     kDiv,
+    kMax,
+    kGt,
+    kSelect,
   };
 
   virtual ~DimExpr() = default;
@@ -84,7 +94,8 @@ class Constant final : public DimExpr {
   int64_t value_;
 };
 
-// Variable expression node: represents a symbolic unknown dimension
+// Variable expression node: represents a strictly positive unknown dimension.
+// Potentially signed values are represented by expressions derived from it.
 class Variable final : public DimExpr {
  public:
   explicit Variable(int32_t id) : id_(id) {}
@@ -207,6 +218,82 @@ class ExprDiv final : public DimExpr {
  private:
   DimExpr* lhs_;
   DimExpr* rhs_;
+};
+
+class ExprMax final : public DimExpr {
+ public:
+  ExprMax(DimExpr* lhs, DimExpr* rhs) : lhs_(lhs), rhs_(rhs) {}
+
+  Kind kind() const override { return Kind::kMax; }
+  void ToProto(ExpressionProto* proto) const override {
+    auto* max_msg = proto->mutable_max_node();
+    lhs_->ToProto(max_msg->mutable_lhs());
+    rhs_->ToProto(max_msg->mutable_rhs());
+  }
+  bool IsConstant() const override {
+    return lhs_->IsConstant() && rhs_->IsConstant();
+  }
+  int64_t ConstantValue() const override {
+    return std::max(lhs_->ConstantValue(), rhs_->ConstantValue());
+  }
+  DimExpr* lhs() const { return lhs_; }
+  DimExpr* rhs() const { return rhs_; }
+
+ private:
+  DimExpr* lhs_;
+  DimExpr* rhs_;
+};
+
+class ExprGt final : public DimExpr {
+ public:
+  ExprGt(DimExpr* lhs, DimExpr* rhs) : lhs_(lhs), rhs_(rhs) {}
+  Kind kind() const override { return Kind::kGt; }
+  void ToProto(ExpressionProto* proto) const override {
+    auto* msg = proto->mutable_gt_node();
+    lhs_->ToProto(msg->mutable_lhs());
+    rhs_->ToProto(msg->mutable_rhs());
+  }
+  bool IsConstant() const override {
+    return lhs_->IsConstant() && rhs_->IsConstant();
+  }
+  int64_t ConstantValue() const override {
+    return lhs_->ConstantValue() > rhs_->ConstantValue();
+  }
+  DimExpr* lhs() const { return lhs_; }
+  DimExpr* rhs() const { return rhs_; }
+
+ private:
+  DimExpr* lhs_;
+  DimExpr* rhs_;
+};
+
+class ExprSelect final : public DimExpr {
+ public:
+  ExprSelect(DimExpr* pred, DimExpr* on_true, DimExpr* on_false)
+      : pred_(pred), on_true_(on_true), on_false_(on_false) {}
+  Kind kind() const override { return Kind::kSelect; }
+  void ToProto(ExpressionProto* proto) const override {
+    auto* msg = proto->mutable_select_node();
+    pred_->ToProto(msg->mutable_pred());
+    on_true_->ToProto(msg->mutable_on_true());
+    on_false_->ToProto(msg->mutable_on_false());
+  }
+  bool IsConstant() const override {
+    return pred_->IsConstant() && on_true_->IsConstant() &&
+           on_false_->IsConstant();
+  }
+  int64_t ConstantValue() const override {
+    return pred_->ConstantValue() != 0 ? on_true_->ConstantValue()
+                                       : on_false_->ConstantValue();
+  }
+  DimExpr* pred() const { return pred_; }
+  DimExpr* on_true() const { return on_true_; }
+  DimExpr* on_false() const { return on_false_; }
+
+ private:
+  DimExpr* pred_;
+  DimExpr* on_true_;
+  DimExpr* on_false_;
 };
 
 // Simplify an expression tree: constant folding and algebraic identities.

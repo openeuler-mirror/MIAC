@@ -52,6 +52,21 @@ xla::DExpr DExprFromProto(const ExpressionProto& proto) {
       const auto& div = proto.div_node();
       return DExprFromProto(div.lhs()) / DExprFromProto(div.rhs());
     }
+    case ExpressionProto::kMaxNode: {
+      const auto& max = proto.max_node();
+      return xla::DExpr::Max(DExprFromProto(max.lhs()),
+                             DExprFromProto(max.rhs()));
+    }
+    case ExpressionProto::kGtNode: {
+      const auto& gt = proto.gt_node();
+      return xla::DExpr::Gt(DExprFromProto(gt.lhs()), DExprFromProto(gt.rhs()));
+    }
+    case ExpressionProto::kSelectNode: {
+      const auto& select = proto.select_node();
+      return xla::DExpr::Select(DExprFromProto(select.pred()),
+                                DExprFromProto(select.on_true()),
+                                DExprFromProto(select.on_false()));
+    }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
       return xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
@@ -104,6 +119,30 @@ void ExprToProto(const xla::DExpr& expr, ExpressionProto* proto) {
                   div->mutable_lhs());
       ExprToProto(xla::DExpr(node.get_rhs()->clone()),
                   div->mutable_rhs());
+      return;
+    }
+    case xla::DExpr::Kind::kMax: {
+      auto* max = proto->mutable_max_node();
+      const auto& node = static_cast<xla::MaxExpr&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_lhs()->clone()), max->mutable_lhs());
+      ExprToProto(xla::DExpr(node.get_rhs()->clone()), max->mutable_rhs());
+      return;
+    }
+    case xla::DExpr::Kind::kGt: {
+      auto* gt = proto->mutable_gt_node();
+      const auto& node = static_cast<xla::GtExpr&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_lhs()->clone()), gt->mutable_lhs());
+      ExprToProto(xla::DExpr(node.get_rhs()->clone()), gt->mutable_rhs());
+      return;
+    }
+    case xla::DExpr::Kind::kSelect: {
+      auto* select = proto->mutable_select_node();
+      const auto& node = static_cast<xla::SelectExpr&>(*expr.get());
+      ExprToProto(xla::DExpr(node.get_pred()->clone()), select->mutable_pred());
+      ExprToProto(xla::DExpr(node.get_on_true()->clone()),
+                  select->mutable_on_true());
+      ExprToProto(xla::DExpr(node.get_on_false()->clone()),
+                  select->mutable_on_false());
       return;
     }
   }

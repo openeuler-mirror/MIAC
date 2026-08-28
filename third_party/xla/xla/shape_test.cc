@@ -178,7 +178,7 @@ TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
             expr.replace_subexpression(shared_core, replacement));
 }
 
-  TEST_F(ShapeTest, DExprSubstitutionSimplifiesConstantDivision) {
+TEST_F(ShapeTest, DExprSubstitutionSimplifiesConstantDivision) {
   DExpr expr = (DExpr::Var(1) + 1) / 2;
   DExpr evaluated = expr.substitute(1, DExpr::Const(100)).simplify();
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
@@ -188,6 +188,78 @@ TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
 TEST_F(ShapeTest, DExprSimplifyRejectsDivisionByZero) {
   EXPECT_DEATH((DExpr::Const(0) / DExpr::Const(0)).simplify(),
                "Cannot simplify division by zero");
+}
+
+TEST_F(ShapeTest, DExprSolveRejectsZeroDivisor) {
+  DExpr expr = DExpr::Var(1) / DExpr::Const(0);
+  EXPECT_FALSE(expr->solve(7).has_value());
+}
+
+TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
+  DExpr expr = DExpr::Max(DExpr::Var(1), DExpr::Const(4));
+  EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
+
+  DExpr clamped = DExpr::Max(DExpr::Var(1), DExpr::Const(0));
+  EXPECT_EQ("A", DExprToString(clamped.simplify()));
+
+  DExpr derived_clamped =
+      DExpr::Max(DExpr::Var(1) - 3, DExpr::Const(0));
+  DExpr derived_clamped_value =
+      derived_clamped.substitute(1, DExpr::Const(1)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, derived_clamped_value.kind());
+  EXPECT_EQ(0, derived_clamped_value->get_val());
+
+  DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
+  EXPECT_EQ(7, evaluated->get_val());
+
+  DExpr divided =
+      DExpr::Max((DExpr::Var(1) + 1) / 2, DExpr::Const(0));
+  DExpr divided_evaluated =
+      divided.substitute(1, DExpr::Const(100)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, divided_evaluated.kind());
+  EXPECT_EQ(50, divided_evaluated->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprMaxPartiallySolvesSelectedDynamicBranch) {
+  DExpr expr = DExpr::Max(DExpr::Var(1) - 2, DExpr::Const(0));
+  EXPECT_EQ(100, expr->solve(98));
+
+  DExpr reversed = DExpr::Max(DExpr::Const(0), DExpr::Var(1) - 2);
+  EXPECT_EQ(100, reversed->solve(98));
+
+  // A result equal to the constant bound may come from either branch.
+  EXPECT_FALSE(expr->solve(0).has_value());
+  // A result below the constant bound cannot be produced by Max.
+  EXPECT_FALSE(expr->solve(-1).has_value());
+}
+
+TEST_F(ShapeTest, DExprSelectUsesDynamicPredicate) {
+  DExpr delta = DExpr::Var(1) - 3;
+  DExpr expr = DExpr::Select(DExpr::Gt(delta, DExpr::Const(0)),
+                             DExpr::Const(7), DExpr::Const(11));
+  EXPECT_EQ("select(((A - 3) > 0), 7, 11)",
+            DExprToString(expr.simplify()));
+  EXPECT_EQ(7, expr.substitute(1, DExpr::Const(5))->s()->get_val());
+  EXPECT_EQ(11, expr.substitute(1, DExpr::Const(1))->s()->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprUnknownPropagatesThroughGtAndSelect) {
+  DExpr gt = DExpr::Gt(DExpr::Unknown(), DExpr::Const(0)).simplify();
+  EXPECT_TRUE(gt.is_unknown());
+
+  DExpr select =
+      DExpr::Select(DExpr::Unknown(), DExpr::Const(7), DExpr::Const(11))
+          .simplify();
+  EXPECT_TRUE(select.is_unknown());
 }
 
 TEST_F(ShapeTest, DeleteDimensions) {

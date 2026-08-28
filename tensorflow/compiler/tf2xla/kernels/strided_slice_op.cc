@@ -348,8 +348,8 @@ class StridedSliceOp : public XlaOpKernel {
           slice_begin.push_back(begin[i]);
           slice_begin_expr.push_back(begin_expr[i]);
           slice_end.push_back(std::max(end[i], begin[i]));
-          slice_end_expr.push_back((end[i] > begin[i]) ? end_expr[i]
-                                                       : begin_expr[i]);
+          slice_end_expr.push_back(
+              xla::DExpr::Max(end_expr[i], begin_expr[i]).simplify());
           slice_strides.push_back(strides[i]);
         } else {
           // Negative stride: swap begin and end, add 1 because the interval
@@ -361,11 +361,11 @@ class StridedSliceOp : public XlaOpKernel {
           slice_end.push_back(std::max(input_shape.dim_size(i) - end[i] - 1,
                                        input_shape.dim_size(i) - begin[i] - 1));
           slice_end_expr.push_back(
-              (end[i] < begin[i])
-                  ? (input_expr - end_expr[i] - xla::DExpr::Const(1))
-                        .simplify()
-                  : (input_expr - begin_expr[i] - xla::DExpr::Const(1))
-                        .simplify());
+              xla::DExpr::Max(
+                  (input_expr - end_expr[i] - xla::DExpr::Const(1)).simplify(),
+                  (input_expr - begin_expr[i] - xla::DExpr::Const(1))
+                      .simplify())
+                  .simplify());
           slice_strides.push_back(-strides[i]);
           dimensions_to_reverse.push_back(i);
         }
