@@ -2015,6 +2015,18 @@ cc_library(
     hdrs = ["xla_batch_matcher.h"],
     deps = [
         "//tensorflow/core/platform:logging",
+        "//tensorflow/core/platform:mutex",
+        "@com_google_absl//absl/strings",
         "@local_xla//xla:debug_options_flags",
+    ],
+)
+
+tf_cc_test(
+    name = "xla_batch_matcher_test",
+    srcs = ["xla_batch_matcher_test.cc"],
+    deps = [
+        ":xla_batch_matcher",
+        "//tensorflow/core:test",
+        "@com_google_googletest//:gtest_main",
     ],
 )

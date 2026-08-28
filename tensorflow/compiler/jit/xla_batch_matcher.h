@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
+#include "tensorflow/core/platform/mutex.h"
 
 namespace tensorflow {
 
@@ -48,7 +49,9 @@ class XlaBatchMatcher {
 
     int64_t find_min_larger_batch(ClusterState* state, int64_t real_batch);
 
-    absl::flat_hash_map<std::string, ClusterState> clusters_;
+    mutex mu_;
+    absl::flat_hash_map<std::string, ClusterState> clusters_
+        TF_GUARDED_BY(mu_);
     std::string env_str_;
 };
 

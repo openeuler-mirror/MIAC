@@ -211,7 +211,8 @@ absl::Status ValidateStridedSliceOp(
   absl::InlinedVector<xla::DExpr, 4UL> b;
   absl::InlinedVector<xla::DExpr, 4UL> e;
 
-  // HACK
+  // Callers that only request concrete bounds still need matching expressions
+  // for the shared validation logic below.
   if (begin_expr == nullptr) {
     for (int i : *begin) {
       b.push_back(xla::DExpr::Const(i));
@@ -227,7 +228,7 @@ absl::Status ValidateStridedSliceOp(
 
   if (input_shape.unknown_rank()) {
     // Note: If the rank is unknown, "input_shape.dims()" is -1.
-  return errors::InvalidArgument("Unexpected input_shape with unknown rank");
+    return errors::InvalidArgument("Unexpected input_shape with unknown rank");
   }
 
   const bool begin_is_wrong =

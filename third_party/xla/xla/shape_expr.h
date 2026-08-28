@@ -66,7 +66,9 @@ class DynExpr {
   virtual std::set<int> get_all_ids() = 0;
   virtual std::optional<int64_t> solve(int64_t x) = 0;
 
-  bool is_dynamic() { return !is_constant(); }
+  bool is_dynamic() const {
+    return kind() != DExprKind::kUnknown && !is_constant();
+  }
 
   static DynExpr* zero;
   static DynExpr* one;
@@ -194,7 +196,7 @@ class UnknownExpr : public DynExpr {
   void to_proto(xla::ExpressionProto* proto) const override {
     (void)proto;
   }
-  bool is_constant() const override { return true; }
+  bool is_constant() const override { return false; }
   int get_id() const { return id_; }
   DynExpr* substitute(int id, DynExpr* v) override {
     (void)id;
