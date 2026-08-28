@@ -101,6 +101,8 @@ limitations under the License.
 namespace tensorflow {
 
 namespace {
+constexpr char kUserInferredValueContentsAttrName[] =
+    "_user_inferred_value_contents";
 using XlaDeviceCompiler =
     DeviceCompiler<xla::LocalExecutable, xla::LocalClient>;
 using PjRtDeviceCompiler =
@@ -567,43 +569,53 @@ absl::Status CompileToLocalExecutable(
             return;
           }
 
+          auto inferred_shape_it = attr_map.find("user_inferred_shape");
+          auto inferred_contents_it =
+              attr_map.find(kUserInferredValueContentsAttrName);
           bool has_dynamic = false;
           auto has_dynamic_it = attr_map.find("has_dynamic");
-          if (has_dynamic_it == attr_map.end()) {
-            return;
-          }
-          has_dynamic = has_dynamic_it->second.b();
-          if (!has_dynamic) {
-            return;
+          if (has_dynamic_it != attr_map.end()) {
+            has_dynamic = has_dynamic_it->second.b();
           }
 
-          auto inferred_shape_it = attr_map.find("user_inferred_shape");
-          if (inferred_shape_it == attr_map.end()) {
-            VLOG(1) << "XlaCompileOp saw has_dynamic for const arg "
-                      << arg_index << " node=" << node_name
-                      << " but no user_inferred_shape attr";
+          if (inferred_contents_it == attr_map.end() &&
+              (!has_dynamic || inferred_shape_it == attr_map.end())) {
             return;
           }
 
           TensorShapeProto inferred_shape_proto;
-          inferred_shape_proto = inferred_shape_it->second.shape();
+          if (inferred_contents_it != attr_map.end()) {
+            if (!inferred_shape_proto.ParseFromString(
+                    inferred_contents_it->second.s())) {
+              return;
+            }
+          } else {
+            inferred_shape_proto = inferred_shape_it->second.shape();
+          }
 
-          TensorShape inferred_shape(inferred_shape_proto);
-          if (!TensorShapeUtils::IsVector(arg.constant_value.shape()) ||
-              arg.constant_value.NumElements() != inferred_shape.dims()) {
-            VLOG(1) << "XlaCompileOp const arg " << arg_index
-                      << " node=" << node_name
-                      << " has dynamic shape metadata but tensor shape "
-                      << arg.constant_value.shape().DebugString()
-                      << " does not match inferred rank " << inferred_shape.dims();
+          const int64_t content_count = inferred_shape_proto.dim_size();
+          if (!((TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
+                 arg.constant_value.NumElements() == content_count) ||
+                (TensorShapeUtils::IsScalar(arg.constant_value.shape()) &&
+                 content_count == 1))) {
             return;
           }
 
           arg.constant_value_expressions.clear();
-          arg.constant_value_expressions.reserve(inferred_shape.dims());
-          for (int64_t i = 0; i < inferred_shape.dims(); ++i) {
+          arg.constant_value_expressions.reserve(content_count);
+          for (int64_t i = 0; i < content_count; ++i) {
             xla::ExpressionProto expr;
-            const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
+            xla::DExpr dim_expr =
+                xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+            if (i < inferred_shape_proto.expressions_size()) {
+              xla::ExpressionProto expression_proto;
+              if (!expression_proto.ParseFromString(
+                      inferred_shape_proto.expressions(i).SerializeAsString())) {
+                arg.constant_value_expressions.clear();
+                return;
+              }
+              dim_expr = xla::DExprFromProto(expression_proto);
+            }
             if (dim_expr && dim_expr->is_dynamic()) {
               xla::DExpr normalized_expr =
                   normalize_dynamic_expr(dim_expr);
@@ -613,18 +625,11 @@ absl::Status CompileToLocalExecutable(
             } else if (arg.constant_value.dtype() == DT_INT64) {
               expr.set_constant_value(arg.constant_value.flat<int64_t>()(i));
             } else {
-              VLOG(1) << "XlaCompileOp const arg " << arg_index
-                        << " node=" << node_name
-                        << " has unsupported dtype for inferred shape contents: "
-                        << DataTypeString(arg.constant_value.dtype());
               arg.constant_value_expressions.clear();
               return;
             }
             arg.constant_value_expressions.push_back(std::move(expr));
           }
-          VLOG(1) << "XlaCompileOp recovered " << arg.constant_value_expressions.size()
-                    << " constant_value_expressions for const arg " << arg_index
-                    << " node=" << node_name << " from user_inferred_shape";
         };
     auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DExpr expr) {
       if (!saw_dynamic_dim_value) {
