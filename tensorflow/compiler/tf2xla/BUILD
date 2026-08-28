@@ -1576,6 +1576,7 @@ cc_library(
     deps = [
         ":xla_compiler",
         ":xla_expression",
+        "//tensorflow/compiler/jit:flags",
         "//tensorflow/compiler/jit:xla_compile_util",
         "//tensorflow/compiler/mlir/tf2xla/api/v1:compile_mlir_util_no_tf_dialect_passes",
         "//tensorflow/compiler/mlir/utils:array_container_utils",

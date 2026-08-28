@@ -19,6 +19,7 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <set>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -43,6 +44,8 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 
 namespace tensorflow {
+
+class MlirXlaOpKernel;
 
 // Names of the XLA compilation devices. These are not user-visible, and are
 // used internally by the Tensorflow/XLA bridge to perform symbolic execution of
@@ -233,6 +236,10 @@ class XlaOpRegistry {
   // Returns all operations for which there are XLA kernels on any device.
   static std::vector<string> GetAllRegisteredOps();
 
+  // Returns true if the operation is lowered exclusively through
+  // MlirXlaOpKernel.
+  static bool IsMlirXlaOp(absl::string_view op);
+
   // Returns (via `result`) the indices of inputs to `node_def` that must be
   // compile-time constants. Returns an empty vector if the op is not
   // registered.
@@ -339,6 +346,8 @@ class XlaOpRegistry {
     // operands and not their values.
     bool is_metadata_op = false;
 
+    bool uses_mlir_kernel = false;
+
     std::string label;
 
     // Factory used to build OpKernels that perform symbolic execution.
@@ -382,6 +391,9 @@ class XlaOpRegistry {
 
 #define REGISTER_XLA_OP(NAME, OP) \
   REGISTER_XLA_OP_UNIQ_HELPER(__COUNTER__, NAME, OP)
+
+#define REGISTER_XLA_OP_FACTORY(NAME, FACTORY) \
+  REGISTER_XLA_OP_FACTORY_UNIQ_HELPER(__COUNTER__, NAME, FACTORY)
 
 #define REGISTER_XLA_CONV_OP(BUILDER, OP)                                      \
   REGISTER_XLA_OP(BUILDER.TypeConstraint("T", GetXlaConvTypesForNonGpu()), OP) \
@@ -431,7 +443,7 @@ class XlaOpRegistrationBuilder {
   XlaOpRegistrationBuilder& Label(std::string label);
 
   std::unique_ptr<XlaOpRegistry::OpRegistration> Build(
-      XlaOpRegistry::Factory factory);
+      XlaOpRegistry::Factory factory, bool uses_mlir_kernel = false);
 
  private:
   XlaOpRegistrationBuilder(absl::string_view name);
@@ -454,11 +466,19 @@ class XlaOpRegistrar {
 #define REGISTER_XLA_OP_UNIQ_HELPER(COUNTER, BUILDER, OP) \
   REGISTER_XLA_OP_UNIQ(COUNTER, BUILDER, OP)
 
+#define REGISTER_XLA_OP_FACTORY_UNIQ_HELPER(COUNTER, BUILDER, FACTORY) \
+  REGISTER_XLA_OP_FACTORY_UNIQ(COUNTER, BUILDER, FACTORY)
+
 #define REGISTER_XLA_OP_UNIQ(CTR, BUILDER, OP)                                 \
   static ::tensorflow::XlaOpRegistrar xla_op_registrar__body__##CTR##__object( \
       ::tensorflow::XlaOpRegistrationBuilder::BUILDER.Build(                   \
           [](::tensorflow::OpKernelConstruction* context)                      \
-              -> ::tensorflow::OpKernel* { return new OP(context); }));
+              -> ::tensorflow::OpKernel* { return new OP(context); },           \
+          std::is_same_v<OP, ::tensorflow::MlirXlaOpKernel>));
+
+#define REGISTER_XLA_OP_FACTORY_UNIQ(CTR, BUILDER, FACTORY)                    \
+  static ::tensorflow::XlaOpRegistrar xla_op_registrar__body__##CTR##__object( \
+      ::tensorflow::XlaOpRegistrationBuilder::BUILDER.Build(FACTORY));
 
 class XlaBackendRegistrar {
  public:
