@@ -1182,6 +1182,15 @@ TEST(ShapeUtilTest, DeleteDimensions) {
             ShapeUtil::MakeShapeWithDenseLayout(F32, {5, 2}, {1, 0}));
 }
 
+TEST(ShapeUtilTest, MakeShapeWithDenseLayoutPreservesExpressions) {
+  std::vector<DExpr> expressions = {DExpr::Var(7), DExpr::Const(24)};
+  Shape shape = ShapeUtil::MakeShapeWithDenseLayout(
+      F32, {10, 24}, expressions, {1, 0});
+
+  EXPECT_TRUE(shape.expressions(0) == DExpr::Var(7));
+  EXPECT_TRUE(shape.expressions(1) == DExpr::Const(24));
+}
+
 TEST(ShapeUtilTest, MakeShapeWithDescendingLayoutAndSamePhysicalLayout) {
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {128, 24, 4, 48, 48},
                                                     {2, 4, 3, 1, 0});
@@ -1204,6 +1213,24 @@ TEST(ShapeUtilTest,
                            {false, false, false, false, true});
   *expected_shape.mutable_layout() = LayoutUtil::MakeLayout({4, 3, 2, 1, 0});
   EXPECT_EQ(new_shape, expected_shape);
+}
+
+TEST(ShapeUtilTest,
+     MakeShapeWithDescendingLayoutAndSamePhysicalLayoutPreservesExpressions) {
+  std::vector<DExpr> expressions = {DExpr::Var(1), DExpr::Const(24),
+                                    DExpr::Var(2), DExpr::Const(48),
+                                    DExpr::Const(48)};
+  Shape shape = ShapeUtil::MakeShapeWithDenseLayout(
+      F32, {128, 24, 4, 48, 48}, expressions, {2, 4, 3, 1, 0});
+
+  Shape new_shape =
+      ShapeUtil::MakeShapeWithDescendingLayoutAndSamePhysicalLayout(shape);
+
+  EXPECT_TRUE(new_shape.expressions(0) == DExpr::Var(1));
+  EXPECT_TRUE(new_shape.expressions(1) == DExpr::Const(24));
+  EXPECT_TRUE(new_shape.expressions(2) == DExpr::Const(48));
+  EXPECT_TRUE(new_shape.expressions(3) == DExpr::Const(48));
+  EXPECT_TRUE(new_shape.expressions(4) == DExpr::Var(2));
 }
 
 TEST(ShapeUtilTest, DeduceTransposeDimensionsForBitcast) {
