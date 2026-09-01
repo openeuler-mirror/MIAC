@@ -475,8 +475,10 @@ class ShapeUtil {
   static Shape MakeShape(PrimitiveType element_type,
                          absl::Span<const int64_t> dimensions,
                          const std::vector<bool>& dynamic_dimensions,
-                         absl::Span<const DExpr> expressions){
-    return MakeValidatedShape(element_type, dimensions, dynamic_dimensions, expressions).value();
+                         absl::Span<const DExpr> expressions = {}) {
+    return MakeValidatedShape(element_type, dimensions, dynamic_dimensions,
+                              expressions)
+        .value();
   }
   // Constructs a new buffer shape with the given element type, and sequence of
   // dimensions.
