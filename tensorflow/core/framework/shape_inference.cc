@@ -1107,7 +1107,7 @@ absl::Status InferenceContext::Divide(DimensionHandle dividend,
   const bool divisor_known = ValueKnown(divisor);
 
   // Validate divisor if known.
-  if (divisor_known && Value(divisor) <= 0) {
+  if ((!divisor.dim.IsSet() || divisor_known) && Value(divisor) <= 0) {
     return errors::InvalidArgument("Divisor must be positive but is ",
                                    Value(divisor));
   }
