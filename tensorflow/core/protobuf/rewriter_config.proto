@@ -131,18 +131,21 @@ message RewriterConfig {
   // Simplify Gather/GatherV2 over Pack with static indices into a smaller Pack
   // when the gather indexes the pack axis (default is ON).
   Toggle simplify_gather_of_pack = 33;
+  // Factorize MatMul inputs that concatenate varying rows with a broadcasted
+  // input, so the broadcasted contribution is computed once (default is ON).
+  Toggle broadcasted_matmul_factorization = 34;
   // Freeze allowlisted read-only variables into Const nodes at SavedModel
   // load time (default is ON). This runs before Session::Create, so it is
   // not part of the grappler meta-optimizer pipeline; it is checked directly
   // by the SavedModel loader.
-  Toggle freeze_allowlisted_variables = 34;
+  Toggle freeze_allowlisted_variables = 35;
   // Maximum tensor size in MiB for freezing allowlisted variables into Const
   // nodes at SavedModel load time.
   // Supports fractional values, e.g. 1.5 for 1.5 MiB.
   // The value is converted to bytes by multiplying by 2^20 and truncating
   // toward zero, so the effective limit never exceeds the configured MiB.
   // Only effective when freeze_allowlisted_variables is not OFF.
-  double freeze_max_tensor_mib = 35;
+  double freeze_max_tensor_mib = 36;
   // Optimizers registered by plugin (default is ON)
   Toggle use_plugin_optimizers = 28;
   // Conditional code motion (default is ON).
