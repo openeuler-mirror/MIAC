@@ -1028,7 +1028,8 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
       /*assume_valid_feeds=*/false,
       /*aggressive_shape_inference=*/false,
       /*include_input_tensor_values=*/false,
-      /*include_output_tensor_values=*/false);
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true);
 
   if (!st.ok()) {
     LOG(ERROR) << "[EXPR][GP] InferStatically failed: " << st.message();

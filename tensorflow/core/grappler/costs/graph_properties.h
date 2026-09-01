@@ -99,7 +99,8 @@ class GraphProperties {
   absl::Status InferStatically(bool assume_valid_feeds,
                                bool aggressive_shape_inference,
                                bool include_input_tensor_values,
-                               bool include_output_tensor_values);
+                               bool include_output_tensor_values,
+                               bool enable_dynamic_value_inference = false);
   absl::Status InferStatically(bool assume_valid_feeds,
                                bool aggressive_shape_inference,
                                bool include_tensor_values) {
