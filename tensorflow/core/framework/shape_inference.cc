@@ -295,7 +295,7 @@ DimensionHandle InferenceContext::NumElements(ShapeHandle s) {
 DimensionHandle InferenceContext::UnknownDimWithExpr(
     std::unique_ptr<DimExpr> expr) {
   DimExpr* owned = shape_manager_.OwnExpr(std::move(expr));
-  return shape_manager_.MakeDim(kUnknownDim, /*dynamic_ratio*/0, owned);
+  return shape_manager_.MakeDim(kUnknownDim, owned);
 }
 
 DimExpr* InferenceContext::GetDimExpr(DimensionHandle d) const {
@@ -334,7 +334,7 @@ string InferenceContext::DebugString(ShapeHandle s) {
 }
 
 string InferenceContext::DebugString(DimensionHandle d) {
-  return ValueKnown(d) ? strings::StrCat(Value(d), strings::StrCat("~",DynamicRatio(d))) : "?";
+  return ValueKnown(d) ? strings::StrCat(Value(d)) : "?";
 }
 
 string InferenceContext::DebugString() const {
@@ -936,12 +936,7 @@ absl::Status InferenceContext::MakeShapeFromPartialTensorShape(
   for (int i = 0; i < num_dims; ++i) {
     // -1 is unknown in PartialTensorShape and in InferenceContext, so this size
     // can be passed directly to MakeDim.
-    if(i == 0){
-      dims[i] = MakeDim(partial_shape.dim_size(i), 1);
-    }
-    else {
-      dims[i] = MakeDim(partial_shape.dim_size(i));
-    }
+    dims[i] = MakeDim(partial_shape.dim_size(i));
   }
   return ReturnCreatedShape(dims, out);
 }
@@ -992,7 +987,7 @@ absl::Status InferenceContext::MakeShapeFromShapeProto(
         if (expr) {
           DimExpr* owned = shape_manager_.OwnExpr(
               std::make_unique<DimExpr>(std::move(expr)));
-          dims.push_back(shape_manager_.MakeDim(kUnknownDim,/*dynamic_ratio */ 0, owned));
+          dims.push_back(shape_manager_.MakeDim(kUnknownDim, owned));
         } else {
           dims.push_back(UnknownDim());
         }
@@ -1139,7 +1134,7 @@ absl::Status InferenceContext::Divide(DimensionHandle dividend,
   if (lhs && rhs) {
     DimExpr* node =
         shape_manager_.OwnExpr(std::make_unique<DimExpr>(*lhs / *rhs));
-    *out = shape_manager_.MakeDim(kUnknownDim, /*dynamic_ratio*/0, node);
+    *out = shape_manager_.MakeDim(kUnknownDim, node);
   } else {
     *out = UnknownDim();  // Can't form expr.
   }
@@ -1182,7 +1177,7 @@ absl::Status InferenceContext::Add(DimensionHandle first,
   if (lhs && rhs) {
     DimExpr* node =
         shape_manager_.OwnExpr(std::make_unique<DimExpr>(*lhs + *rhs));
-    *out = shape_manager_.MakeDim(kUnknownDim, /*dynamic_ratio*/ 0, node);
+    *out = shape_manager_.MakeDim(kUnknownDim, node);
   } else {
     *out = UnknownDim();  // Can't form expr.
   }
@@ -1218,7 +1213,7 @@ absl::Status InferenceContext::Subtract(DimensionHandle first,
   if (lhs && rhs) {
     DimExpr* node =
         shape_manager_.OwnExpr(std::make_unique<DimExpr>(*lhs - *rhs));
-    *out = shape_manager_.MakeDim(kUnknownDim, /*dynamic_ratio*/ 0, node);
+    *out = shape_manager_.MakeDim(kUnknownDim, node);
   } else {
     *out = UnknownDim();  // Can't form expr.
   }
@@ -1271,7 +1266,7 @@ absl::Status InferenceContext::Multiply(DimensionHandle first,
   if (lhs && rhs) {
     DimExpr* node =
         shape_manager_.OwnExpr(std::make_unique<DimExpr>(*lhs * *rhs));
-    *out = shape_manager_.MakeDim(kUnknownDim, /*dynamic_ratio*/ 0, node);
+    *out = shape_manager_.MakeDim(kUnknownDim, node);
   } else {
     *out = UnknownDim();  // Can't form expr.
   }
