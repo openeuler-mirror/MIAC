@@ -380,14 +380,8 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressionsInAdd) {
               root_shape.expressions(1)->is_constant());
 }
 
-TEST_F(XlaCompilerTest, TensorFlowAndXlaAgreeOnReshapeExpression) {
-  auto* flags = GetMarkForCompilationPassFlags();
-  bool old_dynamic_sizes = flags->tf_xla_enable_dynamic_sizes;
-  flags->tf_xla_enable_dynamic_sizes = true;
-  auto restore_dynamic_sizes = gtl::MakeCleanup([&] {
-    flags->tf_xla_enable_dynamic_sizes = old_dynamic_sizes;
-  });
-
+TEST_F(XlaCompilerDynamicSizesTest,
+       TensorFlowAndXlaAgreeOnReshapeExpression) {
   Scope inference_scope = Scope::NewRootScope().ExitOnError();
   auto placeholder = ops::Placeholder(
       inference_scope.WithOpName("placeholder"), DT_FLOAT,

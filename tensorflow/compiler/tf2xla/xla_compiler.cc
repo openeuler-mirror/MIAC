@@ -1292,31 +1292,10 @@ absl::Status XlaCompiler::BuildArguments(
         // TODO(b/76097077): propagate device assignments onto arguments and
         // return values of functions, and then reshape unconditionally.
         if (is_entry_computation) {
-          TF_ASSIGN_OR_RETURN(xla::Shape parameter_shape,
-                              builder->GetShape(arg_handles[i]));
-          xla::Shape target_shape = xla::ShapeUtil::MakeShape(
-              parameter_shape.element_type(), arg.DimensionSizes(),
-              arg.DimensionExpressions());
-          bool same_shape = parameter_shape.dimensions() == target_shape.dimensions() &&
-                            parameter_shape.dynamic_dimensions() ==
-                                target_shape.dynamic_dimensions();
-          if (same_shape) {
-            for (int dim = 0; dim < parameter_shape.dimensions_size(); ++dim) {
-              if (!xla::DynExpr::equal(parameter_shape.expressions(dim),
-                                       target_shape.expressions(dim))) {
-                same_shape = false;
-                break;
-              }
-            }
-          }
-          if (same_shape) {
-            arg_expression = XlaExpression::XlaOp(arg_handles[i], arg.type);
-          } else {
-            arg_expression = XlaExpression::XlaOp(
-                xla::Reshape(arg_handles[i], arg.DimensionSizes(),
-                             arg.DimensionExpressions()),
-                arg.type);
-          }
+          arg_expression = XlaExpression::XlaOp(
+              xla::Reshape(arg_handles[i], arg.DimensionSizes(),
+                           arg.DimensionExpressions()),
+              arg.type);
         } else {
           arg_expression = XlaExpression::XlaOp(arg_handles[i], arg.type);
           if (arg.value_bound) {
