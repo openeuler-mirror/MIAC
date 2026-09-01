@@ -25,7 +25,6 @@ limitations under the License.
 #include <optional>
 #include <regex>
 #include <set>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -842,10 +841,14 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   return xla::DExpr();
 }
 
-std::string DExprToString(const xla::DExpr& expr) {
-  std::ostringstream oss;
-  oss << expr.get();
-  return oss.str();
+std::string DynamicExpressionToString(const xla::DExpr& expr) {
+  xla::DExpr simplified = expr.simplify();
+  if (!simplified && !simplified.is_unknown()) {
+    return "";
+  }
+  xla::StringPrinter printer;
+  simplified->print(&printer);
+  return std::move(printer).ToString();
 }
 
 std::optional<std::string> CheckDynamicExpressionCompatibilityImpl(
@@ -883,7 +886,7 @@ std::optional<std::string> CheckDynamicExpressionCompatibilityImpl(
           "dynamic expressions do not share the same variable ids: "
           "expected={",
           absl::StrJoin(expected_ids, ", "), "}, expr=",
-          DExprToString(expr), ", ids={",
+          DynamicExpressionToString(expr), ", ids={",
           absl::StrJoin(expr_ids, ", "), "}");
     }
     if (!expected_core.has_value()) {
@@ -895,8 +898,9 @@ std::optional<std::string> CheckDynamicExpressionCompatibilityImpl(
       return absl::StrCat(
           "dynamic expressions do not share the same clusterable core: "
           "expected=",
-          DExprToString(*expected_core), ", expr=", DExprToString(expr),
-          ", core=", DExprToString(core));
+          DynamicExpressionToString(*expected_core), ", expr=",
+          DynamicExpressionToString(expr), ", core=",
+          DynamicExpressionToString(core));
     }
     const xla::DExpr normalized =
         expr.replace_subexpression(core, xla::DExpr::Var(replacement_id))
@@ -905,7 +909,8 @@ std::optional<std::string> CheckDynamicExpressionCompatibilityImpl(
       return absl::StrCat(
           "dynamic expression core does not cover every variable occurrence: "
           "expr=",
-          DExprToString(expr), ", core=", DExprToString(core));
+          DynamicExpressionToString(expr), ", core=",
+          DynamicExpressionToString(core));
     }
   }
 

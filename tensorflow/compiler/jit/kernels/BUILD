@@ -1,3 +1,4 @@
+load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
@@ -48,7 +49,10 @@ XLA_OPS_DEPS = [
 cc_library(
     name = "xla_ops_no_jit_rewrite_registration",
     srcs = ["xla_ops.cc"],
-    hdrs = ["xla_ops.h"],
+    hdrs = [
+        "xla_ops.h",
+        "xla_ops_internal.h",
+    ],
     deps = XLA_OPS_DEPS + [
         "//tensorflow/compiler/jit:device_compilation_cache",
         "//tensorflow/compiler/jit:device_compilation_profiler",
@@ -61,6 +65,7 @@ cc_library(
         "//tensorflow/core/platform:refcount",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:node_hash_map",
+        "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -73,6 +78,20 @@ cc_library(
         "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
     alwayslink = 1,
+)
+
+tf_cc_test(
+    name = "xla_ops_test",
+    srcs = ["xla_ops_test.cc"],
+    env = {"TF_XLA_FLAGS": "--tf_xla_enable_dynamic_sizes"},
+    deps = [
+        ":xla_ops_no_jit_rewrite_registration",
+        "//tensorflow/compiler/tf2xla:xla_argument",
+        "//tensorflow/core:framework",
+        "//tensorflow/core/platform:test",
+        "@com_google_googletest//:gtest_main",
+        "@local_xla//xla:shape_util",
+    ],
 )
 
 cc_library(
