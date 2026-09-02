@@ -602,7 +602,8 @@ TEST_F(XlaCompilerDynamicSizesTest, ReverseSequencePreservesExpressions) {
       xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Var(2)));
 }
 
-TEST_F(XlaCompilerDynamicSizesTest, UniquePreservesLeadingExpression) {
+TEST_F(XlaCompilerDynamicSizesTest,
+       UniqueUsesUnknownExpressionForValueCount) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
 
@@ -638,9 +639,10 @@ TEST_F(XlaCompilerDynamicSizesTest, UniquePreservesLeadingExpression) {
                                      std::move(graph), args, &result));
 
   ASSERT_EQ(result.outputs.size(), 2);
-  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
-                                      0),
-                                  xla::DExpr::Var(3)));
+  // The number of unique values is data-dependent and may be smaller than the
+  // input length, so it cannot retain the input's leading expression.
+  EXPECT_TRUE(
+      result.outputs[0].shape.get_filled_expression(0).is_unknown());
   EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
                                       0),
                                   xla::DExpr::Var(3)));
@@ -649,13 +651,13 @@ TEST_F(XlaCompilerDynamicSizesTest, UniquePreservesLeadingExpression) {
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   const xla::Shape& indices_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {1});
-  EXPECT_TRUE(
-      xla::DynExpr::equal(values_shape.expressions(0), xla::DExpr::Var(3)));
+  EXPECT_TRUE(values_shape.expressions(0).is_unknown());
   EXPECT_TRUE(
       xla::DynExpr::equal(indices_shape.expressions(0), xla::DExpr::Var(3)));
 }
 
-TEST_F(XlaCompilerDynamicSizesTest, DynamicPartitionPreservesPartitionExpression) {
+TEST_F(XlaCompilerDynamicSizesTest,
+       DynamicPartitionUsesUnknownPartitionLengthExpression) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto data = ops::_Arg(scope.WithOpName("data"), DT_INT32, 0);
   auto partitions = ops::_Arg(scope.WithOpName("partitions"), DT_INT32, 1);
@@ -699,25 +701,23 @@ TEST_F(XlaCompilerDynamicSizesTest, DynamicPartitionPreservesPartitionExpression
                                      args, &result));
 
   ASSERT_EQ(result.outputs.size(), 2);
-  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
-                                      0),
-                                  xla::DExpr::Var(4)));
-  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
-                                      0),
-                                  xla::DExpr::Var(4)));
+  // Each partition length is data-dependent and is not necessarily equal to
+  // the input length represented by Var(4).
+  EXPECT_TRUE(
+      result.outputs[0].shape.get_filled_expression(0).is_unknown());
+  EXPECT_TRUE(
+      result.outputs[1].shape.get_filled_expression(0).is_unknown());
 
   const xla::Shape& result0_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   const xla::Shape& result1_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {1});
-  EXPECT_TRUE(
-      xla::DynExpr::equal(result0_shape.expressions(0), xla::DExpr::Var(4)));
-  EXPECT_TRUE(
-      xla::DynExpr::equal(result1_shape.expressions(0), xla::DExpr::Var(4)));
+  EXPECT_TRUE(result0_shape.expressions(0).is_unknown());
+  EXPECT_TRUE(result1_shape.expressions(0).is_unknown());
 }
 
 TEST_F(XlaCompilerDynamicSizesTest,
-       DynamicPartitionBroadcastPreservesLeadingExpression) {
+       DynamicPartitionBroadcastPreservesTrailingExpression) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto data = ops::_Arg(scope.WithOpName("data"), DT_INT32, 0);
   auto partitions = ops::_Arg(scope.WithOpName("partitions"), DT_INT32, 1);
@@ -763,14 +763,15 @@ TEST_F(XlaCompilerDynamicSizesTest,
 
   ASSERT_EQ(result.outputs.size(), 2);
   for (int i = 0; i < 2; ++i) {
-    EXPECT_TRUE(xla::DynExpr::equal(
-        result.outputs[i].shape.get_filled_expression(0), xla::DExpr::Var(40)));
+    // Broadcasting preserves the trailing data dimensions, but each
+    // partition's leading length remains data-dependent.
+    EXPECT_TRUE(
+        result.outputs[i].shape.get_filled_expression(0).is_unknown());
     EXPECT_TRUE(xla::DynExpr::equal(
         result.outputs[i].shape.get_filled_expression(1), xla::DExpr::Const(3)));
     const xla::Shape& out_shape =
         xla::ShapeUtil::GetSubshape(result.xla_output_shape, {i});
-    EXPECT_TRUE(
-        xla::DynExpr::equal(out_shape.expressions(0), xla::DExpr::Var(40)));
+    EXPECT_TRUE(out_shape.expressions(0).is_unknown());
     EXPECT_TRUE(
         xla::DynExpr::equal(out_shape.expressions(1), xla::DExpr::Const(3)));
   }
