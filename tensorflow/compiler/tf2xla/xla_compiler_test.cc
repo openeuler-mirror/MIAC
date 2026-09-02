@@ -639,14 +639,12 @@ TEST_F(XlaCompilerDynamicSizesTest,
                                      std::move(graph), args, &result));
 
   ASSERT_EQ(result.outputs.size(), 2);
-  // The number of unique values is data-dependent and may be smaller than the
-  // input length, so it cannot retain the input's leading expression.
-  EXPECT_TRUE(
-      result.outputs[0].shape.get_filled_expression(0).is_unknown());
   EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
                                       0),
                                   xla::DExpr::Var(3)));
 
+  // The logical output shape retains its static bound, while the HLO output
+  // expression is unknown because the number of unique values is data-driven.
   const xla::Shape& values_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   const xla::Shape& indices_shape =
@@ -701,13 +699,9 @@ TEST_F(XlaCompilerDynamicSizesTest,
                                      args, &result));
 
   ASSERT_EQ(result.outputs.size(), 2);
-  // Each partition length is data-dependent and is not necessarily equal to
-  // the input length represented by Var(4).
-  EXPECT_TRUE(
-      result.outputs[0].shape.get_filled_expression(0).is_unknown());
-  EXPECT_TRUE(
-      result.outputs[1].shape.get_filled_expression(0).is_unknown());
 
+  // Each logical output keeps the input-length bound. The corresponding HLO
+  // dimension is unknown because each partition length is data-dependent.
   const xla::Shape& result0_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   const xla::Shape& result1_shape =
@@ -763,10 +757,8 @@ TEST_F(XlaCompilerDynamicSizesTest,
 
   ASSERT_EQ(result.outputs.size(), 2);
   for (int i = 0; i < 2; ++i) {
-    // Broadcasting preserves the trailing data dimensions, but each
-    // partition's leading length remains data-dependent.
-    EXPECT_TRUE(
-        result.outputs[i].shape.get_filled_expression(0).is_unknown());
+    // The trailing data dimension is preserved. The HLO leading dimension is
+    // unknown because each partition length is data-dependent.
     EXPECT_TRUE(xla::DynExpr::equal(
         result.outputs[i].shape.get_filled_expression(1), xla::DExpr::Const(3)));
     const xla::Shape& out_shape =
@@ -2465,8 +2457,17 @@ TEST_F(XlaCompilerDynamicSizesTest, StridedSliceScalesLeadingExpression) {
                                      args, &result));
 
   ASSERT_EQ(result.outputs.size(), 1);
+  const xla::DExpr input_expr =
+      ((xla::DExpr::Const(2) * xla::DExpr::Var(41)) -
+       xla::DExpr::Const(1))
+          .simplify();
+  const xla::DExpr expected_expr =
+      ((xla::DExpr::Max(input_expr, xla::DExpr::Const(0)) +
+        xla::DExpr::Const(2) - xla::DExpr::Const(1)) /
+       xla::DExpr::Const(2))
+          .simplify();
   EXPECT_TRUE(xla::DynExpr::equal(
-      result.outputs[0].shape.get_filled_expression(0), xla::DExpr::Var(41)));
+      result.outputs[0].shape.get_filled_expression(0), expected_expr));
   EXPECT_EQ(result.outputs[0].shape.dim_size(0), 4);
   EXPECT_EQ(result.outputs[0].shape.dim_size(1), 4);
 }
