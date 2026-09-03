@@ -143,6 +143,7 @@ cc_library(
         ":fingerprinting",
         ":loader_util",
         ":reader",
+        ":variable_freezing",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ] + if_not_mobile([
@@ -182,6 +183,46 @@ cc_library(
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:strcat",
+    ],
+)
+
+cc_library(
+    name = "variable_freezing",
+    srcs = ["variable_freezing.cc"],
+    hdrs = ["variable_freezing.h"],
+    deps = [
+        ":bundle_v2",
+        ":constants",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/platform:tstring",
+        "//tensorflow/core/util/tensor_bundle",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+tf_cc_test(
+    name = "variable_freezing_test",
+    srcs = ["variable_freezing_test.cc"],
+    linkstatic = 1,
+    deps = [
+        ":constants",
+        ":variable_freezing",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:tensorflow",
+        "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/platform:tstring",
+        "//tensorflow/core/util/tensor_bundle",
+        "@com_google_absl//absl/strings",
     ],
 )
 
