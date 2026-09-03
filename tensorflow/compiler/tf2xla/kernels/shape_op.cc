@@ -502,7 +502,20 @@ class SqueezeOp : public XlaOpKernel {
       }
     }
 
-    ctx->SetOutput(0, xla::Reshape(ctx->Input(0), new_shape, new_exprs));
+    xla::XlaOp output = xla::Reshape(ctx->Input(0), new_shape, new_exprs);
+    const auto& input_contents = ctx->InputExpression(0).contents();
+    if (SymbolicContentEnabled() && !input_contents.empty()) {
+      std::vector<xla::DExpr> output_contents(input_contents.begin(),
+                                              input_contents.end());
+      OP_REQUIRES_OK(
+          ctx, ctx->builder()->SetInstructionContents(output, output_contents));
+      XlaExpression output_expr =
+          XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
+      output_expr.set_contents(std::move(output_contents));
+      ctx->SetOutputExpression(0, output_expr);
+      return;
+    }
+    ctx->SetOutput(0, output);
   }
 
  private:
