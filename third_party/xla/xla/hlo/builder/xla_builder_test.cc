@@ -1124,7 +1124,7 @@ TEST(XlaBuilderTest, SetDimensionSize) {
   XlaBuilder b(TestName());
   auto p0 = Parameter(
       &b, 0,
-      ShapeUtil::MakeShape(F32, {10}, /*dynamic_dimensions=*/{true},
+      ShapeUtil::MakeShape(F32, {10}, /*dynamic_dimensions=*/{false},
                            /*expressions=*/{DExpr::Var(1)}),
       "p0");
   auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
@@ -1141,7 +1141,7 @@ TEST(XlaBuilderTest, SetDimensionSizeUsesSizeExpression) {
   XlaBuilder b(TestName());
   auto p0 = Parameter(
       &b, 0,
-      ShapeUtil::MakeShape(F32, {10}, /*dynamic_dimensions=*/{true},
+      ShapeUtil::MakeShape(F32, {10}, /*dynamic_dimensions=*/{false},
                            /*expressions=*/{DExpr::Var(1)}),
       "p0");
   auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
