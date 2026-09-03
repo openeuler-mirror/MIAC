@@ -312,6 +312,46 @@ tf_cc_test(
 )
 
 cc_library(
+    name = "broadcasted_matmul_factorization",
+    srcs = ["broadcasted_matmul_factorization.cc"],
+    hdrs = ["broadcasted_matmul_factorization.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":graph_optimizer",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler:utils",
+        "//tensorflow/core/grappler/costs:graph_properties",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+tf_cc_test(
+    name = "broadcasted_matmul_factorization_test",
+    size = "small",
+    srcs = ["broadcasted_matmul_factorization_test.cc"],
+    deps = [
+        ":broadcasted_matmul_factorization",
+        ":meta_optimizer",
+        "//tensorflow/core:all_kernels",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+        "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler:utils",
+        "//tensorflow/core/grappler/utils:grappler_test",
+    ],
+)
+
+cc_library(
     name = "arithmetic_optimizer",
     srcs = ["arithmetic_optimizer.cc"],
     hdrs = [
@@ -673,6 +713,7 @@ cc_library(
         ":arithmetic_optimizer",
         ":auto_mixed_precision",
         ":auto_parallel",
+        ":broadcasted_matmul_factorization",
         ":common_subgraph_elimination",
         ":constant_folding",
         ":custom_graph_optimizer_registry",
