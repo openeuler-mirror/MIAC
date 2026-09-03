@@ -88,9 +88,6 @@ Shape::Shape(std::vector<Shape> tuple_shapes) {
 }
 
 absl::StatusOr<Shape> Shape::FromProto(const ShapeProto& shape_proto) {
-
-  // LOG(INFO) << "FROM PROTO:\n" << shape_proto.DebugString() << std::endl;
-
   Shape shape;
   shape.set_element_type(shape_proto.element_type());
   if (auto* const state = shape.if_array_state()) {
@@ -149,15 +146,12 @@ absl::StatusOr<Shape> Shape::FromProto(const ShapeProto& shape_proto) {
     TF_ASSIGN_OR_RETURN(*shape.mutable_layout(),
                         Layout::FromProto(shape_proto.layout()));
   }
-  // LOG(INFO) << "FROM PROTO " << shape << "\n";
   return shape;
 }
 
 ShapeProto Shape::ToProto() const {
   ShapeProto proto;
   proto.set_element_type(element_type_);
-
-  // LOG(INFO) << "TO PROTO " << ToString() << "\n";
 
   if (const auto* const state = if_array_state()) {
     proto.mutable_dimensions()->Reserve(state->dimensions.size());
@@ -183,7 +177,6 @@ ShapeProto Shape::ToProto() const {
   } else if (const auto* const state = if_buffer_state()) {
     *proto.add_tuple_shapes() = state->buffer_shape->ToProto();
   }
-  // LOG(INFO) << "DEBUG VIEW:\n" << proto.DebugString() << std::endl;
   return proto;
 }
 

@@ -180,6 +180,13 @@ TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
             expr.replace_subexpression(shared_core, replacement));
 }
 
+TEST_F(ShapeTest, UnknownExpressionIsNeitherConstantNorDynamic) {
+  DExpr expr = DExpr::Unknown(kMissingExpressionSentinel);
+
+  EXPECT_FALSE(expr->is_constant());
+  EXPECT_FALSE(expr->is_dynamic());
+}
+
 TEST_F(ShapeTest, DExprSubstitutionSimplifiesConstantDivision) {
   DExpr expr = (DExpr::Var(1) + 1) / 2;
   DExpr evaluated = expr.substitute(1, DExpr::Const(100)).simplify();

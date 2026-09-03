@@ -203,6 +203,7 @@ int64_t XlaBatchMatcher::find_min_larger_batch(ClusterState* state,
 
 int64_t XlaBatchMatcher::get_xla_compile_batch(const std::string& cluster_key,
                                               int64_t real_batch) {
+  mutex_lock lock(mu_);
   // Lazily initialize per-key state from the seed ("" key) to preserve previous
   // behavior when an env list is provided.
   ClusterState& state = clusters_[cluster_key];
@@ -232,6 +233,7 @@ int64_t XlaBatchMatcher::get_xla_compile_batch(int64_t real_batch) {
 
 std::vector<int64_t> XlaBatchMatcher::get_all_batches(
     const std::string& cluster_key) {
+  mutex_lock lock(mu_);
   auto it = clusters_.find(cluster_key);
   if (it == clusters_.end()) return {};
   return it->second.all_batches;

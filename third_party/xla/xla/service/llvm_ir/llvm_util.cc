@@ -973,9 +973,11 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
                                        const DynExpr& expr) {
   llvm::LLVMContext& ctx = b->getContext();
   llvm::IntegerType* i64Type = llvm::IntegerType::getInt64Ty(ctx);
-  if (expr.is_constant()) return llvm::ConstantInt::get(i64Type, expr.get_val(), true);
   if (expr.kind() == DExpr::Kind::kUnknown) {
     return nullptr;
+  }
+  if (expr.is_constant()) {
+    return llvm::ConstantInt::get(i64Type, expr.get_val(), true);
   }
   if (expr.kind() == DExpr::Kind::kVariable) {
     // For now we can just use %bdim...
@@ -1035,14 +1037,64 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
   return nullptr;
 }
 
+static bool CanEmitExpression(const DynExpr& expr) {
+  switch (expr.kind()) {
+    case DExpr::Kind::kUnknown:
+      return false;
+    case DExpr::Kind::kConstant:
+    case DExpr::Kind::kVariable:
+      return true;
+    case DExpr::Kind::kAdd: {
+      const auto& node = static_cast<const Add&>(expr);
+      return CanEmitExpression(*node.get_lhs()) &&
+             CanEmitExpression(*node.get_rhs());
+    }
+    case DExpr::Kind::kSub: {
+      const auto& node = static_cast<const Sub&>(expr);
+      return CanEmitExpression(*node.get_lhs()) &&
+             CanEmitExpression(*node.get_rhs());
+    }
+    case DExpr::Kind::kMul: {
+      const auto& node = static_cast<const Mul&>(expr);
+      return CanEmitExpression(*node.get_lhs()) &&
+             CanEmitExpression(*node.get_rhs());
+    }
+    case DExpr::Kind::kDiv: {
+      const auto& node = static_cast<const Div&>(expr);
+      return CanEmitExpression(*node.get_lhs()) &&
+             CanEmitExpression(*node.get_rhs());
+    }
+    case DExpr::Kind::kMax: {
+      const auto& node = static_cast<const MaxExpr&>(expr);
+      return CanEmitExpression(*node.get_lhs()) &&
+             CanEmitExpression(*node.get_rhs());
+    }
+    case DExpr::Kind::kGt: {
+      const auto& node = static_cast<const GtExpr&>(expr);
+      return CanEmitExpression(*node.get_lhs()) &&
+             CanEmitExpression(*node.get_rhs());
+    }
+    case DExpr::Kind::kSelect: {
+      const auto& node = static_cast<const SelectExpr&>(expr);
+      return CanEmitExpression(*node.get_pred()) &&
+             CanEmitExpression(*node.get_on_true()) &&
+             CanEmitExpression(*node.get_on_false());
+    }
+  }
+  return false;
+}
+
 llvm::Value* EmitExpression(llvm::IRBuilderBase* b, const DExpr& expr) {
-  if (!expr) return nullptr;
+  CHECK(expr) << "Cannot emit an empty or unknown dynamic expression";
   DExpr simplified = expr.simplify();
+  CHECK(CanEmitExpression(*simplified))
+      << "Cannot emit a dynamic expression containing an unknown value";
   StringPrinter printer;
   simplified->print(&printer);
   VLOG(2) << "EmitExpression expr=" << std::move(printer).ToString()
           << " kind=" << static_cast<int>(simplified.kind());
   llvm::Value* value = EmitExpressionImpl(b, *simplified.get());
+  CHECK(value != nullptr) << "Unsupported dynamic expression kind";
   return value;
 }
 

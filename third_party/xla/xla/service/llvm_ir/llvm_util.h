@@ -351,6 +351,8 @@ llvm::Value* createDynamicGEP(llvm::IRBuilderBase* builder,
                               llvm::Type* elem_type,
                               const llvm::Twine& name = "");
 
+// Emits a complete symbolic expression. Unknown values are rejected before
+// any LLVM instructions are constructed, so a successful call is non-null.
 llvm::Value* EmitExpression(llvm::IRBuilderBase* b, const DExpr& expr);
 
 }  // namespace llvm_ir
