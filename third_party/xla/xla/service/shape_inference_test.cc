@@ -205,6 +205,89 @@ TEST_F(ShapeInferenceTest, SelectArrayPredBetweenArrays) {
   ASSERT_TRUE(ShapeUtil::Equal(matrix_64_48_, *inferred_shape));
 }
 
+TEST_F(ShapeInferenceTest, SelectPreservesExpressionsFromOperands) {
+  const Shape pred = ShapeUtil::MakeShape(
+      PRED, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(33)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(5)));
+}
+
+TEST_F(ShapeInferenceTest, SelectRejectsMismatchedPredicateExpression) {
+  const Shape pred = ShapeUtil::MakeShape(
+      PRED, {8, 5}, std::vector<DExpr>{DExpr::Var(34), DExpr::Const(5)});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false);
+  ASSERT_FALSE(inferred_shape.ok());
+  EXPECT_THAT(inferred_shape.status().message(),
+              HasSubstr("mismatched expressions in dimension 0"));
+}
+
+TEST_F(ShapeInferenceTest, SelectAllowsMissingPredicateExpression) {
+  const Shape pred = ShapeUtil::MakeShape(PRED, {8, 5});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(33)));
+}
+
+TEST_F(ShapeInferenceTest, SelectScalarPredicatePreservesExpressions) {
+  const Shape pred = ShapeUtil::MakeShape(PRED, {});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(33)));
+}
+
+TEST_F(ShapeInferenceTest, SelectRejectsMismatchedOperandExpressions) {
+  const Shape pred = ShapeUtil::MakeShape(PRED, {});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(34), DExpr::Const(5)});
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false);
+  ASSERT_FALSE(inferred_shape.ok());
+  EXPECT_THAT(inferred_shape.status().message(),
+              HasSubstr("mismatched expressions in dimension 0"));
+}
+
+TEST_F(ShapeInferenceTest, SelectRejectsMissingDynamicOperandExpression) {
+  const Shape pred = ShapeUtil::MakeShape(PRED, {});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(F32, {8, 5});
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false);
+  ASSERT_FALSE(inferred_shape.ok());
+  EXPECT_THAT(inferred_shape.status().message(),
+              HasSubstr("mismatched expressions in dimension 0"));
+}
+
 TEST_F(ShapeInferenceTest, SelectBadShapes) {
   const absl::StatusOr<Shape> inferred_shape_error1 =
       ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred_,
@@ -446,6 +529,63 @@ TEST_F(ShapeInferenceTest, ReduceWindowInHalf) {
   ASSERT_IS_OK(inferred_shape.status());
   ASSERT_TRUE(
       ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {4, 4}), *inferred_shape));
+}
+
+TEST_F(ShapeInferenceTest, ReduceWindowBuildsWindowedExpressions) {
+  const Shape matrix_shape = ShapeUtil::MakeShape(
+      F32, {8, 8}, std::vector<DExpr>{DExpr::Var(1), DExpr::Var(2)});
+  Window window;
+  WindowDimension dim;
+  dim.set_size(2);
+  dim.set_stride(2);
+  dim.set_padding_low(0);
+  dim.set_padding_high(0);
+  dim.set_window_dilation(1);
+  dim.set_base_dilation(1);
+  *window.add_dimensions() = dim;
+  *window.add_dimensions() = dim;
+  const Shape init_value_shape = ShapeUtil::MakeShape(F32, {});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReduceWindowShape(matrix_shape, init_value_shape,
+                                             window));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape, ShapeUtil::MakeShape(
+                          F32, {4, 4},
+                          std::vector<DExpr>{((DExpr::Var(1) - 2) / 2) + 1,
+                                             ((DExpr::Var(2) - 2) / 2) + 1})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             ((DExpr::Var(1) - 2) / 2) + 1));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1),
+                             ((DExpr::Var(2) - 2) / 2) + 1));
+}
+
+TEST_F(ShapeInferenceTest, ReduceWindowBuildsPaddedStridedExpressions) {
+  const Shape vector_shape =
+      ShapeUtil::MakeShape(F32, {11}, std::vector<DExpr>{DExpr::Var(3)});
+  Window window;
+  WindowDimension dim;
+  dim.set_size(3);
+  dim.set_stride(2);
+  dim.set_padding_low(1);
+  dim.set_padding_high(1);
+  dim.set_window_dilation(1);
+  dim.set_base_dilation(1);
+  *window.add_dimensions() = dim;
+  const Shape init_value_shape = ShapeUtil::MakeShape(F32, {});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReduceWindowShape(vector_shape, init_value_shape,
+                                             window));
+
+  const DExpr expected = (((DExpr::Var(3) - 1) / 2) + 1).simplify();
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape,
+      ShapeUtil::MakeShape(F32, {6}, std::vector<DExpr>{expected})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), expected));
 }
 
 TEST_F(SelectAndScatterShapeInferenceTest, SelectAndScatterProperShapes) {
@@ -719,6 +859,58 @@ TEST_F(ShapeInferenceTest, ConvolveWithBaseDilation) {
   ASSERT_IS_OK(inferred_shape.status());
   ASSERT_TRUE(ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {10, 12, 4, 9}),
                                *inferred_shape));
+}
+
+TEST_F(ShapeInferenceTest, ConvolveBuildsBatchAndSpatialExpressions) {
+  ConvolutionDimensionNumbers dnums;
+  const Shape lhs_shape = ShapeUtil::MakeShape(
+      F32, {5, 11, 13, 3},
+      std::vector<DExpr>{DExpr::Var(4), DExpr::Var(5), DExpr::Var(6),
+                         DExpr::Const(3)});
+  dnums.set_input_batch_dimension(0);
+  dnums.set_output_batch_dimension(0);
+  dnums.add_input_spatial_dimensions(1);
+  dnums.add_output_spatial_dimensions(1);
+  dnums.add_input_spatial_dimensions(2);
+  dnums.add_output_spatial_dimensions(2);
+  dnums.set_input_feature_dimension(3);
+  dnums.set_output_feature_dimension(3);
+
+  const Shape rhs_shape = ShapeUtil::MakeShape(F32, {3, 3, 3, 7});
+  dnums.add_kernel_spatial_dimensions(0);
+  dnums.add_kernel_spatial_dimensions(1);
+  dnums.set_kernel_input_feature_dimension(2);
+  dnums.set_kernel_output_feature_dimension(3);
+
+  Window window;
+  auto* dim0 = window.add_dimensions();
+  dim0->set_size(3);
+  dim0->set_stride(2);
+  dim0->set_padding_low(1);
+  dim0->set_padding_high(1);
+  dim0->set_window_dilation(1);
+  dim0->set_base_dilation(1);
+  auto* dim1 = window.add_dimensions();
+  *dim1 = *dim0;
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferConvolveShape(
+          lhs_shape, rhs_shape, /*feature_group_count=*/1,
+          /*batch_group_count=*/1, window, dnums,
+          /*preferred_element_type=*/std::nullopt));
+
+  const DExpr expected_h = (((DExpr::Var(5) - 1) / 2) + 1).simplify();
+  const DExpr expected_w = (((DExpr::Var(6) - 1) / 2) + 1).simplify();
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape,
+      ShapeUtil::MakeShape(F32, {5, 6, 7, 7},
+                           std::vector<DExpr>{DExpr::Var(4), expected_h,
+                                              expected_w, DExpr::Const(7)})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(4)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), expected_h));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), expected_w));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(3), DExpr::Const(7)));
 }
 
 TEST_F(ShapeInferenceTest, ConvolveDimensionNumbersOverlapError) {
@@ -1285,6 +1477,18 @@ TEST_F(ShapeInferenceTest, MapWithDifferentInputTypes) {
   EXPECT_TRUE(ShapeUtil::Equal(expected, *inferred_shape));
 }
 
+TEST_F(ShapeInferenceTest, MapPreservesExpressions) {
+  const Shape arg = ShapeUtil::MakeShape(
+      F32, {20, 7}, std::vector<bool>{true, false},
+      std::vector<DExpr>{DExpr::Var(11), DExpr::Const(7)});
+  ProgramShape to_apply = ShapeUtil::MakeProgramShape({f32_}, f32_);
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred_shape,
+                          ShapeInference::InferMapShape({&arg}, to_apply,
+                                                        {0, 1}));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(11)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(7)));
+}
+
 TEST_F(ReduceShapeInferenceTest, ReduceVectorToScalar) {
   ExpectInferredReduceShape(f32_, ShapeUtil::MakeShape(F32, {128}),
                             /*dimensions_to_reduce=*/{0});
@@ -1367,6 +1571,58 @@ TEST_F(ReduceShapeInferenceTest, ReduceWindowMultiOutput) {
       ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {5, 2, 0}),
                                  ShapeUtil::MakeShape(S32, {5, 2, 0})}),
       *inferred_shape));
+}
+
+TEST_F(ReduceShapeInferenceTest,
+       ReduceWindowPreservesDynamicStridedBoundExpression) {
+  Shape operand = ShapeUtil::MakeShape(
+      F32, {101}, std::vector<bool>{true}, {DExpr::Var(1)});
+  Window window;
+  WindowDimension* dimension = window.add_dimensions();
+  dimension->set_size(3);
+  dimension->set_stride(2);
+  dimension->set_padding_low(1);
+  dimension->set_padding_high(1);
+  dimension->set_base_dilation(1);
+  dimension->set_window_dilation(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      Shape inferred,
+      ShapeInference::InferReduceWindowShape(operand, f32_, window));
+  EXPECT_EQ(51, inferred.dimensions(0));
+  EXPECT_TRUE(inferred.expressions(0) ==
+              DExpr::Max((DExpr::Var(1) + 1) / 2, DExpr::Const(0)));
+
+  DExpr runtime_expression =
+      inferred.expressions(0).substitute(1, DExpr::Const(100)).simplify();
+  ASSERT_TRUE(runtime_expression->is_constant());
+  EXPECT_EQ(50, runtime_expression->get_val());
+}
+
+TEST_F(ReduceShapeInferenceTest,
+       ReduceWindowClampsDynamicStridedBoundAtZero) {
+  Shape operand = ShapeUtil::MakeShape(
+      F32, {101}, std::vector<bool>{true}, {DExpr::Var(2)});
+  Window window;
+  WindowDimension* dimension = window.add_dimensions();
+  dimension->set_size(5);
+  dimension->set_stride(1);
+  dimension->set_padding_low(0);
+  dimension->set_padding_high(0);
+  dimension->set_base_dilation(1);
+  dimension->set_window_dilation(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      Shape inferred,
+      ShapeInference::InferReduceWindowShape(operand, f32_, window));
+  EXPECT_EQ(97, inferred.dimensions(0));
+  EXPECT_TRUE(inferred.expressions(0) ==
+              DExpr::Max(DExpr::Var(2) - 4, DExpr::Const(0)));
+
+  DExpr runtime_expression =
+      inferred.expressions(0).substitute(2, DExpr::Const(2)).simplify();
+  ASSERT_TRUE(runtime_expression->is_constant());
+  EXPECT_EQ(0, runtime_expression->get_val());
 }
 
 TEST_F(ReduceShapeInferenceTest, ErrorMultiOutputBadReducerInput1) {
@@ -1532,6 +1788,23 @@ TEST_F(ShapeInferenceTest, InferSliceWithDynamicDimensions) {
       *inferred_shape));
 }
 
+TEST_F(ShapeInferenceTest, InferSliceBuildsExpressionFromSymbolicBounds) {
+  const Shape vector_shape =
+      ShapeUtil::MakeShape(F32, {16}, std::vector<DExpr>{DExpr::Var(1)});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferSliceShape(
+          vector_shape, /*starts=*/{3}, /*limits=*/{8}, /*strides=*/{1},
+          /*start_exprs=*/{DExpr::Const(3)},
+          /*limit_exprs=*/{DExpr::Var(2)}));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape, ShapeUtil::MakeShape(
+                          F32, {5}, std::vector<DExpr>{DExpr::Var(2) - 3})));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(2) - 3));
+}
+
 TEST_F(ShapeInferenceTest, InferSliceShapeRank2WithStrides) {
   const Shape matrix_shape = ShapeUtil::MakeShape(F32, {128, 64});
   const absl::StatusOr<Shape> inferred_shape =
@@ -1585,6 +1858,26 @@ TEST_F(ShapeInferenceTest, InferConstIndexShape) {
   ASSERT_IS_OK(inferred1_status.status());
   ASSERT_TRUE(ShapeUtil::Equal(f32_, *inferred0_status));
   ASSERT_TRUE(ShapeUtil::Equal(s32_, *inferred1_status));
+}
+
+TEST_F(ShapeInferenceTest, InferConstIndexPreservesExpressions) {
+  const Shape lhs = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(24), DExpr::Const(5)});
+  const Shape rhs = ShapeUtil::MakeShape(
+      S32, {3, 7}, std::vector<DExpr>{DExpr::Const(3), DExpr::Var(25)});
+  const Shape tuple_shape = ShapeUtil::MakeTupleShape({lhs, rhs});
+
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred0,
+                          ShapeInference::InferGetTupleElementShape(
+                              tuple_shape, /*index=*/0));
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred1,
+                          ShapeInference::InferGetTupleElementShape(
+                              tuple_shape, /*index=*/1));
+
+  EXPECT_TRUE(DynExpr::equal(inferred0.expressions(0), DExpr::Var(24)));
+  EXPECT_TRUE(DynExpr::equal(inferred0.expressions(1), DExpr::Const(5)));
+  EXPECT_TRUE(DynExpr::equal(inferred1.expressions(0), DExpr::Const(3)));
+  EXPECT_TRUE(DynExpr::equal(inferred1.expressions(1), DExpr::Var(25)));
 }
 
 TEST_F(ShapeInferenceTest, InferTupleElementShapeOutOfBound) {
@@ -1677,6 +1970,153 @@ TEST_F(ShapeInferenceTest, UnchangedDimension) {
             *status);
 }
 
+TEST_F(ShapeInferenceTest, ReshapePreservesProvidedExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {6, 10}, std::vector<DExpr>{DExpr::Const(6), DExpr::Var(1)});
+  const Shape expected = ShapeUtil::MakeShape(
+      F32, {2, 3, 10},
+      std::vector<DExpr>{DExpr::Const(2), DExpr::Const(3), DExpr::Var(1)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReshapeShape(
+          operand, expected.dimensions(),
+          /*inferred_dimension=*/-1, expected.expressions()));
+
+  EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Const(2)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(3)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Var(1)));
+}
+
+TEST_F(ShapeInferenceTest, ReshapeCombinesLeadingSymbolicWithStaticFactor) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 16, 32},
+      std::vector<DExpr>{DExpr::Var(1), DExpr::Const(16), DExpr::Const(32)});
+  const Shape expected = ShapeUtil::MakeShape(
+      F32, {80, 32},
+      std::vector<DExpr>{16 * DExpr::Var(1), DExpr::Const(32)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReshapeShape(
+          operand, expected.dimensions(),
+          /*inferred_dimension=*/-1, expected.expressions()));
+
+  EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             16 * DExpr::Var(1)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(32)));
+}
+
+TEST_F(ShapeInferenceTest, ReshapeCollapsesTwoStaticDimsIntoSymbolicExtent) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 4, 8},
+      std::vector<DExpr>{DExpr::Var(1), DExpr::Const(4), DExpr::Const(8)});
+  const Shape expected =
+      ShapeUtil::MakeShape(F32, {160}, std::vector<DExpr>{32 * DExpr::Var(1)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReshapeShape(
+          operand, expected.dimensions(),
+          /*inferred_dimension=*/-1, expected.expressions()));
+
+  EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             32 * DExpr::Var(1)));
+}
+
+TEST_F(ShapeInferenceTest, ReshapeSplitsSymbolicExtentByStaticFactor) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {80, 8}, std::vector<DExpr>{DExpr::Var(1), DExpr::Const(8)});
+  const Shape expected = ShapeUtil::MakeShape(
+      F32, {40, 16},
+      std::vector<DExpr>{DExpr::Var(1) / 2, DExpr::Const(16)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReshapeShape(
+          operand, expected.dimensions(),
+          /*inferred_dimension=*/-1, expected.expressions()));
+
+  EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             DExpr::Var(1) / 2));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(16)));
+}
+
+TEST_F(ShapeInferenceTest, ReshapeSplitsAndCollapsesSymbolicExtent) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {20, 8, 4},
+      std::vector<DExpr>{DExpr::Var(1), DExpr::Const(8), DExpr::Const(4)});
+  const Shape expected = ShapeUtil::MakeShape(
+      F32, {10, 64},
+      std::vector<DExpr>{DExpr::Var(1) / 2, DExpr::Const(64)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReshapeShape(
+          operand, expected.dimensions(),
+          /*inferred_dimension=*/-1, expected.expressions()));
+
+  EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             DExpr::Var(1) / 2));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(64)));
+}
+
+TEST_F(ShapeInferenceTest, ReshapeRejectsIncorrectCollapsedExpression) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 16, 32},
+      std::vector<DExpr>{DExpr::Var(1), DExpr::Const(16), DExpr::Const(32)});
+  const Shape incorrect = ShapeUtil::MakeShape(
+      F32, {80, 32},
+      std::vector<DExpr>{8 * DExpr::Var(1), DExpr::Const(32)});
+
+  const absl::StatusOr<Shape> status = ShapeInference::InferReshapeShape(
+      operand, incorrect.dimensions(),
+      /*inferred_dimension=*/-1, incorrect.expressions());
+
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.status().message(),
+              HasSubstr("Reshape operation has mismatched symbolic element "
+                        "counts"));
+}
+
+TEST_F(ShapeInferenceTest,
+       ReshapeRejectsIncorrectSplitAndCollapseExpression) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {20, 8, 4},
+      std::vector<DExpr>{DExpr::Var(1), DExpr::Const(8), DExpr::Const(4)});
+  const Shape incorrect = ShapeUtil::MakeShape(
+      F32, {10, 64},
+      std::vector<DExpr>{DExpr::Var(1), DExpr::Const(64)});
+
+  const absl::StatusOr<Shape> status = ShapeInference::InferReshapeShape(
+      operand, incorrect.dimensions(),
+      /*inferred_dimension=*/-1, incorrect.expressions());
+
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.status().message(),
+              HasSubstr("Reshape operation has mismatched symbolic element "
+                        "counts"));
+}
+
+TEST_F(ShapeInferenceTest, ReshapeWithSymbolicOperandRequiresExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {10, 6}, std::vector<DExpr>{DExpr::Var(1), DExpr::Const(6)});
+
+  const absl::StatusOr<Shape> status =
+      ShapeInference::InferReshapeShape(operand, {2, 5, 6},
+                                        /*inferred_dimension=*/-1,
+                                        /*expressions=*/{});
+
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.status().message(),
+              HasSubstr("Expressions is empty but operand is dynamic"));
+}
+
 TEST_F(ShapeInferenceTest, InferDynamicBroadcast) {
   // CHECK:
   // %broadcast = s32[15,<=15]{1,0} broadcast(s32[<=15]{0}), dimensions={1}
@@ -1687,6 +2127,23 @@ TEST_F(ShapeInferenceTest, InferDynamicBroadcast) {
   ASSERT_IS_OK(inferred_shape.status());
   ASSERT_EQ(ShapeUtil::MakeShape(F32, {15, 15}, {false, true}, {}),
             *inferred_shape);
+}
+
+TEST_F(ShapeInferenceTest, BroadcastInDimPreservesMappedExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {2, 4}, std::vector<bool>{true, true},
+      {DExpr::Var(1), DExpr::Var(2)});
+  const Shape output = ShapeUtil::MakeShape(
+      F32, {2, 3, 4}, std::vector<bool>{true, false, true},
+      {DExpr::Var(1), DExpr::Const(3), DExpr::Var(2)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferBroadcastShape(operand, output,
+                                          /*broadcast_dimensions=*/{0, 2}));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(1)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(3)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Var(2)));
 }
 
 TEST_F(ShapeInferenceTest, BroadcastScalar) {
@@ -2184,6 +2641,27 @@ TEST_F(ShapeInferenceTest, SparseDotMetadata) {
       ShapeUtil::Equal(inferred_shape, ShapeUtil::MakeShape(U16, {5, 10, 2})));
 }
 
+TEST_F(ShapeInferenceTest, SparseDotMetadataPreservesNonSparseExpressions) {
+  DotDimensionNumbers dot_dnums;
+  dot_dnums.add_lhs_batch_dimensions(0);
+  dot_dnums.add_lhs_contracting_dimensions(2);
+  SparsityDescriptor sparsity_descriptor;
+  sparsity_descriptor.set_type(SparsityType::SPARSITY_STRUCTURED_N_M);
+  sparsity_descriptor.set_n(2);
+  sparsity_descriptor.set_m(4);
+  sparsity_descriptor.set_index(0);
+  sparsity_descriptor.set_dimension(2);
+
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 10, 16},
+      std::vector<DExpr>{DExpr::Var(16), DExpr::Const(10), DExpr::Const(16)});
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred_shape,
+                          ShapeInference::InferSparseDotMetadataShape(
+                              operand, dot_dnums, sparsity_descriptor));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(16)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(10)));
+}
+
 // <ragged-dot> mode 1 : [m,k], [g,k,n], [g] -> [m,n]
 TEST_F(ShapeInferenceTest, RaggedDotRaggedNonContracting) {
   const Shape lhs_shape = ShapeUtil::MakeShape(F32, {11, 5});
@@ -2231,6 +2709,31 @@ TEST_F(ShapeInferenceTest, RaggedDotRaggedContracting) {
   ASSERT_TRUE(ShapeUtil::Equal(*inferred_shape_match, output_shape))
       << "inferred: " << ShapeUtil::HumanString(*inferred_shape_match)
       << " expected: " << ShapeUtil::HumanString(output_shape);
+}
+
+TEST_F(ShapeInferenceTest, RaggedDotPreservesGroupExpression) {
+  const Shape lhs_shape = ShapeUtil::MakeShape(
+      F32, {11, 5}, std::vector<DExpr>{DExpr::Const(11), DExpr::Const(5)});
+  const Shape rhs_shape = ShapeUtil::MakeShape(
+      F32, {5, 7}, std::vector<DExpr>{DExpr::Const(5), DExpr::Const(7)});
+  const Shape group_sizes_shape =
+      ShapeUtil::MakeShape(U32, {3}, std::vector<DExpr>{DExpr::Var(17)});
+
+  DotDimensionNumbers dot_dnums;
+  dot_dnums.add_lhs_contracting_dimensions(1);
+  dot_dnums.add_rhs_contracting_dimensions(0);
+  RaggedDotDimensionNumbers ragged_dot_dnums;
+  *ragged_dot_dnums.mutable_dot_dimension_numbers() = dot_dnums;
+  ragged_dot_dnums.add_lhs_ragged_dimensions(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferRaggedDotOpShape(
+          lhs_shape, rhs_shape, group_sizes_shape, ragged_dot_dnums,
+          /*preferred_element_type=*/std::nullopt));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(17)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(11)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Const(7)));
 }
 
 // <ragged-dot> mode 3 : [b,m,k], [b,k,n], [g] -> [b,m,n]
@@ -2739,6 +3242,54 @@ TEST_F(ShapeInferenceTest, BinOpBroadcastMatrixVector) {
   ASSERT_FALSE(inferred_shape_mismatch.ok());
 }
 
+TEST_F(ShapeInferenceTest, InDimBroadcastPreservesMappedExpressions) {
+  const Shape smaller = ShapeUtil::MakeShape(
+      F32, {2, 3},
+      std::vector<DExpr>{DExpr::Var(18), DExpr::Const(3)});
+  const Shape larger = ShapeUtil::MakeShape(
+      F32, {2, 4, 3},
+      std::vector<DExpr>{DExpr::Const(2), DExpr::Const(4), DExpr::Const(3)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferBinaryOpShape(HloOpcode::kAdd, larger, smaller,
+                                         {0, 2}));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(18)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(4)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Const(3)));
+}
+
+TEST_F(ShapeInferenceTest, DegenerateBroadcastUsesNonUnitExpressions) {
+  const Shape lhs = ShapeUtil::MakeShape(
+      F32, {1, 3},
+      std::vector<DExpr>{DExpr::Const(1), DExpr::Const(3)});
+  const Shape rhs = ShapeUtil::MakeShape(
+      F32, {5, 3},
+      std::vector<DExpr>{DExpr::Var(19), DExpr::Const(3)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferBinaryOpShape(HloOpcode::kAdd, lhs, rhs, {}));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(19)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(3)));
+}
+
+TEST_F(ShapeInferenceTest, ElementwiseBinaryBroadcastPreservesExpressions) {
+  const Shape lhs = ShapeUtil::MakeShape(
+      F32, {2, 4, 3},
+      std::vector<DExpr>{DExpr::Const(2), DExpr::Const(4), DExpr::Const(3)});
+  const Shape rhs = ShapeUtil::MakeShape(
+      F32, {2, 3},
+      std::vector<DExpr>{DExpr::Var(20), DExpr::Const(3)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferBinaryOpShape(HloOpcode::kAdd, lhs, rhs, {0, 2}));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(20)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(4)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Const(3)));
+}
+
 TEST_F(ShapeInferenceTest, BinOpBroadcastCubeMatrix) {
   // Test variations of broadcasting a matrix for a binary add with a cube.
   const Shape cube = ShapeUtil::MakeShape(F32, {16, 8, 4});
@@ -2910,6 +3461,26 @@ TEST_F(ShapeInferenceTest, ConcatenateWithDynamicShapes) {
       *inferred_shape));
 }
 
+TEST_F(ShapeInferenceTest, ConcatenateAddsConcatDimensionExpressions) {
+  const Shape lhs = ShapeUtil::MakeShape(
+      F32, {2, 5}, std::vector<DExpr>{DExpr::Var(1), DExpr::Const(5)});
+  const Shape rhs = ShapeUtil::MakeShape(
+      F32, {3, 5}, std::vector<DExpr>{DExpr::Var(2), DExpr::Const(5)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferConcatOpShape({&lhs, &rhs}, /*dimension=*/0));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape,
+      ShapeUtil::MakeShape(F32, {5, 5},
+                           std::vector<DExpr>{DExpr::Var(1) + DExpr::Var(2),
+                                              DExpr::Const(5)})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             DExpr::Var(1) + DExpr::Var(2)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(5)));
+}
+
 // Tests for the concatenate instruction with proper shapes.
 TEST_F(ShapeInferenceTest, ConcatenateWithCorrectShapes) {
   const absl::StatusOr<Shape> inferred_shape_1 =
@@ -3011,6 +3582,64 @@ TEST_F(ShapeInferenceTest, Pad) {
               HasSubstr("negative size for dimension 1"));
 }
 
+TEST_F(ShapeInferenceTest, PadAddsConstantOffsetToExpressions) {
+  const Shape input_shape = ShapeUtil::MakeShape(
+      F32, {4, 5}, std::vector<DExpr>{DExpr::Var(1), DExpr::Var(2)});
+  const Shape padding_value_shape = ShapeUtil::MakeShape(F32, {});
+  PaddingConfig padding_config;
+  auto* dimension0 = padding_config.add_dimensions();
+  dimension0->set_edge_padding_low(1);
+  dimension0->set_edge_padding_high(2);
+  dimension0->set_interior_padding(1);
+  auto* dimension1 = padding_config.add_dimensions();
+  dimension1->set_edge_padding_low(0);
+  dimension1->set_edge_padding_high(4);
+  dimension1->set_interior_padding(0);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferPadShape(input_shape, padding_value_shape,
+                                    padding_config));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape, ShapeUtil::MakeShape(
+                          F32, {10, 9},
+                          std::vector<DExpr>{DExpr::Var(1) + 6,
+                                             DExpr::Var(2) + 4})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(1) + 6));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Var(2) + 4));
+}
+
+TEST_F(ShapeInferenceTest, PadBuildsExpressionsForTwoSymbolicDimensions) {
+  const Shape input_shape = ShapeUtil::MakeShape(
+      F32, {7, 9}, std::vector<DExpr>{DExpr::Var(34), DExpr::Var(35)});
+  const Shape padding_value_shape = ShapeUtil::MakeShape(F32, {});
+  PaddingConfig padding_config;
+  auto* dimension0 = padding_config.add_dimensions();
+  dimension0->set_edge_padding_low(2);
+  dimension0->set_edge_padding_high(1);
+  dimension0->set_interior_padding(2);
+  auto* dimension1 = padding_config.add_dimensions();
+  dimension1->set_edge_padding_low(3);
+  dimension1->set_edge_padding_high(4);
+  dimension1->set_interior_padding(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferPadShape(input_shape, padding_value_shape,
+                                    padding_config));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape, ShapeUtil::MakeShape(
+                          F32, {22, 24},
+                          std::vector<DExpr>{DExpr::Var(34) + 15,
+                                             DExpr::Var(35) + 15})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             DExpr::Var(34) + 15));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1),
+                             DExpr::Var(35) + 15));
+}
+
 TEST_F(ShapeInferenceTest, Reverse) {
   const Shape input_shape = ShapeUtil::MakeShape(F32, {10, 25});
 
@@ -3018,6 +3647,20 @@ TEST_F(ShapeInferenceTest, Reverse) {
       ShapeInference::InferReverseShape(input_shape, {0, 1});
   ASSERT_IS_OK(inferred_shape.status());
   ASSERT_TRUE(ShapeUtil::Equal(input_shape, *inferred_shape));
+}
+
+TEST_F(ShapeInferenceTest, ReversePreservesExpressions) {
+  const Shape input_shape = ShapeUtil::MakeShape(
+      F32, {10, 25, 7},
+      std::vector<DExpr>{DExpr::Var(26), DExpr::Const(25), DExpr::Var(27)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReverseShape(input_shape, {0, 2}));
+
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(26)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(25)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Var(27)));
 }
 
 TEST_F(ShapeInferenceTest, ReverseInvalidDimension) {
@@ -3092,6 +3735,21 @@ TEST_F(ShapeInferenceTest, Transpose) {
   EXPECT_IS_OK(inferred_shape_and_status);
   EXPECT_TRUE(ShapeUtil::Compatible(ShapeUtil::MakeShape(F32, {3, 4, 5, 2}),
                                     *inferred_shape_and_status));
+}
+
+TEST_F(ShapeInferenceTest, TransposePermutesExpressions) {
+  const Shape a_shape = ShapeUtil::MakeShape(
+      F32, {2, 3, 4, 5},
+      std::vector<DExpr>{DExpr::Var(28), DExpr::Const(3), DExpr::Var(29),
+                         DExpr::Const(5)});
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred_shape,
+                          ShapeInference::InferTransposeShape(
+                              a_shape, {1, 2, 3, 0}));
+
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Const(3)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Var(29)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Const(5)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(3), DExpr::Var(28)));
 }
 
 TEST_F(ShapeInferenceTest, Rank1Transpose) {
@@ -3365,6 +4023,25 @@ TEST_F(ShapeInferenceTest, GoodTopK) {
                                      ShapeUtil::MakeShape(S32, {3, 4, 2})})));
 }
 
+TEST_F(ShapeInferenceTest, TopKPreservesLeadingExpressions) {
+  const Shape input = ShapeUtil::MakeShape(
+      F32, {3, 4, 5},
+      std::vector<DExpr>{DExpr::Var(7), DExpr::Const(4), DExpr::Var(8)});
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred_shape,
+                          ShapeInference::InferTopKShape(input, /*k=*/2));
+
+  ASSERT_TRUE(inferred_shape.IsTuple());
+  ASSERT_EQ(inferred_shape.tuple_shapes_size(), 2);
+  const Shape& values = inferred_shape.tuple_shapes(0);
+  const Shape& indices = inferred_shape.tuple_shapes(1);
+  EXPECT_TRUE(DynExpr::equal(values.expressions(0), DExpr::Var(7)));
+  EXPECT_TRUE(DynExpr::equal(values.expressions(1), DExpr::Const(4)));
+  EXPECT_TRUE(DynExpr::equal(values.expressions(2), DExpr::Const(2)));
+  EXPECT_TRUE(DynExpr::equal(indices.expressions(0), DExpr::Var(7)));
+  EXPECT_TRUE(DynExpr::equal(indices.expressions(1), DExpr::Const(4)));
+  EXPECT_TRUE(DynExpr::equal(indices.expressions(2), DExpr::Const(2)));
+}
+
 TEST_F(ShapeInferenceTest, FailTopKLargeK) {
   const Shape input = ShapeUtil::MakeShape(F32, {3, 4, 5});
   const absl::StatusOr<Shape> statusor =
@@ -3564,6 +4241,30 @@ TEST_F(GatherShapeInferenceTest, DynamicIndices) {
       ShapeUtil::MakeShape(F32, {3, 4, 2, 2}, {false, true, false, false},
                            {})))
       << ShapeUtil::HumanString(gather_shape);
+}
+
+TEST_F(GatherShapeInferenceTest, GatherPreservesIndexAndSliceExpressions) {
+  const Shape input = ShapeUtil::MakeShape(
+      F32, {3, 2, 2},
+      std::vector<DExpr>{DExpr::Const(3), DExpr::Var(22), DExpr::Const(2)});
+  const Shape indices = ShapeUtil::MakeShape(
+      S64, {3, 4, 2}, std::vector<bool>{false, true, false},
+      std::vector<DExpr>{DExpr::Const(3), DExpr::Var(23), DExpr::Const(2)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape gather_shape,
+      ShapeInference::InferGatherShape(
+          input, indices,
+          HloGatherInstruction::MakeGatherDimNumbers(
+              /*offset_dims=*/{2, 3},
+              /*collapsed_slice_dims=*/{0},
+              /*start_index_map=*/{0, 1},
+              /*index_vector_dim=*/2),
+          /*slice_sizes=*/{1, 2, 2}));
+  EXPECT_TRUE(DynExpr::equal(gather_shape.expressions(0), DExpr::Const(3)));
+  EXPECT_TRUE(DynExpr::equal(gather_shape.expressions(1), DExpr::Var(23)));
+  EXPECT_TRUE(DynExpr::equal(gather_shape.expressions(2), DExpr::Var(22)));
+  EXPECT_TRUE(DynExpr::equal(gather_shape.expressions(3), DExpr::Const(2)));
 }
 
 TEST_F(GatherShapeInferenceTest, NonDefaultGatherIndicesLeafDim_A) {
@@ -4734,6 +5435,20 @@ TEST_F(ShapeInferenceTest, UnboundedAllToAll) {
       << " expected: " << ShapeUtil::HumanString(expected);
 }
 
+TEST_F(ShapeInferenceTest, AllToAllPreservesExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {12, 5},
+      std::vector<DExpr>{DExpr::Var(14), DExpr::Const(5)});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferAllToAllShape(/*shape=*/operand,
+                                         /*split_dimension=*/0,
+                                         /*concat_dimension=*/0,
+                                         /*split_count=*/3));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(14)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(5)));
+}
+
 TEST_F(ShapeInferenceTest, UnboundedAllToAllTupleUnsupported) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape operand, ParseShape("f32[?, 10]"));
   TF_ASSERT_OK_AND_ASSIGN(const Shape expected,
@@ -4813,6 +5528,30 @@ TEST_F(ShapeInferenceTest, UnboundedBatchNormGrad) {
       << " expected: " << ShapeUtil::HumanString(expected_tuple_shape);
 }
 
+TEST_F(ShapeInferenceTest, BatchNormGradPreservesFeatureExpression) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 7, 11}, std::vector<bool>{false, true, false},
+      std::vector<DExpr>{DExpr::Const(5), DExpr::Var(12), DExpr::Const(11)});
+  const Shape scale =
+      ShapeUtil::MakeShape(F32, {7}, std::vector<DExpr>{DExpr::Var(12)});
+  const Shape mean =
+      ShapeUtil::MakeShape(F32, {7}, std::vector<DExpr>{DExpr::Var(12)});
+  const Shape variance =
+      ShapeUtil::MakeShape(F32, {7}, std::vector<DExpr>{DExpr::Var(12)});
+  const Shape output_grad = operand;
+
+  TF_ASSERT_OK_AND_ASSIGN(const Shape inferred_shape,
+                          ShapeInference::InferBatchNormGradShape(
+                              operand, scale, mean, variance, output_grad, 1));
+  ASSERT_TRUE(inferred_shape.IsTuple());
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(0).expressions(1), DExpr::Var(12)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(1).expressions(0), DExpr::Var(12)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(2).expressions(0), DExpr::Var(12)));
+}
+
 TEST_F(ShapeInferenceTest, UnboundedBatchNormInference) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape operand, ParseShape("f32[?, ?, 7]"));
   TF_ASSERT_OK_AND_ASSIGN(const Shape scale, ParseShape("f32[5]"));
@@ -4843,6 +5582,27 @@ TEST_F(ShapeInferenceTest, UnboundedBatchNormTraining) {
   EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected_tuple_shape))
       << "inferred: " << ShapeUtil::HumanString(inferred_shape)
       << " expected: " << ShapeUtil::HumanString(expected_tuple_shape);
+}
+
+TEST_F(ShapeInferenceTest, BatchNormTrainingPreservesFeatureExpression) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 7, 11}, std::vector<bool>{false, true, false},
+      std::vector<DExpr>{DExpr::Const(5), DExpr::Var(13), DExpr::Const(11)});
+  const Shape scale =
+      ShapeUtil::MakeShape(F32, {7}, std::vector<DExpr>{DExpr::Var(13)});
+  const Shape offset =
+      ShapeUtil::MakeShape(F32, {7}, std::vector<DExpr>{DExpr::Var(13)});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferBatchNormTrainingShape(operand, scale, offset, 1));
+  ASSERT_TRUE(inferred_shape.IsTuple());
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(0).expressions(1), DExpr::Var(13)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(1).expressions(0), DExpr::Var(13)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(2).expressions(0), DExpr::Var(13)));
 }
 
 TEST_F(ShapeInferenceTest, UnboundedBroadcastUnsupportedOperand) {
@@ -5234,6 +5994,29 @@ TEST_F(ShapeInferenceTest, UnboundedDotGeneral) {
       << " expected: " << ShapeUtil::HumanString(expected);
 }
 
+TEST_F(ShapeInferenceTest, DotGeneralPreservesBatchExpression) {
+  const Shape lhs = ShapeUtil::MakeShape(
+      F32, {2, 3, 5}, std::vector<bool>{true, false, false},
+      {DExpr::Var(1), DExpr::Const(3), DExpr::Const(5)});
+  const Shape rhs = ShapeUtil::MakeShape(
+      F32, {2, 5, 7}, std::vector<bool>{true, false, false},
+      {DExpr::Var(1), DExpr::Const(5), DExpr::Const(7)});
+
+  DotDimensionNumbers dnums;
+  dnums.add_lhs_batch_dimensions(0);
+  dnums.add_rhs_batch_dimensions(0);
+  dnums.add_lhs_contracting_dimensions(2);
+  dnums.add_rhs_contracting_dimensions(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferDotOpShape(lhs, rhs, dnums,
+                                      /*preferred_element_type=*/std::nullopt));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(1)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(3)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(2), DExpr::Const(7)));
+}
+
 TEST_F(ShapeInferenceTest, UnboundedDynamicSlice) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape operand, ParseShape("f32[?, 10]"));
   TF_ASSERT_OK_AND_ASSIGN(const Shape start_index, ParseShape("s32[]"));
@@ -5249,6 +6032,23 @@ TEST_F(ShapeInferenceTest, UnboundedDynamicSlice) {
       << " expected: " << ShapeUtil::HumanString(expected);
 }
 
+TEST_F(ShapeInferenceTest, DynamicSliceUsesProvidedExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {9, 10},
+      std::vector<DExpr>{DExpr::Var(15), DExpr::Const(10)});
+  const Shape start_index = ShapeUtil::MakeShape(S32, {});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferDynamicSliceShape(
+          operand, /*start_index_shapes=*/{start_index, start_index},
+          /*slice_sizes=*/{4, 10},
+          /*slice_exprs=*/{DExpr::Var(15) / 2, DExpr::Const(10)},
+          /*allow_scalar_indices=*/true));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(15) / 2));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(10)));
+}
+
 TEST_F(ShapeInferenceTest, UnboundedDynamicUpdateSlice) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape operand, ParseShape("f32[?, 10]"));
   TF_ASSERT_OK_AND_ASSIGN(const Shape update, ParseShape("f32[?, 5]"));
@@ -5262,6 +6062,42 @@ TEST_F(ShapeInferenceTest, UnboundedDynamicUpdateSlice) {
   EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected))
       << "inferred: " << ShapeUtil::HumanString(inferred_shape)
       << " expected: " << ShapeUtil::HumanString(expected);
+}
+
+TEST_F(ShapeInferenceTest, DynamicUpdateSlicePreservesOperandExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {12, 10},
+      std::vector<DExpr>{DExpr::Var(30), DExpr::Const(10)});
+  const Shape update = ShapeUtil::MakeShape(
+      F32, {4, 10},
+      std::vector<DExpr>{DExpr::Const(4), DExpr::Const(10)});
+  const Shape start_index = ShapeUtil::MakeShape(S32, {});
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferDynamicUpdateSliceShape(
+          operand, update, /*start_index_shapes=*/{start_index, start_index},
+          /*allow_scalar_indices=*/true));
+
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(30)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Const(10)));
+}
+
+TEST_F(ShapeInferenceTest, DynamicReshapePreservesExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {5, 4, 8},
+      std::vector<bool>{false, false, false},
+      std::vector<DExpr>{DExpr::Var(21), DExpr::Const(4), DExpr::Const(8)});
+  const Shape dim_size = ShapeUtil::MakeShape(S32, {});
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferDynamicReshapeShape(
+          operand, /*dim_size_shapes=*/{&dim_size},
+          /*new_size_bounds=*/{160},
+          /*dims_are_dynamic=*/{false},
+          /*expressions=*/{DExpr::Var(21) * DExpr::Const(32)}));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             DExpr::Var(21) * DExpr::Const(32)));
 }
 
 TEST_F(ShapeInferenceTest, UnboundedFftWithFFT) {
@@ -5499,6 +6335,56 @@ TEST_F(ShapeInferenceTest, UnboundedReduce) {
       << " expected: " << ShapeUtil::HumanString(expected);
 }
 
+TEST_F(ShapeInferenceTest, ReducePreservesRemainingExpressions) {
+  const Shape input = ShapeUtil::MakeShape(
+      F32, {5, 7, 11},
+      std::vector<DExpr>{DExpr::Var(9), DExpr::Const(7), DExpr::Var(10)});
+  ProgramShape to_apply =
+      ShapeUtil::MakeProgramShape({f32_, f32_}, f32_);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReduceShape({&input, &f32_}, {1}, to_apply));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape, ShapeUtil::MakeShape(
+                          F32, {5, 11},
+                          std::vector<DExpr>{DExpr::Var(9), DExpr::Var(10)})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0), DExpr::Var(9)));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Var(10)));
+}
+
+TEST_F(ShapeInferenceTest, ReduceTupleOutputsPreserveRemainingExpressions) {
+  const Shape input0 = ShapeUtil::MakeShape(
+      F32, {5, 7, 11},
+      std::vector<DExpr>{DExpr::Var(31), DExpr::Const(7), DExpr::Var(32)});
+  const Shape input1 = ShapeUtil::MakeShape(
+      S32, {5, 7, 11},
+      std::vector<DExpr>{DExpr::Var(31), DExpr::Const(7), DExpr::Var(32)});
+  ProgramShape to_apply = ShapeUtil::MakeProgramShape(
+      {f32_, s32_, f32_, s32_}, ShapeUtil::MakeTupleShape({f32_, s32_}));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferReduceShape(
+          {&input0, &input1, &f32_, &s32_}, {1}, to_apply));
+
+  ASSERT_TRUE(inferred_shape.IsTuple());
+  ASSERT_EQ(inferred_shape.tuple_shapes_size(), 2);
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(0).expressions(0),
+                     DExpr::Var(31)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(0).expressions(1),
+                     DExpr::Var(32)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(1).expressions(0),
+                     DExpr::Var(31)));
+  EXPECT_TRUE(
+      DynExpr::equal(inferred_shape.tuple_shapes(1).expressions(1),
+                     DExpr::Var(32)));
+}
+
 TEST_F(ShapeInferenceTest, UnboundedReduceInvalidReduceDimension) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape input0, ParseShape("f32[7, 5]"));
   TF_ASSERT_OK_AND_ASSIGN(const Shape input1, ParseShape("f32[?, 5]"));
@@ -5721,6 +6607,47 @@ TEST_F(ShapeInferenceTest, UnboundedSelectAndScatter) {
   EXPECT_TRUE(ShapeUtil::Equal(result, expected))
       << "inferred: " << ShapeUtil::HumanString(result)
       << " expected: " << ShapeUtil::HumanString(expected);
+}
+
+TEST_F(ShapeInferenceTest, SelectAndScatterPreservesOperandExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {11, 10}, std::vector<DExpr>{DExpr::Var(36), DExpr::Const(10)});
+  const Shape source = ShapeUtil::MakeShape(
+      F32, {5, 10}, std::vector<DExpr>{(((DExpr::Var(36) - 1) / 2) + 1).simplify(),
+                                       DExpr::Const(10)});
+  const Shape init_value = ShapeUtil::MakeShape(F32, {});
+
+  Window window;
+  WindowDimension dim0;
+  dim0.set_base_dilation(1);
+  dim0.set_size(3);
+  dim0.set_stride(2);
+  dim0.set_padding_low(0);
+  dim0.set_padding_high(1);
+  dim0.set_window_dilation(1);
+
+  WindowDimension dim1;
+  dim1.set_base_dilation(1);
+  dim1.set_size(1);
+  dim1.set_stride(1);
+  dim1.set_padding_low(0);
+  dim1.set_padding_high(0);
+  dim1.set_window_dilation(1);
+
+  *window.add_dimensions() = dim0;
+  *window.add_dimensions() = dim1;
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape result,
+      ShapeInference::InferSelectAndScatterShape(
+          operand,
+          /*select_shape=*/ShapeUtil::MakeProgramShape({f32_, f32_}, pred_),
+          window, source, init_value,
+          /*scatter_shape=*/
+          ShapeUtil::MakeProgramShape({f32_, f32_}, f32_)));
+
+  EXPECT_TRUE(DynExpr::equal(result.expressions(0), DExpr::Var(36)));
+  EXPECT_TRUE(DynExpr::equal(result.expressions(1), DExpr::Const(10)));
 }
 
 TEST_P(UnboundedBinaryOpShapeInferenceTest, UnboundedShiftLeft) {

@@ -198,7 +198,8 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
     absl::string_view suffix, llvm::Value* start_index, llvm::Value* end_index,
     llvm::Value* stride, UnrollMode unroll_mode, bool prevent_vectorization,
     DExpr expression) {
-  if (inner_loop_body_bb_ != nullptr) {
+  if (inner_loop_body_bb_ != nullptr &&
+      b_->GetInsertBlock() != inner_loop_body_bb_) {
     // Create this loop inside the previous one.
     b_->SetInsertPoint(&*inner_loop_body_bb_->getFirstInsertionPt());
   }
@@ -208,6 +209,14 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
     llvm::Value* expr_value = llvm_ir::EmitExpression(b_, expression);
     actual_end = b_->CreateSelect(b_->CreateICmpULT(end_index, expr_value),
                                   end_index, expr_value, "loop_end_min");
+  }
+  // Emitting dynamic expressions may materialize helper instructions into the
+  // current function entry block using a different builder. Re-seat the
+  // insertion point at the end of the current block so the loop preheader is
+  // always in a well-formed state before emitting the loop.
+  llvm::BasicBlock* insert_block = b_->GetInsertBlock();
+  if (insert_block != nullptr && insert_block->getTerminator() == nullptr) {
+    b_->SetInsertPoint(insert_block);
   }
   std::unique_ptr<ForLoop> loop(new ForLoop(
       /*prefix=*/name_, suffix, start_index, actual_end, stride, unroll_mode,
@@ -227,15 +236,32 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
   return loop;
 }
 
+llvm::Value* ForLoopNest::MaterializeLoopEndValue(int64_t end_index,
+                                                  DExpr expression) {
+  llvm::Value* end = GetConstantWithIndexType(end_index);
+  if (expression && expression->is_dynamic()) {
+    if (inner_loop_body_bb_ != nullptr) {
+      // Keep dynamic loop bound materialization in the same block that will
+      // act as the nested loop preheader so the resulting values dominate the
+      // loop header compare.
+      b_->SetInsertPoint(&*inner_loop_body_bb_->getFirstInsertionPt());
+    }
+    end = EmitExpression(b_, expression);
+  }
+  llvm::BasicBlock* insert_block = b_->GetInsertBlock();
+  if (insert_block != nullptr && insert_block->getTerminator() == nullptr) {
+    b_->SetInsertPoint(insert_block);
+  }
+  return end;
+}
+
 std::unique_ptr<ForLoop> ForLoopNest::AddLoop(
     int64_t start_index, int64_t end_index, absl::string_view suffix,
     UnrollMode unroll_mode, bool prevent_vectorization,
     DExpr expression) {
   CHECK_LE(start_index, end_index);
 
-  llvm::Value* end = (expression && expression->is_dynamic())
-                         ? EmitExpression(b_, expression)
-                         : GetConstantWithIndexType(end_index);
+  llvm::Value* end = MaterializeLoopEndValue(end_index, expression);
   return AddLoop(suffix, GetConstantWithIndexType(start_index), end,
                  unroll_mode, prevent_vectorization);
 }
@@ -248,9 +274,7 @@ std::unique_ptr<ForLoop> ForLoopNest::AddLoop(int64_t start_index,
                                               DExpr expression) {
   CHECK_LE(start_index, end_index);
 
-  llvm::Value* end = (expression && expression->is_dynamic())
-                         ? EmitExpression(b_, expression)
-                         : GetConstantWithIndexType(end_index);
+  llvm::Value* end = MaterializeLoopEndValue(end_index, expression);
   return AddLoop(suffix, GetConstantWithIndexType(start_index), end,
                  GetConstantWithIndexType(stride), unroll_mode,
                  prevent_vectorization);

@@ -39,6 +39,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/arithmetic_optimizer.h"
 #include "tensorflow/core/grappler/optimizers/auto_mixed_precision.h"
 #include "tensorflow/core/grappler/optimizers/auto_parallel.h"
+#include "tensorflow/core/grappler/optimizers/broadcasted_matmul_factorization.h"
 #include "tensorflow/core/grappler/optimizers/common_subgraph_elimination.h"
 #include "tensorflow/core/grappler/optimizers/constant_folding.h"
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer_registry.h"
@@ -82,6 +83,8 @@ namespace {
 constexpr int kDefaultNumberOfIterations = 2;
 constexpr int kDefaultMinGraphNodes = 4;
 constexpr char kSimplifyGatherOfPack[] = "simplify_gather_of_pack";
+constexpr char kBroadcastedMatMulFactorization[] =
+    "broadcasted_matmul_factorization";
 constexpr char kGrapplerCategory[] = "Grappler";
 
 int64_t NumEdges(const GraphDef& graph) {
@@ -225,6 +228,8 @@ std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
   MK_OPT("shape", "shape_optimization", new ShapeOptimizer());
   MK_OPT(kSimplifyGatherOfPack, "simplify_gather_of_pack",
          new SimplifyGatherOfPackOptimizer());
+  MK_OPT(kBroadcastedMatMulFactorization, "broadcasted_matmul_factorization",
+         new BroadcastedMatMulFactorizationOptimizer());
   MK_OPT("remap", "remapping",
          new Remapper(cfg_.remapping(), cfg_.cpu_layout_conversion(),
                       xla_auto_clustering_on_));
@@ -362,6 +367,10 @@ absl::Status MetaOptimizer::InitializeOptimizers(
     VLOG(2) << "debug_stripper is not implemented in TFG yet";
   if (cfg_.simplify_gather_of_pack() != RewriterConfig::OFF) {
     optimizers->push_back(std::make_unique<SimplifyGatherOfPackOptimizer>());
+  }
+  if (cfg_.broadcasted_matmul_factorization() != RewriterConfig::OFF) {
+    optimizers->push_back(
+        std::make_unique<BroadcastedMatMulFactorizationOptimizer>());
   }
   if (BOTH_NOT_OFF(constant_folding)) {
     if (USER_IS_EXPERIMENTAL_MLIR(constant_folding) ||
@@ -1372,6 +1381,7 @@ bool MetaOptimizerEnabled(const ConfigProto& cfg) {
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_mkl()) ||
          AutoMixedPrecisionEnabled(rewrite_cfg.auto_mixed_precision_cpu()) ||
          rewrite_cfg.simplify_gather_of_pack() != RewriterConfig::OFF ||
+         rewrite_cfg.broadcasted_matmul_factorization() != RewriterConfig::OFF ||
          !rewrite_cfg.optimizers().empty() ||
          !rewrite_cfg.custom_optimizers().empty();
 }

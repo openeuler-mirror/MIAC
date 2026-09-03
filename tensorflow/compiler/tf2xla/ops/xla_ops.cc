@@ -1147,15 +1147,19 @@ xla::Shape GetShape(shape_inference::ShapeHandle shape_handle,
   std::vector<xla::DExpr> expressions;
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   for (int i = 0, rank = c->Rank(shape_handle); i < rank; ++i) {
-    bool is_dynamic = !c->ValueKnown(c->Dim(shape_handle, i));
-    int dynamic_multiplier = c->DynamicRatio(c->Dim(shape_handle, i));
+    const auto dim = c->Dim(shape_handle, i);
+    const bool is_dynamic = !c->ValueKnown(dim);
     dynamic_dims.push_back(is_dynamic);
     if (flags->tf_xla_enable_dynamic_sizes) {
-      expressions.push_back(xla::DExpr::Const(dynamic_multiplier) *
-                            xla::DExpr::Var(1));
+      DimExpr* expr = c->GetDimExpr(dim);
+      expressions.push_back(
+          expr != nullptr
+              ? *expr
+              : c->ValueKnown(dim)
+                    ? xla::DExpr::Const(c->Value(dim))
+                    : xla::DExpr::Unknown(xla::kMissingExpressionSentinel));
     }
-    dims.push_back(is_dynamic ? xla::Shape::kUnboundedSize
-                              : c->Value(c->Dim(shape_handle, i)));
+    dims.push_back(is_dynamic ? xla::Shape::kUnboundedSize : c->Value(dim));
   }
   xla::Shape sh(
       // Type matters only for indices. S64 is the widest possible type.

@@ -45,6 +45,22 @@ namespace {
   };                                                                   \
   REGISTER_XLA_OP(Name(#NAME), NAME##Op);
 
+#define XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(NAME, COMPUTATION)        \
+  class NAME##NativeOp : public XlaOpKernel {                          \
+   public:                                                             \
+    explicit NAME##NativeOp(OpKernelConstruction* ctx)                 \
+        : XlaOpKernel(ctx) {}                                          \
+    void Compile(XlaOpKernelContext* ctx) override {                   \
+      xla::XlaBuilder* b = ctx->builder();                             \
+      (void)b;                                                         \
+      xla::XlaOp x = ctx->Input(0);                                    \
+      xla::XlaOp y = COMPUTATION;                                      \
+      ctx->SetOutput(0, y);                                            \
+    }                                                                  \
+  };                                                                   \
+  REGISTER_XLA_OP_FACTORY(                                             \
+      Name(#NAME), CreateDynamicNativeXlaOpKernel<NAME##NativeOp>);
+
 XLAJIT_MAKE_UNARY(ComplexAbs, xla::Abs(x));
 
 XLAJIT_MAKE_UNARY(Angle, xla::Atan2(xla::Imag(x), xla::Real(x)));
@@ -52,29 +68,30 @@ XLAJIT_MAKE_UNARY(Angle, xla::Atan2(xla::Imag(x), xla::Real(x)));
 XLAJIT_MAKE_UNARY(Conj, xla::Conj(x));
 
 // Return x if x>0, otherwise -x.
-REGISTER_XLA_OP(Name("Abs"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Abs, xla::Abs(x));
 XLAJIT_MAKE_UNARY(Acos, xla::Acos(x));
 XLAJIT_MAKE_UNARY(Acosh, xla::Acosh(x));
 XLAJIT_MAKE_UNARY(Asin, xla::Asin(x))
 XLAJIT_MAKE_UNARY(Asinh, xla::Asinh(x));
-REGISTER_XLA_OP(Name("Atan"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Atan, xla::Atan(x));
 XLAJIT_MAKE_UNARY(Atanh, xla::Atanh(x));
-REGISTER_XLA_OP(Name("Ceil"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("Cos"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Ceil, xla::Ceil(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Cos, xla::Cos(x));
 XLAJIT_MAKE_UNARY(Cosh, xla::Cosh(x));
 XLAJIT_MAKE_UNARY(Sin, xla::Sin(x));
 XLAJIT_MAKE_UNARY(Tan, xla::Tan(x));
-REGISTER_XLA_OP(Name("Exp"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("Expm1"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("Floor"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("IsFinite"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("IsInf"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("IsNan"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Exp, xla::Exp(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Expm1, xla::Expm1(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Floor, xla::Floor(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(IsFinite, xla::IsFinite(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(IsInf, xla::IsInf(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(IsNan, xla::IsNan(x));
 // Return 1/x
 XLAJIT_MAKE_UNARY(Inv, xla::ScalarLike(x, 1.0) / x);
-REGISTER_XLA_OP(Name("Reciprocal"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(
+    Reciprocal, xla::ScalarLike(x, 1.0) / x);
 XLAJIT_MAKE_UNARY(Log, xla::Log(x));
-REGISTER_XLA_OP(Name("Log1p"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Log1p, xla::Log1p(x));
 
 XLAJIT_MAKE_UNARY(Invert, xla::Not(x));
 XLAJIT_MAKE_UNARY(LogicalNot, xla::Not(x));
@@ -85,12 +102,12 @@ XLAJIT_MAKE_UNARY(Neg, -x);
 XLAJIT_MAKE_UNARY(Rint, xla::RoundToEven(x));
 XLAJIT_MAKE_UNARY(Round, xla::RoundToEven(x));
 
-REGISTER_XLA_OP(Name("Rsqrt"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Rsqrt, xla::Rsqrt(x));
 
-REGISTER_XLA_OP(Name("Sigmoid"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Sigmoid, xla::Logistic(x));
 
 // Returns NaN if x is NaN, 0 if x is 0, -1 if x < 0 and 1 if x > 0.
-REGISTER_XLA_OP(Name("Sign"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Sign, xla::Sign(x));
 XLAJIT_MAKE_UNARY(Sinh, xla::Sinh(x));
 
 static xla::XlaOp Softplus(xla::XlaBuilder* b, xla::XlaOp features) {
@@ -115,11 +132,11 @@ XLAJIT_MAKE_UNARY(Softplus, Softplus(b, x));
 
 // softsign(x) = x / (abs(x) + 1)
 XLAJIT_MAKE_UNARY(Softsign, x / (xla::Abs(x) + xla::ScalarLike(x, 1.0)));
-REGISTER_XLA_OP(Name("Sqrt"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Sqrt, xla::Sqrt(x));
 XLAJIT_MAKE_UNARY(Square, x* x);
-REGISTER_XLA_OP(Name("Tanh"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("Real"), MlirXlaOpKernel);
-REGISTER_XLA_OP(Name("Imag"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Tanh, xla::Tanh(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Real, xla::Real(x));
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Imag, xla::Imag(x));
 XLAJIT_MAKE_UNARY(Erf, xla::Erf(x));
 XLAJIT_MAKE_UNARY(Erfc, xla::Erfc(x));
 XLAJIT_MAKE_UNARY(Erfinv, xla::ErfInv(x));
@@ -127,7 +144,7 @@ XLAJIT_MAKE_UNARY(Erfinv, xla::ErfInv(x));
 XLAJIT_MAKE_UNARY(Ndtri, xla::ScalarLike(x, std::sqrt(2.0)) *
                              xla::ErfInv(xla::ScalarLike(x, 2.0) * x -
                                          xla::ScalarLike(x, 1.0)));
-REGISTER_XLA_OP(Name("Lgamma"), MlirXlaOpKernel);
+XLAJIT_MAKE_UNARY_WITH_MLIR_FALLBACK(Lgamma, xla::Lgamma(x));
 XLAJIT_MAKE_UNARY(Digamma, xla::Digamma(x));
 XLAJIT_MAKE_UNARY(BesselI0e, xla::BesselI0e(x));
 XLAJIT_MAKE_UNARY(BesselI1e, xla::BesselI1e(x));

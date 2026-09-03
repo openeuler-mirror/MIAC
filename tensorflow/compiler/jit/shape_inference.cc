@@ -58,9 +58,13 @@ absl::Status ShapeHandleToTensorShape(
   for (int32_t i = 0, end = dims.size(); i < end; ++i) {
     dims[i] = context->Value(context->Dim(handle, i));
     if (flags->tf_xla_enable_dynamic_sizes) {
-      auto ratio = context->DynamicRatio(context->Dim(handle, i));
-      dyn_exprs[i] = ratio > 0 ? xla::DExpr::Const(ratio) * xla::DExpr::Var(1)
-                               : xla::DExpr::Const(dims[i]);
+      DimExpr* expr = context->GetDimExpr(context->Dim(handle, i));
+      dyn_exprs[i] = expr != nullptr
+                         ? *expr
+                         : context->ValueKnown(context->Dim(handle, i))
+                               ? xla::DExpr::Const(dims[i])
+                               : xla::DExpr::Unknown(
+                                     xla::kMissingExpressionSentinel);
     }
   }
   auto status =

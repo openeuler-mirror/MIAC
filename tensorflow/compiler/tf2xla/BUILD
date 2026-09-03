@@ -1103,6 +1103,8 @@ tf_cc_test(
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
         "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler/costs:graph_properties",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",
@@ -1576,6 +1578,7 @@ cc_library(
     deps = [
         ":xla_compiler",
         ":xla_expression",
+        "//tensorflow/compiler/jit:flags",
         "//tensorflow/compiler/jit:xla_compile_util",
         "//tensorflow/compiler/mlir/tf2xla/api/v1:compile_mlir_util_no_tf_dialect_passes",
         "//tensorflow/compiler/mlir/utils:array_container_utils",

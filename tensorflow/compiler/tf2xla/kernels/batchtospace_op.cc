@@ -36,6 +36,8 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp input,
   const int input_rank = input_tensor_shape.dims();
   const absl::InlinedVector<int64_t, 4> input_shape =
       input_tensor_shape.dim_sizes();
+  const std::vector<xla::DExpr> input_exprs =
+      input_tensor_shape.get_filled_expressions();
   const int block_rank = block_shape.size();
 
   OP_REQUIRES(
@@ -76,11 +78,21 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp input,
                               ") is not divisible by product of block sizes (",
                               block_num_elems, ")"));
   std::vector<int64_t> reshaped_shape(input_rank + block_rank);
+  std::vector<xla::DExpr> reshaped_exprs(input_rank + block_rank);
   std::copy(block_shape.begin(), block_shape.end(), reshaped_shape.begin());
+  std::fill(reshaped_exprs.begin(), reshaped_exprs.begin() + block_rank,
+            xla::DExpr::Const(0));
+  for (int i = 0; i < block_rank; ++i) {
+    reshaped_exprs[i] = xla::DExpr::Const(block_shape[i]);
+  }
   reshaped_shape[block_rank] = batch_size / block_num_elems;
+  reshaped_exprs[block_rank] =
+      (input_exprs[0] / xla::DExpr::Const(block_num_elems)).simplify();
   std::copy(input_shape.begin() + 1, input_shape.end(),
             reshaped_shape.begin() + block_rank + 1);
-  xla::XlaOp reshaped = xla::Reshape(input, reshaped_shape);
+  std::copy(input_exprs.begin() + 1, input_exprs.end(),
+            reshaped_exprs.begin() + block_rank + 1);
+  xla::XlaOp reshaped = xla::Reshape(input, reshaped_shape, reshaped_exprs);
 
   // 2. Permute dimensions of `reshaped` to produce `permuted` of shape
   //      [batch / prod(block_shape),
@@ -111,15 +123,22 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp input,
   //       ...,
   //       input_shape[N-1]]
   std::vector<int64_t> reshaped_permuted_shape(input_rank);
+  std::vector<xla::DExpr> reshaped_permuted_exprs(input_rank);
   reshaped_permuted_shape[0] = batch_size / block_num_elems;
+  reshaped_permuted_exprs[0] =
+      (input_exprs[0] / xla::DExpr::Const(block_num_elems)).simplify();
   for (int i = 0; i < block_rank; ++i) {
     reshaped_permuted_shape[1 + i] = block_shape[i] * input_shape[1 + i];
+    reshaped_permuted_exprs[1 + i] =
+        (xla::DExpr::Const(block_shape[i]) * input_exprs[1 + i]).simplify();
   }
   std::copy(remainder_shape.begin(), remainder_shape.end(),
             reshaped_permuted_shape.begin() + 1 + block_rank);
+  std::copy(input_exprs.begin() + 1 + block_rank, input_exprs.end(),
+            reshaped_permuted_exprs.begin() + 1 + block_rank);
 
   xla::XlaOp reshaped_permuted =
-      xla::Reshape(permuted, reshaped_permuted_shape);
+      xla::Reshape(permuted, reshaped_permuted_shape, reshaped_permuted_exprs);
 
   // 4. Crop the start and end of dimensions `[1, ..., M]` of
   //    `reshaped_permuted` according to `crops` to produce the output of shape:
@@ -133,6 +152,9 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp input,
   std::vector<int64_t> start_indices(input_rank, 0);
   std::vector<int64_t> end_indices = reshaped_permuted_shape;
   std::vector<int64_t> strides(input_rank, 1);
+  std::vector<xla::DExpr> start_exprs(input_rank, xla::DExpr::Const(0));
+  std::vector<xla::DExpr> end_exprs(reshaped_permuted_exprs.begin(),
+                                    reshaped_permuted_exprs.end());
   for (int i = 0; i < block_rank; ++i) {
     int64_t crop_start = crops.Get<int64_t>({i, 0});
     int64_t crop_end = crops.Get<int64_t>({i, 1});
@@ -140,14 +162,16 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp input,
                 errors::InvalidArgument("Crops must be non-negative"));
     start_indices[1 + i] = crop_start;
     end_indices[1 + i] -= crop_end;
+    start_exprs[1 + i] = xla::DExpr::Const(crop_start);
+    end_exprs[1 + i] = (reshaped_permuted_exprs[1 + i] - crop_end).simplify();
     OP_REQUIRES(
         ctx, start_indices[1 + i] <= end_indices[1 + i],
         errors::InvalidArgument(
             "Cropped size must be non-negative: start: ", crop_start,
             " end: ", crop_end, " size ", reshaped_permuted_shape[1 + i]));
   }
-  xla::XlaOp output =
-      xla::Slice(reshaped_permuted, start_indices, end_indices, strides);
+  xla::XlaOp output = xla::Slice(reshaped_permuted, start_indices, end_indices,
+                                 start_exprs, end_exprs, strides);
   ctx->SetOutput(0, output);
 }
 

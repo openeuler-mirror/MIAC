@@ -29,6 +29,7 @@ limitations under the License.
 #include "xla/hlo/builder/lib/matrix.h"
 #include "xla/hlo/builder/lib/pooling.h"
 #include "xla/hlo/builder/xla_builder.h"
+#include "xla/shape_util.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -38,7 +39,9 @@ namespace {
 
 // Create a diagonal / batch diagonal matrix with 'input' on the diagonal.
 xla::XlaOp CreateDiagonal(xla::XlaOp input, int64_t last_dim_size,
-                          absl::Span<const int64_t> other_dims) {
+                          const xla::DExpr& last_dim_expr,
+                          absl::Span<const int64_t> other_dims,
+                          absl::Span<const xla::DExpr> other_dim_exprs) {
   xla::XlaBuilder* builder = input.builder();
   // Create two matrices that have the following forms, and compare them:
   //
@@ -49,14 +52,23 @@ xla::XlaOp CreateDiagonal(xla::XlaOp input, int64_t last_dim_size,
   //
   // This produces a predicate matrix of the right size, with "true" on the
   // diagonal.
-  xla::XlaOp iota = xla::Iota(builder, xla::S32, last_dim_size);
-  xla::XlaOp iota_broadcast = xla::Broadcast(iota, {last_dim_size});
+  xla::XlaOp iota = xla::Iota(
+      builder,
+      xla::ShapeUtil::MakeShape(xla::S32, std::vector<int64_t>{last_dim_size},
+                                std::vector<xla::DExpr>{last_dim_expr}),
+      /*iota_dimension=*/0);
+  xla::XlaOp iota_broadcast = xla::Broadcast(
+      iota, {last_dim_size}, {last_dim_expr, last_dim_expr});
   xla::XlaOp mask = xla::Eq(iota_broadcast, iota, {0});
 
   // If this is a batched diagonal, broadcast the mask across the other
   // dimensions.
   if (!other_dims.empty()) {
-    mask = xla::Broadcast(mask, other_dims);
+    std::vector<xla::DExpr> mask_exprs(other_dim_exprs.begin(),
+                                       other_dim_exprs.end());
+    mask_exprs.push_back(last_dim_expr);
+    mask_exprs.push_back(last_dim_expr);
+    mask = xla::Broadcast(mask, other_dims, mask_exprs);
   }
 
   // Broadcast the input, and then use the mask computed above to select the
@@ -69,13 +81,17 @@ xla::XlaOp CreateDiagonal(xla::XlaOp input, int64_t last_dim_size,
   std::vector<int64_t> out_dim_sizes(other_dims.begin(), other_dims.end());
   out_dim_sizes.push_back(last_dim_size);
   out_dim_sizes.push_back(last_dim_size);
+  std::vector<xla::DExpr> out_dim_exprs(other_dim_exprs.begin(),
+                                        other_dim_exprs.end());
+  out_dim_exprs.push_back(last_dim_expr);
+  out_dim_exprs.push_back(last_dim_expr);
 
   // Broadcast into the second to last dimension.
   std::vector<int64_t> broadcast_dimensions(other_dims.size() + 1);
   absl::c_iota(broadcast_dimensions, 0);
   ++broadcast_dimensions.back();
-  xla::XlaOp input_broadcast =
-      xla::BroadcastInDim(input, out_dim_sizes, broadcast_dimensions);
+  xla::XlaOp input_broadcast = xla::BroadcastInDim(
+      input, out_dim_sizes, broadcast_dimensions, out_dim_exprs);
   return xla::Select(mask, input_broadcast, xla::ZerosLike(input_broadcast));
 }
 
@@ -102,17 +118,26 @@ class DiagOp : public XlaOpKernel {
     //                            [0, 0, 0, 4]]
 
     // Flattens the input to 1D.
+    xla::DExpr flattened_expr = xla::DExpr::Const(1);
+    std::vector<xla::DExpr> input_exprs = input_shape.get_filled_expressions();
+    for (const xla::DExpr& expr : input_exprs) {
+      flattened_expr = (flattened_expr * expr).simplify();
+    }
     int64_t size = input_shape.num_elements();
-    input = xla::Reshape(input, {size}, {});
+    input = xla::Reshape(input, {size}, {flattened_expr});
 
     // Create an R2 with the R1 diagonal.
-    xla::XlaOp diag = CreateDiagonal(input, size, /*other_dims=*/{});
+    xla::XlaOp diag =
+        CreateDiagonal(input, size, flattened_expr, /*other_dims=*/{},
+                       /*other_dim_exprs=*/{});
 
     // Reshapes to the final shape.
     std::vector<int64_t> new_dims(dims.size() * 2);
     std::copy(dims.begin(), dims.end(), new_dims.begin());
     std::copy(dims.begin(), dims.end(), new_dims.begin() + dims.size());
-    diag = xla::Reshape(diag, new_dims);
+    std::vector<xla::DExpr> new_exprs(input_exprs.begin(), input_exprs.end());
+    new_exprs.insert(new_exprs.end(), input_exprs.begin(), input_exprs.end());
+    diag = xla::Reshape(diag, new_dims, new_exprs);
 
     ctx->SetOutput(0, diag);
   }

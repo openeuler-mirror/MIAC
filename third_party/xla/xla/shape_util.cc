@@ -124,6 +124,7 @@ void PrintBufferShape(Printer* printer, const Shape& shape) {
 // its Layout.
 absl::StatusOr<Shape> MakeValidatedShapeWithLayoutInternal(
     PrimitiveType element_type, absl::Span<const int64_t> dimensions,
+    absl::Span<const DExpr> expressions,
     absl::Span<const int64_t> minor_to_major, absl::Span<const Tile> tiles,
     int64_t tail_padding_alignment_in_elements,
     PrimitiveType index_primitive_type, PrimitiveType pointer_primitive_type,
@@ -140,7 +141,8 @@ absl::StatusOr<Shape> MakeValidatedShapeWithLayoutInternal(
                            PrimitiveType_Name(element_type));
   }
   TF_ASSIGN_OR_RETURN(Shape shape,
-                      ShapeUtil::MakeValidatedShape(element_type, dimensions));
+                      ShapeUtil::MakeValidatedShape(element_type, dimensions,
+                                                    expressions));
   if (element_size_in_bits ==
       ShapeUtil::ByteSizeOfPrimitiveType(element_type) * 8) {
     // Only set element_size_in_bits if it's different from the default value.
@@ -382,7 +384,22 @@ static std::vector<DExpr> MakeExpressions(
     int64_t tail_padding_alignment_in_elements, int64_t element_size_in_bits,
     int64_t memory_space, absl::Span<const SplitConfig> split_configs) {
   return MakeValidatedShapeWithLayoutInternal(
-      element_type, dimensions, minor_to_major, tiles,
+      element_type, dimensions, /*expressions=*/{}, minor_to_major, tiles,
+      tail_padding_alignment_in_elements,
+      /*index_primitive_type=*/PRIMITIVE_TYPE_INVALID,
+      /*pointer_primitive_type=*/PRIMITIVE_TYPE_INVALID, element_size_in_bits,
+      memory_space, split_configs,
+      /*physical_shape=*/std::nullopt);
+}
+
+/* static */ absl::StatusOr<Shape> ShapeUtil::MakeValidatedShapeWithDenseLayout(
+    PrimitiveType element_type, absl::Span<const int64_t> dimensions,
+    absl::Span<const DExpr> expressions,
+    absl::Span<const int64_t> minor_to_major, absl::Span<const Tile> tiles,
+    int64_t tail_padding_alignment_in_elements, int64_t element_size_in_bits,
+    int64_t memory_space, absl::Span<const SplitConfig> split_configs) {
+  return MakeValidatedShapeWithLayoutInternal(
+      element_type, dimensions, expressions, minor_to_major, tiles,
       tail_padding_alignment_in_elements,
       /*index_primitive_type=*/PRIMITIVE_TYPE_INVALID,
       /*pointer_primitive_type=*/PRIMITIVE_TYPE_INVALID, element_size_in_bits,
@@ -395,7 +412,7 @@ ShapeUtil::MakeValidatedShapeWithSparseLayout(
     PrimitiveType element_type, absl::Span<const int64_t> dimensions,
     absl::Span<const int64_t> minor_to_major) {
   return MakeValidatedShapeWithLayoutInternal(
-      element_type, dimensions, minor_to_major,
+      element_type, dimensions, /*expressions=*/{}, minor_to_major,
       /*tiles=*/{}, /*tail_padding_alignment_in_elements=*/1,
       /*index_primitive_type=*/PRIMITIVE_TYPE_INVALID,
       /*pointer_primitive_type=*/PRIMITIVE_TYPE_INVALID,

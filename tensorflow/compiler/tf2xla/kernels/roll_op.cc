@@ -94,8 +94,8 @@ class RollOp : public XlaOpKernel {
       std::vector<xla::XlaOp> start_indices(
           input_shape.dims(), xla::Zero(ctx->builder(), shift_type));
       start_indices[cur_axis] = axis_size - offset;
-      output =
-          xla::DynamicSlice(concat, start_indices, input_shape.dim_sizes());
+      output = xla::DynamicSlice(concat, start_indices, input_shape.dim_sizes(),
+                                 input_shape.get_filled_expressions());
     }
     ctx->SetOutput(0, output);
   }

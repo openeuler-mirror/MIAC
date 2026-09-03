@@ -3463,21 +3463,7 @@ absl::Status IrEmitter::CanDoFastConcatenate(
   const auto* concatenate = Cast<HloConcatenateInstruction>(instr);
 
   const Shape& output_shape = concatenate->shape();
-  if (output_shape.has_dynamic_expr()) {
-    return absl::Status(
-        absl::StatusCode::kFailedPrecondition,
-        "Cannot generate memcpy-based concat for dynamic output expressions");
-  }
-  for (int64_t i = 0; i < concatenate->operand_count(); ++i) {
-    auto* op = concatenate->operand(i);
-    if (op->shape().has_dynamic_expr()) {
-      return absl::Status(
-          absl::StatusCode::kFailedPrecondition,
-          absl::StrCat(
-              "Cannot generate memcpy-based concat for dynamic operand "
-              "expressions at operand index ",
-              i));
-    }
+  for (auto* op : concatenate->operands()) {
     if (!LayoutUtil::Equal(op->shape().layout(), output_shape.layout())) {
       return absl::Status(absl::StatusCode::kFailedPrecondition,
                           "Operand has mismatching layouts");

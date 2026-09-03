@@ -946,14 +946,17 @@ absl::Status XlaCompiler::XLAShapeForArgument(
         TF_RETURN_IF_ERROR(RewriteLayoutWithShardedShape(
             arg_sharding, /*use_fast_memory=*/false,
             options_.shape_determination_fns, xla_shape));
-        // If the arg is dynamic then we update the shape to reflect that. The
-        // layout etc above lose it by forcing a swap to TensorShape.
-        if (std::holds_alternative<xla::Shape>(arg.shape) &&
-            std::get<xla::Shape>(arg.shape).is_dynamic()) {
-          xla::Shape dynamic_shape = std::get<xla::Shape>(arg.shape);
-          for (int i = 0; i < xla_shape->dimensions().size(); ++i) {
-            xla_shape->set_dynamic_dimension(
-                i, dynamic_shape.is_dynamic_dimension(i));
+        // If the arg carries dynamic metadata or symbolic expressions then we
+        // update the shape to reflect that. The layout logic above routes
+        // through TensorShape and can otherwise discard this information.
+        if (std::holds_alternative<xla::Shape>(arg.shape)) {
+          const xla::Shape& original_shape = std::get<xla::Shape>(arg.shape);
+          if (original_shape.is_dynamic() || original_shape.has_dynamic_expr()) {
+            for (int i = 0; i < xla_shape->dimensions().size(); ++i) {
+              xla_shape->set_dynamic_dimension(
+                  i, original_shape.is_dynamic_dimension(i));
+              xla_shape->set_expression(i, original_shape.expressions(i));
+            }
           }
         }
       } else {

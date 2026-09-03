@@ -132,13 +132,18 @@ class DynamicStitchOp : public XlaOpKernel {
     int64_t result_rank = 1 + data0_shape.dims() - indices0_shape.dims();
     if (number_of_indices == 0) {
       std::vector<int64_t> result_shape(result_rank);
+      std::vector<xla::DExpr> result_expressions(result_rank,
+                                                 xla::DExpr::Const(0));
       for (int d = indices0_shape.dims(); d < data0_shape.dims(); d++) {
         result_shape[d - indices0_shape.dims() + 1] = data0_shape.dim_size(d);
+        result_expressions[d - indices0_shape.dims() + 1] =
+            data0_shape.get_filled_expression(d);
       }
       xla::PrimitiveType element_type =
           ctx->input_xla_type(ctx->num_inputs() - 1);
       xla::Literal empty_literal = xla::Literal::CreateFromShape(
-          xla::ShapeUtil::MakeShape(element_type, result_shape));
+          xla::ShapeUtil::MakeShape(element_type, result_shape,
+                                    result_expressions));
       ctx->SetOutput(0, xla::ConstantLiteral(ctx->builder(), empty_literal));
       return;
     }
@@ -186,7 +191,8 @@ class DynamicStitchOp : public XlaOpKernel {
       if (new_shape == data_shapes[input_num]) {
         input[input_num] = handle;
       } else {
-        input[input_num] = xla::Reshape(handle, new_shape.dim_sizes());
+        input[input_num] = xla::Reshape(handle, new_shape.dim_sizes(),
+                                        new_shape.get_filled_expressions());
       }
     }
 

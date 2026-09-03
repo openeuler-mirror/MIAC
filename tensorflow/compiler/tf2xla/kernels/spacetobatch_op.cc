@@ -44,6 +44,8 @@ void SpaceToBatch(XlaOpKernelContext* ctx, const xla::XlaOp input,
   const int input_rank = input_tensor_shape.dims();
   const absl::InlinedVector<int64_t, 4> input_shape =
       input_tensor_shape.dim_sizes();
+  const std::vector<xla::DExpr> input_exprs =
+      input_tensor_shape.get_filled_expressions();
   const int block_rank = block_shape.size();
 
   OP_REQUIRES(
@@ -68,6 +70,7 @@ void SpaceToBatch(XlaOpKernelContext* ctx, const xla::XlaOp input,
   //  input according to `paddings` to produce `padded` of shape `padded_shape`.
   xla::PaddingConfig padding_config;
   std::vector<int64_t> padded_shape(input_shape.begin(), input_shape.end());
+  std::vector<xla::DExpr> padded_exprs(input_exprs.begin(), input_exprs.end());
   int64_t block_num_elems = 1LL;
   padding_config.add_dimensions();  // Don't pad the batch dimension.
   for (int i = 0; i < block_rank; ++i) {
@@ -83,6 +86,7 @@ void SpaceToBatch(XlaOpKernelContext* ctx, const xla::XlaOp input,
     dim->set_edge_padding_low(pad_start);
     dim->set_edge_padding_high(pad_end);
     padded_shape[1 + i] += pad_start + pad_end;
+    padded_exprs[1 + i] = (padded_exprs[1 + i] + pad_start + pad_end).simplify();
     block_num_elems = MultiplyWithoutOverflow(block_num_elems, block_shape[i]);
   }
   // Don't pad the remainder dimensions.
@@ -116,7 +120,9 @@ void SpaceToBatch(XlaOpKernelContext* ctx, const xla::XlaOp input,
   //       block_shape[M-1]] +
   //      remaining_shape
   std::vector<int64_t> reshaped_padded_shape(input_rank + block_rank);
+  std::vector<xla::DExpr> reshaped_padded_exprs(input_rank + block_rank);
   reshaped_padded_shape[0] = batch_size;
+  reshaped_padded_exprs[0] = padded_exprs[0];
   for (int i = 0; i < block_rank; ++i) {
     OP_REQUIRES(ctx, padded_shape[1 + i] % block_shape[i] == 0,
                 errors::InvalidArgument("padded_shape[", 1 + i,
@@ -126,11 +132,17 @@ void SpaceToBatch(XlaOpKernelContext* ctx, const xla::XlaOp input,
 
     reshaped_padded_shape[1 + i * 2] = padded_shape[1 + i] / block_shape[i];
     reshaped_padded_shape[1 + i * 2 + 1] = block_shape[i];
+    reshaped_padded_exprs[1 + i * 2] =
+        (padded_exprs[1 + i] / block_shape[i]).simplify();
+    reshaped_padded_exprs[1 + i * 2 + 1] = xla::DExpr::Const(block_shape[i]);
   }
   std::copy(remainder_shape.begin(), remainder_shape.end(),
             reshaped_padded_shape.begin() + 1 + 2 * block_rank);
+  std::copy(input_exprs.begin() + 1 + block_rank, input_exprs.end(),
+            reshaped_padded_exprs.begin() + 1 + 2 * block_rank);
 
-  xla::XlaOp reshaped_padded = xla::Reshape(padded, reshaped_padded_shape);
+  xla::XlaOp reshaped_padded =
+      xla::Reshape(padded, reshaped_padded_shape, reshaped_padded_exprs);
 
   // 3. Permute dimensions of `reshaped_padded` to produce
   //    `permuted_reshaped_padded` of shape:
@@ -163,14 +175,21 @@ void SpaceToBatch(XlaOpKernelContext* ctx, const xla::XlaOp input,
   // Determine the length of the prefix of block dims that can be combined
   // into the batch dimension due to having no padding and block_shape=1.
   std::vector<int64_t> output_shape(input_rank);
+  std::vector<xla::DExpr> output_exprs(input_rank);
   output_shape[0] = output_dim;
+  output_exprs[0] = (input_exprs[0] * xla::DExpr::Const(block_num_elems)).simplify();
   for (int i = 0; i < block_rank; ++i) {
     output_shape[1 + i] = padded_shape[1 + i] / block_shape[i];
+    output_exprs[1 + i] =
+        (padded_exprs[1 + i] / block_shape[i]).simplify();
   }
   std::copy(remainder_shape.begin(), remainder_shape.end(),
             output_shape.begin() + 1 + block_rank);
+  std::copy(input_exprs.begin() + 1 + block_rank, input_exprs.end(),
+            output_exprs.begin() + 1 + block_rank);
 
-  xla::XlaOp output = xla::Reshape(permuted_reshaped_padded, output_shape);
+  xla::XlaOp output =
+      xla::Reshape(permuted_reshaped_padded, output_shape, output_exprs);
   ctx->SetOutput(0, output);
 }
 

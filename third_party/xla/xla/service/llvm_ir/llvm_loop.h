@@ -268,6 +268,8 @@ class ForLoopNest {
   llvm::BasicBlock* GetInnerLoopBodyBasicBlock() { return inner_loop_body_bb_; }
 
  private:
+  llvm::Value* MaterializeLoopEndValue(int64_t end_index, DExpr expression);
+
   void SetIndexType(llvm::Type* index_ty) {
     index_type_ = index_ty == nullptr ? b_->getInt64Ty() : index_ty;
   }

@@ -62,7 +62,8 @@ REGISTER_XLA_OP(Name("IdentityN")
                     .CompilationOnly(),
                 IdentityOp);
 REGISTER_XLA_OP(Name("PlaceholderWithDefault"), IdentityOp);
-REGISTER_XLA_OP(Name("PreventGradient"), MlirXlaOpKernel);
+REGISTER_XLA_OP_FACTORY(
+    Name("PreventGradient"), CreateDynamicNativeXlaOpKernel<IdentityOp>);
 REGISTER_XLA_OP(Name("StopGradient").AllowVariantTypes(), IdentityOp);
 REGISTER_XLA_OP(Name("Snapshot"), IdentityOp);
 REGISTER_XLA_OP(Name("_EagerConst"), IdentityOp);

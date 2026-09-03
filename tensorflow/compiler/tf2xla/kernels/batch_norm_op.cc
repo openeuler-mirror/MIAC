@@ -241,7 +241,9 @@ class FusedBatchNormOpEx : public FusedBatchNormOp {
 
 REGISTER_XLA_OP(Name("FusedBatchNorm"), FusedBatchNormOp);
 REGISTER_XLA_OP(Name("FusedBatchNormV2"), FusedBatchNormOp);
-REGISTER_XLA_OP(Name("FusedBatchNormV3"), MlirXlaOpKernel);
+REGISTER_XLA_OP_FACTORY(
+    Name("FusedBatchNormV3"),
+    CreateDynamicNativeXlaOpKernel<FusedBatchNormOpV3>);
 REGISTER_XLA_OP(Name("_FusedBatchNormEx"), FusedBatchNormOpEx);
 
 class FusedBatchNormGradOp : public XlaOpKernel {
@@ -358,7 +360,9 @@ class FusedBatchNormGradOp : public XlaOpKernel {
 
 REGISTER_XLA_OP(Name("FusedBatchNormGrad"), FusedBatchNormGradOp);
 REGISTER_XLA_OP(Name("FusedBatchNormGradV2"), FusedBatchNormGradOp);
-REGISTER_XLA_OP(Name("FusedBatchNormGradV3"), MlirXlaOpKernel);
+REGISTER_XLA_OP_FACTORY(
+    Name("FusedBatchNormGradV3"),
+    CreateDynamicNativeXlaOpKernel<FusedBatchNormGradOp>);
 
 }  // namespace
 }  // namespace tensorflow

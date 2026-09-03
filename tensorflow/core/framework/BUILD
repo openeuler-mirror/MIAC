@@ -742,6 +742,18 @@ cc_library(
     alwayslink = 1,
 )
 
+tf_cc_test(
+    name = "tensor_shape_expr_test",
+    size = "small",
+    srcs = ["tensor_shape_expr_test.cc"],
+    deps = [
+        ":tensor_shape",
+        ":tensor_shape_expr",
+        "//tensorflow/core/platform:test",
+        "//tensorflow/core:test_main",
+    ],
+)
+
 cc_library(
     name = "resource_base",
     hdrs = ["resource_base.h"],

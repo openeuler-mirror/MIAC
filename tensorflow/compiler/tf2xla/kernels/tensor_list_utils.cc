@@ -241,9 +241,12 @@ absl::Status GetTensorListShapeFromElementTensorListShape(
     const xla::Shape& shape =
         xla::ShapeUtil::GetTupleElementShape(element_tensor_list_shape, i);
     std::vector<int64_t> dimensions = xla::SpanToVector(shape.dimensions());
+    std::vector<xla::DExpr> expressions = xla::SpanToVector(shape.expressions());
     dimensions.insert(dimensions.begin(), leading_dim);
+    expressions.insert(expressions.begin(), xla::DExpr::Const(leading_dim));
     shapes.push_back(
-        xla::ShapeUtil::MakeShape(shape.element_type(), dimensions));
+        xla::ShapeUtil::MakeShape(shape.element_type(), dimensions,
+                                  expressions));
     if (leading_dim_is_dynamic) {
       shapes.back().set_dynamic_dimension(0, true);
     }
@@ -267,9 +270,13 @@ absl::Status GetTensorListShapeFromElementShape(const xla::Shape& element_shape,
   std::vector<xla::Shape> shapes;
   std::vector<int64_t> dimensions =
       xla::SpanToVector(element_shape.dimensions());
+  std::vector<xla::DExpr> expressions =
+      xla::SpanToVector(element_shape.expressions());
   dimensions.insert(dimensions.begin(), leading_dim);
+  expressions.insert(expressions.begin(), xla::DExpr::Const(leading_dim));
   shapes.push_back(
-      xla::ShapeUtil::MakeShape(element_shape.element_type(), dimensions));
+      xla::ShapeUtil::MakeShape(element_shape.element_type(), dimensions,
+                                expressions));
   shapes.back().set_dynamic_dimension(0, leading_dim_is_dynamic);
   shapes.push_back(xla::ShapeUtil::MakeShape(xla::PrimitiveType::S32,
                                              std::vector<int64_t>{}));
@@ -289,7 +296,8 @@ absl::Status CreateZerosTensorListWithShape(
         xla::ShapeUtil::GetTupleElementShape(list_shape, i);
     xla::XlaOp zero =
         xla::ConstantLiteral(b, xla::LiteralUtil::Zero(shape.element_type()));
-    xla::XlaOp zeros = xla::Broadcast(zero, shape.dimensions());
+    xla::XlaOp zeros =
+        xla::Broadcast(zero, shape.dimensions(), shape.expressions());
     TF_RET_CHECK(dynamic_dims[i].size() == shape.dimensions().size());
     for (int64_t dim = 0; dim < shape.dimensions().size(); ++dim) {
       if (shape.is_dynamic_dimension(dim)) {

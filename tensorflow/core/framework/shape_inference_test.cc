@@ -1035,6 +1035,35 @@ TEST_F(ShapeInferenceTest, KnownShapeToProto) {
   EXPECT_FALSE(proto.unknown_rank());
   EXPECT_EQ(3, proto.dim_size());
   EXPECT_EQ(1, proto.dim(0).size());
+  ASSERT_EQ(3, proto.expressions_size());
+  EXPECT_EQ(1, proto.expressions(0).constant_value());
+  EXPECT_EQ(2, proto.expressions(1).constant_value());
+  EXPECT_EQ(3, proto.expressions(2).constant_value());
+  EXPECT_FALSE(proto.dim(0).has_expr());
+}
+
+TEST_F(ShapeInferenceTest, DynamicExpressionShapeProtoRoundTrip) {
+  NodeDef def;
+  std::vector<ShapeHandle> empty;
+  InferenceContext c(kVersion, def, MakeOpDef(0, 2), empty, {}, {}, {});
+
+  TensorShapeProto input_proto;
+  input_proto.add_dim()->set_size(-1);
+  DimExprToProto(DimExpr::Var(7), input_proto.add_expressions());
+
+  ShapeHandle shape;
+  TF_ASSERT_OK(c.MakeShapeFromShapeProto(input_proto, &shape));
+  TensorShapeProto proto;
+  c.ShapeHandleToProto(shape, &proto);
+
+  ASSERT_EQ(1, proto.expressions_size());
+  EXPECT_EQ(DimExpr::Var(7), DimExprFromProto(proto.expressions(0)));
+  EXPECT_FALSE(proto.dim(0).has_expr());
+
+  ShapeHandle restored;
+  TF_ASSERT_OK(c.MakeShapeFromShapeProto(proto, &restored));
+  ASSERT_NE(nullptr, c.GetDimExpr(c.Dim(restored, 0)));
+  EXPECT_EQ(DimExpr::Var(7), *c.GetDimExpr(c.Dim(restored, 0)));
 }
 
 TEST_F(ShapeInferenceTest, UnknownShapeToProto) {
