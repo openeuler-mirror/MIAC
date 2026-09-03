@@ -962,105 +962,6 @@ GetXlaCompilerArgsAndSnapshotVariables(
   return result;
 }
 
-
-std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DimExpr::Cons(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DimExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      auto lhs = ExprFromProto(proto.add_node().lhs());
-      auto rhs = ExprFromProto(proto.add_node().rhs());
-      // Note: These are owning pointers, but ExprAdd takes raw pointers.
-      // The caller must manage lifetime appropriately.
-      return std::make_unique<ExprAdd>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = ExprFromProto(proto.sub_node().lhs());
-      auto rhs = ExprFromProto(proto.sub_node().rhs());
-      return std::make_unique<ExprSub>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = ExprFromProto(proto.mul_node().lhs());
-      auto rhs = ExprFromProto(proto.mul_node().rhs());
-      return std::make_unique<ExprMul>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = ExprFromProto(proto.div_node().lhs());
-      auto rhs = ExprFromProto(proto.div_node().rhs());
-      return std::make_unique<ExprDiv>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMaxNode: {
-      auto lhs = ExprFromProto(proto.max_node().lhs());
-      auto rhs = ExprFromProto(proto.max_node().rhs());
-      return std::make_unique<ExprMax>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kGtNode: {
-      auto lhs = ExprFromProto(proto.gt_node().lhs());
-      auto rhs = ExprFromProto(proto.gt_node().rhs());
-      return std::make_unique<ExprGt>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSelectNode: {
-      auto pred = ExprFromProto(proto.select_node().pred());
-      auto on_true = ExprFromProto(proto.select_node().on_true());
-      auto on_false = ExprFromProto(proto.select_node().on_false());
-      return std::make_unique<ExprSelect>(pred.release(), on_true.release(),
-                                          on_false.release());
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
-static xla::DExpr DimExprToDExpr(const DimExpr* e) {
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      auto* ac = static_cast<const Constant*>(e);
-      return xla::DExpr::Const(ac->value());
-    }
-    case DimExpr::Kind::kVariable: {
-      auto* av = static_cast<const Variable*>(e);
-      return xla::DExpr::Var(av->id());
-    }
-    case DimExpr::Kind::kAdd: {
-      auto* ee = static_cast<const ExprAdd*>(e);
-      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kSub: {
-      auto* ee = static_cast<const ExprSub*>(e);
-      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      auto* ee = static_cast<const ExprMul*>(e);
-      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      auto* ee = static_cast<const ExprDiv*>(e);
-      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMax: {
-      auto* ee = static_cast<const ExprMax*>(e);
-      return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
-                             DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kGt: {
-      auto* ee = static_cast<const ExprGt*>(e);
-      return xla::DExpr::Gt(DimExprToDExpr(ee->lhs()),
-                            DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kSelect: {
-      auto* ee = static_cast<const ExprSelect*>(e);
-      return xla::DExpr::Select(DimExprToDExpr(ee->pred()),
-                                DimExprToDExpr(ee->on_true()),
-                                DimExprToDExpr(ee->on_false()));
-    }
-  }
-  return xla::DExpr::Unknown();
-}
-
-
 absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
     const XlaPlatformInfo& platform_info,
@@ -1282,8 +1183,8 @@ absl::Status CompileToLocalExecutable(
             for (int idx = 0; idx < exp.size(); ++idx) {
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.
-              auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
-              e = normalize_dynamic_expr(e).simplify();
+              auto e =
+                  normalize_dynamic_expr(DimExprFromProto(exp[idx])).simplify();
               if (e->is_dynamic()) {
                 VLOG(1) << "Calling dynamic expression solve for compile "
                           << "argument " << arg_index << " dimension " << idx
@@ -1324,7 +1225,7 @@ absl::Status CompileToLocalExecutable(
             dyn_exprs.push_back(xla::DExpr::Const(d));
           }
           for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
+            auto e = DimExprFromProto(exp[j]);
             if (e->is_dynamic()) {
               e = normalize_dynamic_expr(
                   e, absl::StrCat("arg=", arg_index, " dim=", j,

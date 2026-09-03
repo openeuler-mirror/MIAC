@@ -64,6 +64,19 @@ std::vector<DynExpr*> ExpressionChildren(DynExpr* expr) {
       auto* div = static_cast<Div*>(expr);
       return {div->get_lhs(), div->get_rhs()};
     }
+    case DExpr::Kind::kMax: {
+      auto* max = static_cast<MaxExpr*>(expr);
+      return {max->get_lhs(), max->get_rhs()};
+    }
+    case DExpr::Kind::kGt: {
+      auto* gt = static_cast<GtExpr*>(expr);
+      return {gt->get_lhs(), gt->get_rhs()};
+    }
+    case DExpr::Kind::kSelect: {
+      auto* select = static_cast<SelectExpr*>(expr);
+      return {select->get_pred(), select->get_on_true(),
+              select->get_on_false()};
+    }
   }
   return {};
 }
@@ -126,6 +139,28 @@ std::unique_ptr<DynExpr> ReplaceSubexpression(DynExpr* expr, DynExpr* target,
       return std::make_unique<Div>(
           ReplaceSubexpression(div->get_lhs(), target, replacement).release(),
           ReplaceSubexpression(div->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kMax: {
+      auto* max = static_cast<MaxExpr*>(expr);
+      return std::make_unique<MaxExpr>(
+          ReplaceSubexpression(max->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(max->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kGt: {
+      auto* gt = static_cast<GtExpr*>(expr);
+      return std::make_unique<GtExpr>(
+          ReplaceSubexpression(gt->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(gt->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kSelect: {
+      auto* select = static_cast<SelectExpr*>(expr);
+      return std::make_unique<SelectExpr>(
+          ReplaceSubexpression(select->get_pred(), target, replacement)
+              .release(),
+          ReplaceSubexpression(select->get_on_true(), target, replacement)
+              .release(),
+          ReplaceSubexpression(select->get_on_false(), target, replacement)
+              .release());
     }
   }
   return expr->clone();
@@ -556,6 +591,9 @@ DynExpr* operator*(DynExpr& lhs, DynExpr& rhs) {
 }
 DynExpr* operator*(int64_t k, DynExpr& rhs) {
   return new Mul(DynExpr::_(k), rhs.clone().release());
+}
+DynExpr* operator*(DynExpr& lhs, int64_t k) {
+  return new Mul(lhs.clone().release(), DynExpr::_(k));
 }
 DynExpr* operator/(DynExpr& lhs, DynExpr& rhs) {
   return new Div(lhs.clone().release(), rhs.clone().release());

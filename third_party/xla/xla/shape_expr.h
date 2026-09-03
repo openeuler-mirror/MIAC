@@ -503,13 +503,12 @@ class Div : public DynExpr {
   }
 
   bool is_constant() const override {
-    return lhs->is_constant() && rhs->is_constant() && rhs->get_val() != 0 &&
-           lhs->get_val() % rhs->get_val() == 0;
+    return lhs->is_constant() && rhs->is_constant() && rhs->get_val() != 0;
   }
 
   int64_t get_val() const override {
-    CHECK(is_constant()) << "Attempted to get integer value of non-integral "
-                         << "division expression";
+    CHECK(is_constant())
+        << "Attempted to evaluate a non-constant or zero-divisor expression";
     return lhs->get_val() / rhs->get_val();
   }
 
@@ -726,6 +725,7 @@ class SelectExpr : public DynExpr {
 
 DynExpr* operator*(DynExpr& lhs, DynExpr& rhs);
 DynExpr* operator*(int64_t k, DynExpr& rhs);
+DynExpr* operator*(DynExpr& lhs, int64_t k);
 DynExpr* operator/(DynExpr& lhs, DynExpr& rhs);
 DynExpr* operator/(DynExpr& lhs, int64_t d);
 DynExpr* operator+(DynExpr& lhs, DynExpr& rhs);
@@ -740,6 +740,9 @@ inline DExpr operator*(const DExpr& lhs, const DExpr& rhs) {
 }
 inline DExpr operator*(int64_t lhs, const DExpr& rhs) {
   return DExpr::Adopt(lhs * *rhs.get());
+}
+inline DExpr operator*(const DExpr& lhs, int64_t rhs) {
+  return DExpr::Adopt(*lhs.get() * rhs);
 }
 inline DExpr operator/(const DExpr& lhs, const DExpr& rhs) {
   return DExpr::Adopt(*lhs.get() / *rhs.get());

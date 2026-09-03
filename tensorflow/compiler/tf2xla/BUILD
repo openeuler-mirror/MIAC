@@ -1103,6 +1103,8 @@ tf_cc_test(
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
         "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler/costs:graph_properties",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",

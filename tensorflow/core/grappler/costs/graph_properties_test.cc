@@ -43,16 +43,29 @@ namespace tensorflow {
 namespace grappler {
 namespace {
 
-std::string ShapeDimExprDebugString(const TensorShapeProto& shape, int dim) {
+DimExpr ShapeDimExpr(const TensorShapeProto& shape, int dim) {
   if (shape.dim(dim).has_expr()) {
-    auto expr = DimExpr::FromProto(shape.dim(dim).expr());
-    return expr ? expr->DebugString() : "";
+    return DimExprFromProto(shape.dim(dim).expr());
   }
-  if (dim >= shape.expressions_size()) {
-    return "";
+  if (dim < shape.expressions_size()) {
+    return DimExprFromProto(shape.expressions(dim));
   }
-  auto expr = DimExpr::FromProto(shape.expressions(dim));
-  return expr ? expr->DebugString() : "";
+  return DimExpr();
+}
+
+std::string ShapeDimExprDebugString(const TensorShapeProto& shape, int dim) {
+  return DimExprDebugString(ShapeDimExpr(shape, dim));
+}
+
+bool DimExprEqual(const DimExpr& lhs_expr, const DimExpr& rhs_expr) {
+  if (!lhs_expr || !rhs_expr) return !lhs_expr && !rhs_expr;
+  return lhs_expr == rhs_expr;
+}
+
+bool ShapeDimExprEqual(const TensorShapeProto& lhs, int lhs_dim,
+                       const TensorShapeProto& rhs, int rhs_dim) {
+  return DimExprEqual(ShapeDimExpr(lhs, lhs_dim),
+                      ShapeDimExpr(rhs, rhs_dim));
 }
 
 void ExpectVariableId(const TensorShapeProto& shape, int dim,
@@ -805,9 +818,11 @@ TEST_F(GraphPropertiesTest, WhileLoop) {
   // since we concatenated along the batch dim.
   auto shape_in = properties.GetOutputProperties("ones").at(0).shape();
   auto shape_out = properties.GetOutputProperties("while/Exit_1").at(0).shape();
-  EXPECT_GE(-2, shape_in.dim(0).size());
-  EXPECT_GE(-2, shape_out.dim(0).size());
-  EXPECT_NE(shape_in.dim(0).size(), shape_out.dim(0).size());
+  EXPECT_EQ(-1, shape_in.dim(0).size());
+  EXPECT_EQ(-1, shape_out.dim(0).size());
+  EXPECT_TRUE(ShapeDimExpr(shape_in, 0));
+  EXPECT_TRUE(ShapeDimExpr(shape_out, 0));
+  EXPECT_FALSE(ShapeDimExprEqual(shape_in, 0, shape_out, 0));
 }
 
 TEST_F(GraphPropertiesTest, NestedLoop) {
@@ -1998,10 +2013,10 @@ TEST_F(GraphPropertiesTest, SymbolicShapes) {
   const auto shape_c = properties.GetOutputProperties("c").at(0).shape();
   EXPECT_EQ(2, shape_a.dim_size());
   EXPECT_EQ(shape_a.dim_size(), shape_c.dim_size());
-  EXPECT_GE(-2, shape_a.dim(0).size());
-  EXPECT_EQ(shape_a.dim(0).size(), shape_c.dim(0).size());
-  EXPECT_GE(-2, shape_a.dim(1).size());
-  EXPECT_EQ(shape_a.dim(1).size(), shape_c.dim(1).size());
+  EXPECT_EQ(-1, shape_a.dim(0).size());
+  EXPECT_TRUE(ShapeDimExprEqual(shape_a, 0, shape_c, 0));
+  EXPECT_EQ(-1, shape_a.dim(1).size());
+  EXPECT_TRUE(ShapeDimExprEqual(shape_a, 1, shape_c, 1));
 
   PartialTensorShape shape(shape_a);
   EXPECT_FALSE(shape.IsFullyDefined());
@@ -2011,29 +2026,29 @@ TEST_F(GraphPropertiesTest, SymbolicShapes) {
   const auto shape_d = properties.GetOutputProperties("d").at(0).shape();
   EXPECT_EQ(1, shape_b.dim_size());
   EXPECT_EQ(shape_b.dim_size(), shape_d.dim_size());
-  EXPECT_GE(-2, shape_b.dim(0).size());
-  EXPECT_NE(shape_a.dim(0).size(), shape_b.dim(0).size());
-  EXPECT_EQ(shape_b.dim(0).size(), shape_d.dim(0).size());
+  EXPECT_EQ(-1, shape_b.dim(0).size());
+  EXPECT_FALSE(ShapeDimExprEqual(shape_a, 0, shape_b, 0));
+  EXPECT_TRUE(ShapeDimExprEqual(shape_b, 0, shape_d, 0));
 
   const auto shape_e = properties.GetOutputProperties("e").at(0).shape();
   ASSERT_EQ(2, shape_e.dim_size());
-  EXPECT_EQ(shape_e.dim(0).size(), shape_c.dim(0).size());
-  EXPECT_NE(shape_e.dim(1).size(), shape_c.dim(1).size());
-  EXPECT_NE(shape_e.dim(0).size(), shape_d.dim(0).size());
+  EXPECT_TRUE(ShapeDimExprEqual(shape_e, 0, shape_c, 0));
+  EXPECT_TRUE(ShapeDimExprEqual(shape_e, 1, shape_c, 1));
+  EXPECT_FALSE(ShapeDimExprEqual(shape_e, 0, shape_d, 0));
 
   const auto shape_f = properties.GetOutputProperties("f").at(0).shape();
   ASSERT_EQ(2, shape_f.dim_size());
-  EXPECT_EQ(shape_f.dim(0).size(), shape_a.dim(0).size());
-  EXPECT_EQ(shape_f.dim(1).size(), shape_a.dim(1).size());
+  EXPECT_TRUE(ShapeDimExprEqual(shape_f, 0, shape_a, 0));
+  EXPECT_TRUE(ShapeDimExprEqual(shape_f, 1, shape_a, 1));
 
   const auto shape_h = properties.GetOutputProperties("h").at(0).shape();
   ASSERT_EQ(2, shape_f.dim_size());
-  EXPECT_EQ(shape_h.dim(0).size(), shape_c.dim(0).size());
-  EXPECT_EQ(shape_h.dim(1).size(), shape_c.dim(1).size());
+  EXPECT_TRUE(ShapeDimExprEqual(shape_h, 0, shape_c, 0));
+  EXPECT_TRUE(ShapeDimExprEqual(shape_h, 1, shape_c, 1));
 
   const auto shape_j = properties.GetOutputProperties("j").at(0).shape();
   ASSERT_EQ(1, shape_j.dim_size());
-  EXPECT_EQ(shape_j.dim(0).size(), shape_a.dim(1).size());
+  EXPECT_TRUE(ShapeDimExprEqual(shape_j, 0, shape_a, 1));
 }
 
 TEST_F(GraphPropertiesTest, SymbolicInputShapesShareSameSymbol) {
@@ -2376,10 +2391,8 @@ TEST_F(GraphPropertiesTest, SizeContentsPropagateToFillOutput) {
       properties.GetOutputProperties("filled").at(0).shape();
 
   ASSERT_EQ(1, inferred_fill_shape.dim_size());
-  auto expected = std::make_unique<ExprMul>(
-      DimExpr::FromProto(inferred_input_shape.dim(0).expr()).release(),
-      new Constant(24));
-  EXPECT_EQ(expected->DebugString(),
+  DimExpr expected = ShapeDimExpr(inferred_input_shape, 0) * DimExpr::Const(24);
+  EXPECT_EQ(DimExprDebugString(expected),
             ShapeDimExprDebugString(inferred_fill_shape, 0));
 }
 
@@ -2411,12 +2424,10 @@ TEST_F(GraphPropertiesTest, SizeContentsPropagateToRangeOutput) {
       properties.GetOutputProperties("range").at(0).shape();
 
   ASSERT_EQ(1, inferred_range_shape.dim_size());
-  auto expected = std::make_unique<ExprDiv>(
-      new ExprAdd(
-          DimExpr::FromProto(inferred_input_shape.dim(0).expr()).release(),
-          new Constant(2)),
-      new Constant(3));
-  EXPECT_EQ(expected->DebugString(),
+  DimExpr expected =
+      (ShapeDimExpr(inferred_input_shape, 0) + DimExpr::Const(2)) /
+      DimExpr::Const(3);
+  EXPECT_EQ(DimExprDebugString(expected),
             ShapeDimExprDebugString(inferred_range_shape, 0));
 }
 
@@ -2587,20 +2598,17 @@ TEST_F(GraphPropertiesTest, ShapeTensorContentsThroughGatherProdAndUnpack) {
   ASSERT_EQ(3, input_shape.dim_size());
   ASSERT_EQ(2, gather_reshape_shape.dim_size());
   ASSERT_EQ(2, unpack_reshape_shape.dim_size());
-  ASSERT_GT(input_shape.expressions_size(), 0);
-  ASSERT_GT(gather_reshape_shape.expressions_size(), 0);
-  ASSERT_GT(unpack_reshape_shape.expressions_size(), 0);
+  ASSERT_TRUE(ShapeDimExpr(input_shape, 0));
+  ASSERT_TRUE(ShapeDimExpr(gather_reshape_shape, 0));
+  ASSERT_TRUE(ShapeDimExpr(unpack_reshape_shape, 0));
 
-  auto expected_gather_dim0 =
-      std::make_unique<ExprMul>(DimExpr::FromProto(input_shape.expressions(0))
-                                    .release(),
-                                new Constant(26));
-  EXPECT_EQ(expected_gather_dim0->DebugString(),
-            ShapeDimExprDebugString(gather_reshape_shape, 0));
+  DimExpr input_expr = ShapeDimExpr(input_shape, 0);
+  auto expected_gather_dim0 = input_expr * DimExpr::Const(26);
+  EXPECT_TRUE(DimExprEqual(expected_gather_dim0,
+                           ShapeDimExpr(gather_reshape_shape, 0)));
   EXPECT_EQ(8, gather_reshape_shape.dim(1).size());
 
-  EXPECT_EQ(ShapeDimExprDebugString(input_shape, 0),
-            ShapeDimExprDebugString(unpack_reshape_shape, 0));
+  EXPECT_TRUE(ShapeDimExprEqual(input_shape, 0, unpack_reshape_shape, 0));
   EXPECT_EQ(208, unpack_reshape_shape.dim(1).size());
 }
 

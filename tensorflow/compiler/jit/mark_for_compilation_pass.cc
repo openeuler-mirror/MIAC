@@ -744,103 +744,6 @@ std::string ExprProtoToString(const ExpressionProto& e) {
   }
 }
 
-std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DimExpr::Cons(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DimExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      auto lhs = ExprFromProto(proto.add_node().lhs());
-      auto rhs = ExprFromProto(proto.add_node().rhs());
-      // Note: These are owning pointers, but ExprAdd takes raw pointers.
-      // The caller must manage lifetime appropriately.
-      return std::make_unique<ExprAdd>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = ExprFromProto(proto.sub_node().lhs());
-      auto rhs = ExprFromProto(proto.sub_node().rhs());
-      return std::make_unique<ExprSub>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = ExprFromProto(proto.mul_node().lhs());
-      auto rhs = ExprFromProto(proto.mul_node().rhs());
-      return std::make_unique<ExprMul>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = ExprFromProto(proto.div_node().lhs());
-      auto rhs = ExprFromProto(proto.div_node().rhs());
-      return std::make_unique<ExprDiv>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMaxNode: {
-      auto lhs = ExprFromProto(proto.max_node().lhs());
-      auto rhs = ExprFromProto(proto.max_node().rhs());
-      return std::make_unique<ExprMax>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kGtNode: {
-      auto lhs = ExprFromProto(proto.gt_node().lhs());
-      auto rhs = ExprFromProto(proto.gt_node().rhs());
-      return std::make_unique<ExprGt>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSelectNode: {
-      auto pred = ExprFromProto(proto.select_node().pred());
-      auto on_true = ExprFromProto(proto.select_node().on_true());
-      auto on_false = ExprFromProto(proto.select_node().on_false());
-      return std::make_unique<ExprSelect>(pred.release(), on_true.release(),
-                                          on_false.release());
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
-static xla::DExpr DimExprToDExpr(const DimExpr* e) {
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      auto* ac = static_cast<const Constant*>(e);
-      return xla::DExpr::Const(ac->value());
-    }
-    case DimExpr::Kind::kVariable: {
-      auto* av = static_cast<const Variable*>(e);
-      return xla::DExpr::Var(av->id());  // Use 1 all the time for now
-    }
-    case DimExpr::Kind::kAdd: {
-      auto* ee = static_cast<const ExprAdd*>(e);
-      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kSub: {
-      auto* ee = static_cast<const ExprSub*>(e);
-      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      auto* ee = static_cast<const ExprMul*>(e);
-      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      auto* ee = static_cast<const ExprDiv*>(e);
-      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMax: {
-      auto* ee = static_cast<const ExprMax*>(e);
-      return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
-                             DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kGt: {
-      auto* ee = static_cast<const ExprGt*>(e);
-      return xla::DExpr::Gt(DimExprToDExpr(ee->lhs()),
-                            DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kSelect: {
-      auto* ee = static_cast<const ExprSelect*>(e);
-      return xla::DExpr::Select(DimExprToDExpr(ee->pred()),
-                                DimExprToDExpr(ee->on_true()),
-                                DimExprToDExpr(ee->on_false()));
-    }
-  }
-  return xla::DExpr();
-}
-
 std::string DynamicExpressionToString(const xla::DExpr& expr) {
   xla::DExpr simplified = expr.simplify();
   if (!simplified && !simplified.is_unknown()) {
@@ -948,7 +851,7 @@ bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
       if (expr_ptr == nullptr) {
         continue;
       }
-      xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+      xla::DExpr dyn = *expr_ptr;
       if (!dyn || !dyn->is_dynamic() || dyn->get_all_ids().empty()) {
         continue;
       }
@@ -963,7 +866,7 @@ bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
         if (expr_ptr == nullptr) {
           continue;
         }
-        xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+        xla::DExpr dyn = *expr_ptr;
         if (!dyn || !dyn->is_dynamic() || dyn->get_all_ids().empty()) {
           continue;
         }
@@ -998,7 +901,7 @@ bool HasDynamicInputExpression(const Node* node) {
       if (expr == nullptr) {
         continue;
       }
-      xla::DExpr dynamic_expr = DimExprToDExpr(expr.get());
+      xla::DExpr dynamic_expr = *expr;
       if (dynamic_expr && dynamic_expr->is_dynamic()) {
         return true;
       }
@@ -1047,11 +950,14 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
   auto convert_graph_properties_shape = [](const TensorShapeProto& gp_shape) {
     TensorShapeProto out;
     out.set_unknown_rank(gp_shape.unknown_rank());
-    for (const auto& dim : gp_shape.dim()) {
+    for (int i = 0; i < gp_shape.dim_size(); ++i) {
+      const auto& dim = gp_shape.dim(i);
       out.add_dim()->set_size(dim.size());
       ExpressionProto* expr = out.add_expressions();
-      if (dim.expr().node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
-        *expr = dim.expr();
+      if (i < gp_shape.expressions_size() &&
+          gp_shape.expressions(i).node_type_case() !=
+              ExpressionProto::NODE_TYPE_NOT_SET) {
+        *expr = gp_shape.expressions(i);
       } else {
         expr->set_constant_value(dim.size());
       }
@@ -1072,24 +978,23 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
 
       std::vector<std::unique_ptr<DimExpr>> exprs;
       for (int d = 0; d < shp.dim_size(); ++d) {
-        const auto& dim = shp.dim(d);
-
-        const ExpressionProto& expr = dim.expr();
+        if (d >= shp.expressions_size()) continue;
+        const ExpressionProto& expr = shp.expressions(d);
         if (expr.node_type_case() == ExpressionProto::NODE_TYPE_NOT_SET)
           continue;
 
         VLOG(1) << "Node " << n.name() << " has expression "
                 << ExprProtoToString(expr);
 
-        auto ex = ExprFromProto(expr);
-        exprs.push_back(std::move(ex));
+        exprs.push_back(
+            std::make_unique<DimExpr>(DimExprFromProto(expr)));
 
         ++found;
       }
       if (shp.dim_size() == 0 && shp.unknown_rank()) {
         // Add two dummy variables to represent the unknown rank
-        exprs.push_back(std::make_unique<Variable>(-888));
-        exprs.push_back(std::make_unique<Variable>(-889));
+        exprs.push_back(std::make_unique<DimExpr>(DimExpr::Var(-888)));
+        exprs.push_back(std::make_unique<DimExpr>(DimExpr::Var(-889)));
       }
 
       list_exprs[out_idx] = std::move(exprs);
@@ -2128,7 +2033,7 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
       }
       for (auto& pDim: (it->second)[output_index]) {
         DimExpr * d= pDim.get();
-        xla::DExpr dyn = DimExprToDExpr(d);
+        xla::DExpr dyn = *d;
         if (!dyn || !dyn->is_dynamic()) {
           continue;
         }
@@ -2147,7 +2052,7 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
           if (expr_ptr == nullptr) {
             continue;
           }
-          xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+          xla::DExpr dyn = *expr_ptr;
           if (!dyn || !dyn->is_dynamic()) {
             continue;
           }

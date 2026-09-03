@@ -59,8 +59,11 @@ limitations under the License.
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/grappler/costs/graph_properties.h"
+#include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
@@ -377,6 +380,82 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressionsInAdd) {
               root_shape.expressions(1)->is_constant());
 }
 
+TEST_F(XlaCompilerDynamicSizesTest,
+       TensorFlowAndXlaAgreeOnReshapeExpression) {
+  Scope inference_scope = Scope::NewRootScope().ExitOnError();
+  auto placeholder = ops::Placeholder(
+      inference_scope.WithOpName("placeholder"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 24})));
+  auto inference_shape =
+      ops::Const(inference_scope.WithOpName("shape"), {-1, 12});
+  auto inferred_reshape = ops::Reshape(
+      inference_scope.WithOpName("reshape"), placeholder, inference_shape);
+
+  grappler::GrapplerItem item;
+  TF_ASSERT_OK(inference_scope.ToGraphDef(&item.graph));
+  grappler::GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_input_tensor_values=*/false,
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true));
+
+  const TensorShapeProto& inferred_input_shape =
+      properties.GetOutputProperties("placeholder").at(0).shape();
+  const TensorShapeProto& inferred_output_shape =
+      properties.GetOutputProperties("reshape").at(0).shape();
+  ASSERT_EQ(inferred_input_shape.expressions_size(), 2);
+  ASSERT_EQ(inferred_output_shape.expressions_size(), 2);
+  const xla::DExpr inferred_batch_expr =
+      DimExprFromProto(inferred_input_shape.expressions(0));
+  const xla::DExpr inferred_output_expr =
+      DimExprFromProto(inferred_output_shape.expressions(0));
+  ASSERT_TRUE(inferred_batch_expr->is_dynamic());
+  EXPECT_TRUE(xla::DynExpr::equal(
+      inferred_output_expr, inferred_batch_expr * xla::DExpr::Const(2)));
+
+  Scope compilation_scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(compilation_scope.WithOpName("arg"), DT_FLOAT, 0);
+  auto compilation_shape =
+      ops::Const(compilation_scope.WithOpName("shape"), {-1, 12});
+  auto reshape = ops::Reshape(compilation_scope.WithOpName("reshape"), arg,
+                              compilation_shape);
+  auto retval =
+      ops::_Retval(compilation_scope.WithOpName("retval"), reshape, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(compilation_scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 24},
+      std::vector<xla::DExpr>{inferred_batch_expr, xla::DExpr::Const(24)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "reshape",
+                                     std::move(graph), args, &result));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          LoadModuleFromHloProto(result.computation->proto()));
+  const xla::Shape& parameter_shape =
+      module->entry_computation()->parameter_instruction(0)->shape();
+  EXPECT_TRUE(xla::DynExpr::equal(parameter_shape.expressions(0),
+                                  inferred_batch_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(parameter_shape.expressions(1),
+                                  xla::DExpr::Const(24)));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions(0), 16);
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0),
+                                  inferred_output_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
+                                  xla::DExpr::Const(12)));
+}
+
 // Tests compilation preserves dynamic shape expressions through scalar
 // broadcasting in binary ops that use the explicit tf2xla broadcast helper.
 TEST_F(XlaCompilerTest,
@@ -523,7 +602,8 @@ TEST_F(XlaCompilerDynamicSizesTest, ReverseSequencePreservesExpressions) {
       xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Var(2)));
 }
 
-TEST_F(XlaCompilerDynamicSizesTest, UniquePreservesLeadingExpression) {
+TEST_F(XlaCompilerDynamicSizesTest,
+       UniqueUsesUnknownExpressionForValueCount) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
 
@@ -559,24 +639,23 @@ TEST_F(XlaCompilerDynamicSizesTest, UniquePreservesLeadingExpression) {
                                      std::move(graph), args, &result));
 
   ASSERT_EQ(result.outputs.size(), 2);
-  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
-                                      0),
-                                  xla::DExpr::Var(3)));
   EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
                                       0),
                                   xla::DExpr::Var(3)));
 
+  // The logical output shape retains its static bound, while the HLO output
+  // expression is unknown because the number of unique values is data-driven.
   const xla::Shape& values_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   const xla::Shape& indices_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {1});
-  EXPECT_TRUE(
-      xla::DynExpr::equal(values_shape.expressions(0), xla::DExpr::Var(3)));
+  EXPECT_TRUE(values_shape.expressions(0).is_unknown());
   EXPECT_TRUE(
       xla::DynExpr::equal(indices_shape.expressions(0), xla::DExpr::Var(3)));
 }
 
-TEST_F(XlaCompilerDynamicSizesTest, DynamicPartitionPreservesPartitionExpression) {
+TEST_F(XlaCompilerDynamicSizesTest,
+       DynamicPartitionUsesUnknownPartitionLengthExpression) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto data = ops::_Arg(scope.WithOpName("data"), DT_INT32, 0);
   auto partitions = ops::_Arg(scope.WithOpName("partitions"), DT_INT32, 1);
@@ -620,25 +699,19 @@ TEST_F(XlaCompilerDynamicSizesTest, DynamicPartitionPreservesPartitionExpression
                                      args, &result));
 
   ASSERT_EQ(result.outputs.size(), 2);
-  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
-                                      0),
-                                  xla::DExpr::Var(4)));
-  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[1].shape.get_filled_expression(
-                                      0),
-                                  xla::DExpr::Var(4)));
 
+  // Each logical output keeps the input-length bound. The corresponding HLO
+  // dimension is unknown because each partition length is data-dependent.
   const xla::Shape& result0_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   const xla::Shape& result1_shape =
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {1});
-  EXPECT_TRUE(
-      xla::DynExpr::equal(result0_shape.expressions(0), xla::DExpr::Var(4)));
-  EXPECT_TRUE(
-      xla::DynExpr::equal(result1_shape.expressions(0), xla::DExpr::Var(4)));
+  EXPECT_TRUE(result0_shape.expressions(0).is_unknown());
+  EXPECT_TRUE(result1_shape.expressions(0).is_unknown());
 }
 
 TEST_F(XlaCompilerDynamicSizesTest,
-       DynamicPartitionBroadcastPreservesLeadingExpression) {
+       DynamicPartitionBroadcastPreservesTrailingExpression) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto data = ops::_Arg(scope.WithOpName("data"), DT_INT32, 0);
   auto partitions = ops::_Arg(scope.WithOpName("partitions"), DT_INT32, 1);
@@ -684,14 +757,13 @@ TEST_F(XlaCompilerDynamicSizesTest,
 
   ASSERT_EQ(result.outputs.size(), 2);
   for (int i = 0; i < 2; ++i) {
-    EXPECT_TRUE(xla::DynExpr::equal(
-        result.outputs[i].shape.get_filled_expression(0), xla::DExpr::Var(40)));
+    // The trailing data dimension is preserved. The HLO leading dimension is
+    // unknown because each partition length is data-dependent.
     EXPECT_TRUE(xla::DynExpr::equal(
         result.outputs[i].shape.get_filled_expression(1), xla::DExpr::Const(3)));
     const xla::Shape& out_shape =
         xla::ShapeUtil::GetSubshape(result.xla_output_shape, {i});
-    EXPECT_TRUE(
-        xla::DynExpr::equal(out_shape.expressions(0), xla::DExpr::Var(40)));
+    EXPECT_TRUE(out_shape.expressions(0).is_unknown());
     EXPECT_TRUE(
         xla::DynExpr::equal(out_shape.expressions(1), xla::DExpr::Const(3)));
   }
@@ -2385,8 +2457,17 @@ TEST_F(XlaCompilerDynamicSizesTest, StridedSliceScalesLeadingExpression) {
                                      args, &result));
 
   ASSERT_EQ(result.outputs.size(), 1);
+  const xla::DExpr input_expr =
+      ((xla::DExpr::Const(2) * xla::DExpr::Var(41)) -
+       xla::DExpr::Const(1))
+          .simplify();
+  const xla::DExpr expected_expr =
+      ((xla::DExpr::Max(input_expr, xla::DExpr::Const(0)) +
+        xla::DExpr::Const(2) - xla::DExpr::Const(1)) /
+       xla::DExpr::Const(2))
+          .simplify();
   EXPECT_TRUE(xla::DynExpr::equal(
-      result.outputs[0].shape.get_filled_expression(0), xla::DExpr::Var(41)));
+      result.outputs[0].shape.get_filled_expression(0), expected_expr));
   EXPECT_EQ(result.outputs[0].shape.dim_size(0), 4);
   EXPECT_EQ(result.outputs[0].shape.dim_size(1), 4);
 }

@@ -28,128 +28,6 @@ limitations under the License.
 
 namespace tensorflow {
 
-namespace {
-
-xla::DExpr DExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return xla::DExpr::Const(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return xla::DExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      const auto& add = proto.add_node();
-      return DExprFromProto(add.lhs()) + DExprFromProto(add.rhs());
-    }
-    case ExpressionProto::kSubNode: {
-      const auto& sub = proto.sub_node();
-      return DExprFromProto(sub.lhs()) - DExprFromProto(sub.rhs());
-    }
-    case ExpressionProto::kMulNode: {
-      const auto& mul = proto.mul_node();
-      return DExprFromProto(mul.lhs()) * DExprFromProto(mul.rhs());
-    }
-    case ExpressionProto::kDivNode: {
-      const auto& div = proto.div_node();
-      return DExprFromProto(div.lhs()) / DExprFromProto(div.rhs());
-    }
-    case ExpressionProto::kMaxNode: {
-      const auto& max = proto.max_node();
-      return xla::DExpr::Max(DExprFromProto(max.lhs()),
-                             DExprFromProto(max.rhs()));
-    }
-    case ExpressionProto::kGtNode: {
-      const auto& gt = proto.gt_node();
-      return xla::DExpr::Gt(DExprFromProto(gt.lhs()), DExprFromProto(gt.rhs()));
-    }
-    case ExpressionProto::kSelectNode: {
-      const auto& select = proto.select_node();
-      return xla::DExpr::Select(DExprFromProto(select.pred()),
-                                DExprFromProto(select.on_true()),
-                                DExprFromProto(select.on_false()));
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
-  }
-}
-
-void ExprToProto(const xla::DExpr& expr, ExpressionProto* proto) {
-  if (!expr) return;
-  switch (expr.kind()) {
-    case xla::DExpr::Kind::kUnknown:
-      return;
-    case xla::DExpr::Kind::kConstant:
-      proto->set_constant_value(expr->get_val());
-      return;
-    case xla::DExpr::Kind::kVariable:
-      proto->set_variable_id(
-          static_cast<xla::Variable&>(*expr.get()).get_id());
-      return;
-    case xla::DExpr::Kind::kAdd: {
-      auto* add = proto->mutable_add_node();
-      const auto& node = static_cast<xla::Add&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
-                  add->mutable_lhs());
-      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
-                  add->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kSub: {
-      auto* sub = proto->mutable_sub_node();
-      const auto& node = static_cast<xla::Sub&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
-                  sub->mutable_lhs());
-      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
-                  sub->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kMul: {
-      auto* mul = proto->mutable_mul_node();
-      const auto& node = static_cast<xla::Mul&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
-                  mul->mutable_lhs());
-      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
-                  mul->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kDiv: {
-      auto* div = proto->mutable_div_node();
-      const auto& node = static_cast<xla::Div&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_lhs()->clone()),
-                  div->mutable_lhs());
-      ExprToProto(xla::DExpr(node.get_rhs()->clone()),
-                  div->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kMax: {
-      auto* max = proto->mutable_max_node();
-      const auto& node = static_cast<xla::MaxExpr&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_lhs()->clone()), max->mutable_lhs());
-      ExprToProto(xla::DExpr(node.get_rhs()->clone()), max->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kGt: {
-      auto* gt = proto->mutable_gt_node();
-      const auto& node = static_cast<xla::GtExpr&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_lhs()->clone()), gt->mutable_lhs());
-      ExprToProto(xla::DExpr(node.get_rhs()->clone()), gt->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kSelect: {
-      auto* select = proto->mutable_select_node();
-      const auto& node = static_cast<xla::SelectExpr&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_pred()->clone()), select->mutable_pred());
-      ExprToProto(xla::DExpr(node.get_on_true()->clone()),
-                  select->mutable_on_true());
-      ExprToProto(xla::DExpr(node.get_on_false()->clone()),
-                  select->mutable_on_false());
-      return;
-    }
-  }
-}
-
-}  // namespace
-
 std::string ExprToString(const xla::DExpr& e) {
   if (!e && !e.is_unknown()) return "";
   xla::StringPrinter printer;
@@ -285,7 +163,7 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
     }
     if (TensorShapeExpressionsEnabled()) {
       for (const auto& e : proto.expressions()) {
-        AddExpression(DExprFromProto(e));
+        AddExpression(DimExprFromProto(e));
       }
     }
   }
@@ -329,7 +207,7 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
     }
     if (TensorShapeExpressionsEnabled()) {
       for (const auto& e : proto.expressions()) {
-        out->AddExpression(DExprFromProto(e));
+        out->AddExpression(DimExprFromProto(e));
       }
     }
   }
@@ -544,11 +422,7 @@ void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
     expressions_.clear();
     return;
   }
-
-  if (exprs.size() > ndims_byte()) {
-    exprs.resize(ndims_byte());
-  }
-
+  CHECK_LE(exprs.size(), ndims_byte());
   for (auto& expr : exprs) {
     if (!expr) expr = xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
   }
@@ -880,10 +754,10 @@ void TensorShapeBase<Shape>::RemoveDimRange(int begin, int end) {
   }
 
   ClearAllButDataType();
-  set_expressions(new_exprs);
   for (auto dval : vals) {
     AddDim(dval);
   }
+  set_expressions(new_exprs);
   TF_CHECK_OK(RecomputeNumElements());
 }
 
@@ -939,7 +813,6 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
   }
 
   ClearAllButDataType();
-  set_expressions(new_exprs);
 
   absl::Status s = absl::OkStatus();
   for (auto dval : vals) {
@@ -948,6 +821,7 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
       return s;
     }
   }
+  set_expressions(new_exprs);
   return RecomputeNumElements();
 }
 
@@ -971,7 +845,7 @@ void TensorShapeBase<Shape>::AsProto(TensorShapeProto* proto) const {
     if (TensorShapeExpressionsEnabled()) {
       for (int i = 0; i < get_expressions().size(); i++) {
         ExpressionProto* eproto = proto->add_expressions();
-        ExprToProto(get_expression(i), eproto);
+        DimExprToProto(get_expression(i), eproto);
       }
     }
   }
@@ -1040,8 +914,7 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
     first = true;
     for (const auto& e : proto.expressions()) {
       if (!first) strings::StrAppend(&s, ",");
-      auto exp = DExprFromProto(e);
-      strings::StrAppend(&s, ExprToString(exp));
+      strings::StrAppend(&s, ExprToString(DimExprFromProto(e)));
       first = false;
     }
     strings::StrAppend(&s, ">");

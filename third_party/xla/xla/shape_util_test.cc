@@ -1050,7 +1050,8 @@ TEST(ShapeUtilTest, InvalidDynamicDimension) {
 TEST(ShapeUtilTest, PermuteDynamicDimensions) {
   Shape shape =
       ShapeUtil::MakeShape(F32, {10, 100, 1000},
-                           /*dynamic_dimensions*/ {false, true, true});
+                           /*dynamic_dimensions*/ {false, true, true},
+                           /*expressions=*/{});
   SCOPED_TRACE(absl::StrCat("shape=", shape.ToString()));
 
   std::vector<int64_t> permutation(3);

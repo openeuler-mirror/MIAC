@@ -3363,7 +3363,7 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
 
     auto new_expr =
         limit_expr - start_expr + DExpr::Const(stride) - DExpr::Const(1);
-    expressions.push_back(new_expr / DExpr::Const(stride));
+    expressions.push_back((new_expr / DExpr::Const(stride)).simplify());
   }
 
   std::vector<bool> is_dynamic(arg.dimensions_size());
@@ -4189,7 +4189,8 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
       if (!on_true_expr || !on_false_expr ||
           !DynExpr::equal(on_true_expr, on_false_expr) ||
           (!pred_is_scalar &&
-           (!pred_expr || !DynExpr::equal(pred_expr, on_true_expr)))) {
+           pred_expr && pred_expr->is_dynamic() &&
+           !DynExpr::equal(pred_expr, on_true_expr))) {
         return InvalidArgument(
             "Select operands have mismatched expressions in dimension %d: "
             "pred=%s, on_true=%s, on_false=%s.",
